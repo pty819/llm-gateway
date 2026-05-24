@@ -24,13 +24,21 @@ from llm_gateway.db.models import (
     RouterPolicy,
     Subject,
     SubjectType,
+    Team,
+    TeamMembership,
+    ModelTeamGrant,
     UpstreamTarget,
     utcnow,
 )
 from llm_gateway.services.facts import record_audit_event
 from llm_gateway.services.litellm_client import check_upstream_health
 from llm_gateway.services.router_command import render_router_command
-from llm_gateway.services.security import create_gateway_key
+from llm_gateway.services.security import (
+    create_gateway_key,
+    ensure_model_team_grant,
+    ensure_team_membership,
+    get_or_create_team,
+)
 
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(admin_dep)])
@@ -100,6 +108,28 @@ class ModelEntitlementCreate(BaseModel):
     subject_id: UUID | None = None
     project_id: UUID | None = None
     gateway_key_id: UUID | None = None
+
+
+class TeamCreate(BaseModel):
+    name: str
+    notes: str | None = None
+
+
+class TeamUpdate(BaseModel):
+    name: str | None = None
+    notes: str | None = None
+    state: ResourceState | None = None
+
+
+class TeamMembershipCreate(BaseModel):
+    team_id: UUID
+    subject_id: UUID
+    role: str = "member"
+
+
+class ModelTeamGrantCreate(BaseModel):
+    model_alias_id: UUID
+    team_id: UUID
 
 
 class UpstreamTargetCreate(BaseModel):
@@ -319,6 +349,13 @@ async def create_model_alias(payload: ModelAliasCreate, session: AsyncSession = 
     model_alias = ModelAlias(**payload.model_dump())
     session.add(model_alias)
     await session.flush()
+    admin_team = await get_or_create_team(
+        session,
+        name="admin",
+        notes="Built-in administrators with access to all models.",
+        is_builtin=True,
+    )
+    await ensure_model_team_grant(session, model_alias_id=model_alias.id, team_id=admin_team.id)
     await record_audit_event(
         session,
         action="model_alias.create",
@@ -375,6 +412,137 @@ async def create_model_entitlement(payload: ModelEntitlementCreate, session: Asy
 async def list_model_entitlements(session: AsyncSession = Depends(session_dep)):
     result = await session.execute(select(ModelEntitlement).order_by(ModelEntitlement.created_at.desc()))
     return result.scalars().all()
+
+
+@router.post("/teams")
+async def create_team(payload: TeamCreate, session: AsyncSession = Depends(session_dep)):
+    team = Team(**payload.model_dump())
+    session.add(team)
+    await session.flush()
+    await record_audit_event(
+        session,
+        action="team.create",
+        resource_type="team",
+        resource_id=team.id,
+        outcome="success",
+        detail={"name": team.name},
+    )
+    await session.commit()
+    await session.refresh(team)
+    return team
+
+
+@router.get("/teams")
+async def list_teams(session: AsyncSession = Depends(session_dep)):
+    result = await session.execute(select(Team).order_by(Team.name))
+    return result.scalars().all()
+
+
+@router.patch("/teams/{team_id}")
+async def update_team(team_id: UUID, payload: TeamUpdate, session: AsyncSession = Depends(session_dep)):
+    team = await _get_or_404(session, Team, team_id)
+    _apply_patch(team, payload)
+    await _audit_update(session, "team.update", "team", team.id, payload)
+    await session.commit()
+    await session.refresh(team)
+    return team
+
+
+@router.post("/team-memberships")
+async def create_team_membership(payload: TeamMembershipCreate, session: AsyncSession = Depends(session_dep)):
+    await _get_or_404(session, Team, payload.team_id)
+    await _get_or_404(session, Subject, payload.subject_id)
+    membership = await ensure_team_membership(
+        session,
+        team_id=payload.team_id,
+        subject_id=payload.subject_id,
+        role=payload.role,
+    )
+    await record_audit_event(
+        session,
+        action="team_membership.create",
+        resource_type="team_membership",
+        resource_id=membership.id,
+        outcome="success",
+    )
+    await session.commit()
+    await session.refresh(membership)
+    return membership
+
+
+@router.get("/team-memberships")
+async def list_team_memberships(session: AsyncSession = Depends(session_dep)):
+    result = await session.execute(select(TeamMembership).order_by(TeamMembership.created_at.desc()))
+    return result.scalars().all()
+
+
+@router.patch("/team-memberships/{membership_id}/state")
+async def set_team_membership_state(
+    membership_id: UUID,
+    payload: StatePatch,
+    session: AsyncSession = Depends(session_dep),
+):
+    membership = await _get_or_404(session, TeamMembership, membership_id)
+    membership.state = payload.state
+    membership.updated_at = utcnow()
+    await record_audit_event(
+        session,
+        action="team_membership.set_state",
+        resource_type="team_membership",
+        resource_id=membership.id,
+        outcome="success",
+        detail={"state": payload.state.value},
+    )
+    await session.commit()
+    return membership
+
+
+@router.post("/model-team-grants")
+async def create_model_team_grant(payload: ModelTeamGrantCreate, session: AsyncSession = Depends(session_dep)):
+    await _get_or_404(session, ModelAlias, payload.model_alias_id)
+    await _get_or_404(session, Team, payload.team_id)
+    grant = await ensure_model_team_grant(
+        session,
+        model_alias_id=payload.model_alias_id,
+        team_id=payload.team_id,
+    )
+    await record_audit_event(
+        session,
+        action="model_team_grant.create",
+        resource_type="model_team_grant",
+        resource_id=grant.id,
+        outcome="success",
+    )
+    await session.commit()
+    await session.refresh(grant)
+    return grant
+
+
+@router.get("/model-team-grants")
+async def list_model_team_grants(session: AsyncSession = Depends(session_dep)):
+    result = await session.execute(select(ModelTeamGrant).order_by(ModelTeamGrant.created_at.desc()))
+    return result.scalars().all()
+
+
+@router.patch("/model-team-grants/{grant_id}/state")
+async def set_model_team_grant_state(
+    grant_id: UUID,
+    payload: StatePatch,
+    session: AsyncSession = Depends(session_dep),
+):
+    grant = await _get_or_404(session, ModelTeamGrant, grant_id)
+    grant.state = payload.state
+    grant.updated_at = utcnow()
+    await record_audit_event(
+        session,
+        action="model_team_grant.set_state",
+        resource_type="model_team_grant",
+        resource_id=grant.id,
+        outcome="success",
+        detail={"state": payload.state.value},
+    )
+    await session.commit()
+    return grant
 
 
 @router.patch("/model-entitlements/{entitlement_id}/state")

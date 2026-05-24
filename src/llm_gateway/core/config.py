@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     default_concurrency_limit: int = Field(default=8, alias="LLM_GATEWAY_DEFAULT_CONCURRENCY")
     request_fact_timeout_seconds: int = Field(default=30, alias="LLM_GATEWAY_FACT_TIMEOUT_SECONDS")
     admin_token: str = Field(default="dev-admin-token", alias="LLM_GATEWAY_ADMIN_TOKEN")
+    bootstrap_admin_username: str = Field(default="admin", alias="LLM_GATEWAY_BOOTSTRAP_ADMIN_USERNAME")
+    bootstrap_admin_password: str = Field(default="dev-admin-password", alias="LLM_GATEWAY_BOOTSTRAP_ADMIN_PASSWORD")
+    session_ttl_hours: int = Field(default=168, alias="LLM_GATEWAY_SESSION_TTL_HOURS")
 
 
 @lru_cache

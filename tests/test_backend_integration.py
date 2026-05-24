@@ -56,6 +56,126 @@ async def test_health_and_admin_diagnostics(client):
     assert diagnostics.json()["litellm_version"] != "unknown"
 
 
+async def test_self_service_register_login_and_guest_team_model_access(client):
+    from llm_gateway.core.config import get_settings
+    from llm_gateway.db.models import Team
+    from llm_gateway.db.session import AsyncSessionLocal
+    from sqlalchemy import select
+
+    headers = {"x-admin-token": get_settings().admin_token}
+    suffix = uuid4().hex
+    bootstrap = await client.post(
+        "/auth/login",
+        json={
+            "username": get_settings().bootstrap_admin_username,
+            "password": get_settings().bootstrap_admin_password,
+        },
+    )
+    assert bootstrap.status_code == 200, bootstrap.text
+
+    model = await client.post(
+        "/admin/model-aliases",
+        headers=headers,
+        json={
+            "alias": f"guest-model-{suffix}",
+            "upstream_model_name": "guest-upstream",
+            "litellm_model": "openai/guest-upstream",
+        },
+    )
+    assert model.status_code == 200, model.text
+    model_id = model.json()["id"]
+
+    async with AsyncSessionLocal() as session:
+        guest_team = (await session.execute(select(Team).where(Team.name == "guest"))).scalar_one()
+
+    grant = await client.post(
+        "/admin/model-team-grants",
+        headers=headers,
+        json={"model_alias_id": model_id, "team_id": str(guest_team.id)},
+    )
+    assert grant.status_code == 200, grant.text
+
+    username = f"new-user-{suffix}"
+    registered = await client.post(
+        "/auth/register",
+        json={"username": username, "password": "correct-horse-battery"},
+    )
+    assert registered.status_code == 200, registered.text
+    payload = registered.json()
+    raw_key = payload["gateway_key"]["plaintext_key"]
+    assert payload["profile"]["subject"]["login_username"] == username
+    assert "guest" in payload["profile"]["teams"]
+    assert f"guest-model-{suffix}" in payload["profile"]["models"]
+
+    models = await client.get("/v1/models", headers=_auth_headers(raw_key))
+    assert models.status_code == 200, models.text
+    ids = [item["id"] for item in models.json()["data"]]
+    assert f"guest-model-{suffix}" in ids
+
+    logged_in = await client.post("/auth/login", json={"username": username, "password": "correct-horse-battery"})
+    assert logged_in.status_code == 200, logged_in.text
+    assert logged_in.json()["session_token"].startswith("sess-")
+
+
+async def test_admin_session_can_manage_team_union_permissions(client):
+    from llm_gateway.core.config import get_settings
+
+    suffix = uuid4().hex
+    login = await client.post(
+        "/auth/login",
+        json={
+            "username": get_settings().bootstrap_admin_username,
+            "password": get_settings().bootstrap_admin_password,
+        },
+    )
+    assert login.status_code == 200, login.text
+    session_headers = {"x-session-token": login.json()["session_token"]}
+
+    registered = await client.post(
+        "/auth/register",
+        json={"username": f"union-user-{suffix}", "password": "correct-horse-battery"},
+    )
+    assert registered.status_code == 200, registered.text
+    subject_id = registered.json()["profile"]["subject"]["id"]
+    raw_key = registered.json()["gateway_key"]["plaintext_key"]
+
+    team1 = (await client.post("/admin/teams", headers=session_headers, json={"name": f"team1-{suffix}"})).json()
+    team3 = (await client.post("/admin/teams", headers=session_headers, json={"name": f"team3-{suffix}"})).json()
+
+    for team in [team1, team3]:
+        response = await client.post(
+            "/admin/team-memberships",
+            headers=session_headers,
+            json={"team_id": team["id"], "subject_id": subject_id},
+        )
+        assert response.status_code == 200, response.text
+
+    granted_aliases = []
+    for team, label in [(team1, "a"), (team1, "b"), (team3, "e")]:
+        model = await client.post(
+            "/admin/model-aliases",
+            headers=session_headers,
+            json={
+                "alias": f"model-{label}-{suffix}",
+                "upstream_model_name": f"upstream-{label}",
+                "litellm_model": f"openai/upstream-{label}",
+            },
+        )
+        assert model.status_code == 200, model.text
+        granted_aliases.append(model.json()["alias"])
+        grant = await client.post(
+            "/admin/model-team-grants",
+            headers=session_headers,
+            json={"model_alias_id": model.json()["id"], "team_id": team["id"]},
+        )
+        assert grant.status_code == 200, grant.text
+
+    models = await client.get("/v1/models", headers=_auth_headers(raw_key))
+    assert models.status_code == 200, models.text
+    ids = {item["id"] for item in models.json()["data"]}
+    assert set(granted_aliases).issubset(ids)
+
+
 async def test_openai_chat_completion_uses_real_upstream_and_records_usage(client, gateway_fixture):
     request_id = f"pytest-openai-{uuid4()}"
     response = await client.post(

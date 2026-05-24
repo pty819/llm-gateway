@@ -18,7 +18,7 @@ from llm_gateway.services.litellm_client import (
     completion_once,
     completion_stream,
 )
-from llm_gateway.services.policy import PolicyDenied, resolve_route_context
+from llm_gateway.services.policy import PolicyDenied, list_accessible_model_aliases, resolve_route_context
 from llm_gateway.services.rate_limit import (
     RateLimitExceeded,
     check_request_rate,
@@ -379,24 +379,7 @@ async def list_models(
     if not auth:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_gateway_key")
 
-    from sqlalchemy import distinct, or_, select
-
-    from llm_gateway.db.models import ModelAlias, ModelEntitlement, ResourceState
-
-    stmt = (
-        select(distinct(ModelAlias.alias))
-        .join(ModelEntitlement, ModelEntitlement.model_alias_id == ModelAlias.id)
-        .where(
-            ModelAlias.state == ResourceState.ACTIVE,
-            ModelEntitlement.state == ResourceState.ACTIVE,
-            or_(
-                ModelEntitlement.gateway_key_id == auth.key.id,
-                ModelEntitlement.subject_id == auth.subject.id,
-                ModelEntitlement.project_id == auth.project.id,
-            ),
-        )
-    )
-    rows = (await session.execute(stmt)).scalars().all()
+    rows = await list_accessible_model_aliases(session, auth=auth)
     now = int(utcnow().timestamp())
     return {
         "object": "list",

@@ -1,10 +1,258 @@
 # LLM Gateway
 
-FastAPI-based enterprise LLM gateway MVP for internal production use.
+FastAPI + Svelte enterprise LLM gateway for internal model serving. It sits in front of OpenAI-compatible vLLM Router or direct vLLM endpoints, uses LiteLLM for protocol conversion, and owns identity, access control, request limits, usage facts, and operator workflows.
 
-The controller owns gateway keys, model entitlements, model-level IP allowlists,
-Redis-backed request/concurrency limits, LiteLLM-backed OpenAI/Anthropic proxying,
-usage facts, audit events, upstream health checks, and vLLM Router command config.
+## What It Does
 
-Local verification uses `.env.local` for PostgreSQL, Redis, and a real
-OpenAI-compatible upstream. Keep `.env.local` untracked.
+- Self-service user registration and login.
+- Automatic gateway key issuance for registered users.
+- Built-in `guest` and `admin` teams.
+- Team-based model permissions: a user can use the union of models granted to all of their active teams.
+- Admin account and admin console for users, teams, model grants, keys, upstreams, rate limits, router commands, usage, and audit.
+- OpenAI-compatible `/v1/chat/completions` proxy.
+- Anthropic-compatible `/v1/messages` proxy through LiteLLM.
+- `/v1/models` returns only the models the caller can use.
+- Model-level IP allowlists.
+- Redis-backed RPM and concurrency limits.
+- PostgreSQL-backed audit and token/request usage facts.
+- vLLM Router command generation for same-model endpoint pools.
+
+## Stack
+
+- Backend: FastAPI, async SQLAlchemy/SQLModel, PostgreSQL, Redis, LiteLLM.
+- Frontend: SvelteKit.
+- Package/runtime: `uv` for Python, npm for frontend.
+
+## Local Configuration
+
+Copy `.env.example` to `.env.local` and fill in real values:
+
+```bash
+cp .env.example .env.local
+```
+
+Important settings:
+
+```bash
+LLM_GATEWAY_DATABASE_URL=postgresql+asyncpg://...
+LLM_GATEWAY_REDIS_URL=redis://...
+
+LLM_GATEWAY_UPSTREAM_BASE_URL=https://api.example.com/v1
+LLM_GATEWAY_UPSTREAM_MODEL=actual-upstream-model-name
+LLM_GATEWAY_UPSTREAM_API_KEY=upstream-provider-key
+LLM_GATEWAY_LITELLM_MODEL=openai/actual-upstream-model-name
+
+LLM_GATEWAY_ADMIN_TOKEN=dev-admin-token
+LLM_GATEWAY_BOOTSTRAP_ADMIN_USERNAME=admin
+LLM_GATEWAY_BOOTSTRAP_ADMIN_PASSWORD=dev-admin-password
+```
+
+`.env.local` must stay untracked because it contains upstream credentials.
+
+## Start
+
+Initialize or migrate the database:
+
+```bash
+uv run python scripts/init_db.py
+```
+
+Optionally seed a development upstream/model:
+
+```bash
+uv run python scripts/seed_dev.py
+```
+
+Start the backend:
+
+```bash
+uv run python main.py
+```
+
+Backend default:
+
+```text
+http://127.0.0.1:18080
+```
+
+Start the frontend:
+
+```bash
+cd frontend
+npm install
+npm run dev -- --host 127.0.0.1 --port 5173
+```
+
+Frontend default:
+
+```text
+http://127.0.0.1:5173
+```
+
+## Login And Registration
+
+Open the frontend and sign in with the bootstrap admin account:
+
+```text
+username: admin
+password: dev-admin-password
+```
+
+Override those defaults with:
+
+```bash
+LLM_GATEWAY_BOOTSTRAP_ADMIN_USERNAME=...
+LLM_GATEWAY_BOOTSTRAP_ADMIN_PASSWORD=...
+```
+
+The older local operator token is still supported as a fallback:
+
+```text
+x-admin-token: dev-admin-token
+```
+
+New users can self-register. Registration creates:
+
+- one `Subject`
+- one personal `Project`
+- one gateway key, shown once
+- one active membership in `guest`
+- one login session
+
+Users can later log in and issue more personal gateway keys from the user dashboard.
+
+## Team Permission Model
+
+Teams control model access.
+
+Effective model access is:
+
+```text
+legacy direct entitlement OR active team membership with active model-team grant
+```
+
+The normal team flow:
+
+1. Admin creates teams such as `team1`, `team2`, `team3`.
+2. Admin adds users to one or more teams.
+3. Admin grants models to one or more teams.
+4. A user's available models are the union of all active grants from all active teams they belong to.
+
+Example:
+
+```text
+team1 -> models a, b, c
+team2 -> models b, c, d
+team3 -> model e
+user -> team1 + team3
+usable models -> a, b, c, e
+```
+
+Built-in behavior:
+
+- self-registered users join `guest`
+- bootstrap admin joins `admin`
+- every model alias is automatically granted to `admin`
+
+## Add A vLLM Router Aggregated Model
+
+If you have five same-model vLLM endpoints, first create a model alias in the admin console:
+
+```text
+Alias: qwen-coder
+Upstream model: actual-vllm-model-name
+LiteLLM model: openai/actual-vllm-model-name
+```
+
+Then open Router Commands and create a config:
+
+```text
+Policy: consistent_hash
+Host: 0.0.0.0
+Port: 18001
+Worker URLs:
+http://gpu-a:8000
+http://gpu-b:8000
+http://gpu-c:8000
+http://gpu-d:8000
+http://gpu-e:8000
+```
+
+The UI generates a command like:
+
+```bash
+vllm-router --worker-urls http://gpu-a:8000 http://gpu-b:8000 http://gpu-c:8000 http://gpu-d:8000 http://gpu-e:8000 --policy consistent_hash --host 0.0.0.0 --port 18001
+```
+
+Run that router process yourself for this MVP. Then create one upstream:
+
+```text
+Model: qwen-coder
+Name: qwen-coder-router
+Base URL: http://router-host:18001/v1
+Health path: /models
+API key value: router key if required
+```
+
+Finally grant `qwen-coder` to the relevant teams.
+
+## Client Usage
+
+OpenAI-compatible clients:
+
+```bash
+curl http://gateway-host:18080/v1/chat/completions \
+  -H "Authorization: Bearer <gateway-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen-coder",
+    "messages": [{"role": "user", "content": "hello"}],
+    "stream": true
+  }'
+```
+
+Anthropic-compatible clients:
+
+```bash
+curl http://gateway-host:18080/v1/messages \
+  -H "x-api-key: <gateway-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen-coder",
+    "max_tokens": 128,
+    "messages": [{"role": "user", "content": "hello"}]
+  }'
+```
+
+List available models:
+
+```bash
+curl http://gateway-host:18080/v1/models \
+  -H "Authorization: Bearer <gateway-key>"
+```
+
+## Verification
+
+Backend:
+
+```bash
+uv run python scripts/init_db.py
+uv run pytest -q
+```
+
+Frontend:
+
+```bash
+cd frontend
+npm run check
+npm run test
+npm run build
+npm run test:e2e
+```
+
+## Current MVP Boundaries
+
+- vLLM Router process management is not automatic yet; the UI generates commands only.
+- Password reset and SSO are intentionally out of scope.
+- Gateway keys are shown once when issued; existing keys are listed only by prefix.
+- ClickHouse or other heavyweight analytics stores are intentionally not used.

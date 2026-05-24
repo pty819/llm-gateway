@@ -10,16 +10,20 @@
 		Route,
 		Shield,
 		Terminal,
+		UserPlus,
 		Users
 	} from 'lucide-svelte';
 	import { AdminApiClient, isApiError } from '$lib/api/client';
 	import type {
 		AuditEvent,
+		AuthProfile,
 		Diagnostics,
 		GatewayKeyCreateResponse,
 		Inventory,
 		IPPolicyMode,
+		LoginResponse,
 		ReadyStatus,
+		RegisterResponse,
 		ResourceState,
 		RouterPolicy,
 		SubjectType,
@@ -29,7 +33,14 @@
 	import JsonViewer from '$lib/components/JsonViewer.svelte';
 	import CommandBlock from '$lib/components/CommandBlock.svelte';
 	import SecretOnceDialog from '$lib/components/SecretOnceDialog.svelte';
-	import { clearStoredAdminToken, loadStoredAdminToken, persistAdminToken } from '$lib/state/admin-token';
+	import {
+		clearStoredAdminToken,
+		clearStoredSessionToken,
+		loadStoredAdminToken,
+		loadStoredSessionToken,
+		persistAdminToken,
+		persistSessionToken
+	} from '$lib/state/admin-token';
 	import { parseCidrList, parseJsonObject, validateCidrList, validateHttpUrl, validatePort } from '$lib/validators';
 
 	type Section = {
@@ -48,6 +59,7 @@
 		{ id: 'subjects', label: 'Subjects', group: 'Access', icon: Users },
 		{ id: 'projects', label: 'Projects', group: 'Access', icon: Route },
 		{ id: 'keys', label: 'Gateway Keys', group: 'Access', icon: KeyRound },
+		{ id: 'teams', label: 'Teams', group: 'Access', icon: UserPlus },
 		{ id: 'entitlements', label: 'Entitlements', group: 'Policy', icon: Shield },
 		{ id: 'rate', label: 'Rate Limits', group: 'Policy', icon: Gauge },
 		{ id: 'usage', label: 'Usage', group: 'Evidence', icon: Activity },
@@ -58,13 +70,16 @@
 
 	let active = $state('overview');
 	let adminToken = $state('');
+	let sessionToken = $state('');
 	let rememberToken = $state(false);
+	let rememberSession = $state(true);
 	let connected = $state(false);
 	let loading = $state(false);
 	let pageError = $state('');
 	let plaintextKey = $state('');
 	let ready = $state<ReadyStatus | null>(null);
 	let diagnostics = $state<Diagnostics | null>(null);
+	let profile = $state<AuthProfile | null>(null);
 	let inventory = $state<Inventory>(emptyInventory());
 	let healthResults = $state<Record<string, UpstreamHealth | string>>({});
 	let usageStart = $state('');
@@ -72,8 +87,14 @@
 	let auditDetail = $state<AuditEvent | null>(null);
 
 	let subjectForm = $state({ name: '', type: 'user' as SubjectType, notes: '' });
+	let loginForm = $state({ username: 'admin', password: 'dev-admin-password' });
+	let registerForm = $state({ username: '', password: '' });
+	let ownKeyForm = $state({ name: 'personal-key' });
 	let projectForm = $state({ name: '', owner_subject_id: '', notes: '' });
 	let membershipForm = $state({ project_id: '', subject_id: '', role: 'member' });
+	let teamForm = $state({ name: '', notes: '' });
+	let teamMembershipForm = $state({ team_id: '', subject_id: '', role: 'member' });
+	let modelTeamGrantForm = $state({ model_alias_id: '', team_id: '' });
 	let keyForm = $state({ subject_id: '', project_id: '', name: '' });
 	let modelForm = $state({
 		alias: '',
@@ -112,7 +133,8 @@
 		extra_args: '{}'
 	});
 
-	const api = $derived(new AdminApiClient(adminToken));
+	const api = $derived(new AdminApiClient(adminToken, sessionToken));
+	const isAdmin = $derived(Boolean(adminToken) || Boolean(profile?.subject.is_admin));
 	const usageRows = $derived(
 		inventory.usage.filter((row) => {
 			if (modelFilter && row.model_alias !== modelFilter) return false;
@@ -142,10 +164,60 @@
 
 	onMount(() => {
 		adminToken = loadStoredAdminToken();
+		sessionToken = loadStoredSessionToken();
 		rememberToken = Boolean(adminToken);
+		rememberSession = Boolean(sessionToken);
 		void refreshReady();
-		if (adminToken) void connect(true);
+		if (sessionToken) void loadProfile(true);
+		else if (adminToken) void connect(true);
 	});
+
+	async function loginAccount(fromStorage = false) {
+		if (!loginForm.username.trim() || !loginForm.password) {
+			pageError = 'Username and password are required.';
+			return;
+		}
+		await run(async () => {
+			const response = await new AdminApiClient().post<LoginResponse>('/auth/login', loginForm);
+			sessionToken = response.session_token;
+			profile = response.profile;
+			connected = true;
+			if (!fromStorage) persistSessionToken(sessionToken, rememberSession);
+			if (profile.subject.is_admin) {
+				const authedApi = new AdminApiClient('', sessionToken);
+				diagnostics = await authedApi.get<Diagnostics>('/admin/diagnostics');
+				await refreshAll();
+			}
+		});
+	}
+
+	async function registerAccount() {
+		if (!registerForm.username.trim() || registerForm.password.length < 8) {
+			pageError = 'Username is required and password must be at least 8 characters.';
+			return;
+		}
+		await run(async () => {
+			const response = await new AdminApiClient().post<RegisterResponse>('/auth/register', registerForm);
+			sessionToken = response.session_token;
+			profile = response.profile;
+			plaintextKey = response.gateway_key.plaintext_key;
+			connected = true;
+			persistSessionToken(sessionToken, rememberSession);
+			registerForm = { username: '', password: '' };
+		});
+	}
+
+	async function loadProfile(fromStorage = false) {
+		await run(async () => {
+			profile = await api.get<AuthProfile>('/auth/me');
+			connected = true;
+			if (!fromStorage) persistSessionToken(sessionToken, rememberSession);
+			if (profile.subject.is_admin) {
+				diagnostics = await api.get<Diagnostics>('/admin/diagnostics');
+				await refreshAll();
+			}
+		});
+	}
 
 	async function connect(fromStorage = false) {
 		if (!adminToken.trim()) {
@@ -162,8 +234,11 @@
 
 	function disconnect() {
 		adminToken = '';
+		sessionToken = '';
+		profile = null;
 		connected = false;
 		clearStoredAdminToken();
+		clearStoredSessionToken();
 		inventory = emptyInventory();
 	}
 
@@ -179,6 +254,10 @@
 	async function refreshAll() {
 		await run(async () => {
 			await refreshReady();
+			if (!isAdmin) {
+				profile = await api.get<AuthProfile>('/auth/me');
+				return;
+			}
 			const [
 				subjects,
 				projects,
@@ -186,6 +265,9 @@
 				keys,
 				models,
 				entitlements,
+				teams,
+				teamMemberships,
+				modelTeamGrants,
 				upstreams,
 				routerConfigs,
 				ratePolicies,
@@ -198,6 +280,9 @@
 				api.get<Inventory['keys']>('/admin/gateway-keys'),
 				api.get<Inventory['models']>('/admin/model-aliases'),
 				api.get<Inventory['entitlements']>('/admin/model-entitlements'),
+				api.get<Inventory['teams']>('/admin/teams'),
+				api.get<Inventory['teamMemberships']>('/admin/team-memberships'),
+				api.get<Inventory['modelTeamGrants']>('/admin/model-team-grants'),
 				api.get<Inventory['upstreams']>('/admin/upstreams'),
 				api.get<Inventory['routerConfigs']>('/admin/router-command-configs'),
 				api.get<Inventory['ratePolicies']>('/admin/rate-policies'),
@@ -211,6 +296,9 @@
 				keys,
 				models,
 				entitlements,
+				teams,
+				teamMemberships,
+				modelTeamGrants,
 				upstreams,
 				routerConfigs,
 				ratePolicies,
@@ -271,6 +359,15 @@
 			plaintextKey = response.plaintext_key;
 			keyForm = { subject_id: '', project_id: '', name: '' };
 			await refreshAll();
+		});
+	}
+
+	async function issueOwnKey() {
+		await run(async () => {
+			const response = await api.post<GatewayKeyCreateResponse>('/auth/keys', clean({ ...ownKeyForm }));
+			plaintextKey = response.plaintext_key;
+			ownKeyForm = { name: 'personal-key' };
+			profile = await api.get<AuthProfile>('/auth/me');
 		});
 	}
 
@@ -388,6 +485,51 @@
 		});
 	}
 
+	async function createTeam() {
+		await run(async () => {
+			await api.post('/admin/teams', clean({ ...teamForm }));
+			teamForm = { name: '', notes: '' };
+			await refreshAll();
+		});
+	}
+
+	async function patchTeam(id: string, patch: Record<string, unknown>) {
+		await run(async () => {
+			await api.patch(`/admin/teams/${id}`, clean(patch));
+			await refreshAll();
+		});
+	}
+
+	async function createTeamMembership() {
+		await run(async () => {
+			await api.post('/admin/team-memberships', clean({ ...teamMembershipForm }));
+			teamMembershipForm = { team_id: '', subject_id: '', role: 'member' };
+			await refreshAll();
+		});
+	}
+
+	async function setTeamMembershipState(id: string, state: ResourceState) {
+		await run(async () => {
+			await api.patch(`/admin/team-memberships/${id}/state`, { state });
+			await refreshAll();
+		});
+	}
+
+	async function createModelTeamGrant() {
+		await run(async () => {
+			await api.post('/admin/model-team-grants', clean({ ...modelTeamGrantForm }));
+			modelTeamGrantForm = { model_alias_id: '', team_id: '' };
+			await refreshAll();
+		});
+	}
+
+	async function setModelTeamGrantState(id: string, state: ResourceState) {
+		await run(async () => {
+			await api.patch(`/admin/model-team-grants/${id}/state`, { state });
+			await refreshAll();
+		});
+	}
+
 	async function createRatePolicy() {
 		await run(async () => {
 			await api.post(
@@ -468,6 +610,9 @@
 			keys: [],
 			models: [],
 			entitlements: [],
+			teams: [],
+			teamMemberships: [],
+			modelTeamGrants: [],
 			upstreams: [],
 			routerConfigs: [],
 			ratePolicies: [],
@@ -512,6 +657,10 @@
 		return inventory.models.find((item) => item.id === id)?.alias ?? short(id);
 	}
 
+	function teamLabel(id: string | null | undefined): string {
+		return inventory.teams.find((item) => item.id === id)?.name ?? short(id);
+	}
+
 	function scopeOptions(scope: string) {
 		if (scope === 'subject') return inventory.subjects.map((item) => ({ id: item.id, label: item.name }));
 		if (scope === 'project') return inventory.projects.map((item) => ({ id: item.id, label: item.name }));
@@ -524,17 +673,15 @@
 		<aside class="sidebar">
 			<div class="brand">
 				<strong>LLM Gateway</strong>
-				<span>Operator console</span>
+				<span>Account access</span>
 			</div>
 		</aside>
 		<main class="main">
 			<section class="content">
-				<div class="panel" style="max-width: 560px;">
-					<h1>Connect to gateway admin</h1>
-					<p>
-						Enter the backend admin token. Local default: <code>dev-admin-token</code> unless
-						<code>LLM_GATEWAY_ADMIN_TOKEN</code> is set.
-					</p>
+				<div class="split" style="align-items: start;">
+				<div class="panel">
+					<h1>Sign in</h1>
+					<p>Use your gateway account. Local admin default: <code>admin</code> / <code>dev-admin-password</code>.</p>
 					{#if ready}
 						<div class="actions">
 							<StateBadge value={ready.ok ? 'ready' : 'not_ready'} tone={ready.ok ? 'success' : 'danger'} />
@@ -542,18 +689,39 @@
 						</div>
 					{/if}
 					<label>
-						Admin token
-						<input type="password" bind:value={adminToken} placeholder="x-admin-token" onkeydown={(event) => event.key === 'Enter' && connect()} />
+						Username
+						<input bind:value={loginForm.username} autocomplete="username" />
+					</label>
+					<label>
+						Password
+						<input type="password" bind:value={loginForm.password} autocomplete="current-password" onkeydown={(event) => event.key === 'Enter' && loginAccount()} />
 					</label>
 					<label style="display: flex; grid-template-columns: auto 1fr; align-items: center;">
-						<input type="checkbox" bind:checked={rememberToken} style="width: auto;" />
+						<input type="checkbox" bind:checked={rememberSession} style="width: auto;" />
 						Remember on this device
 					</label>
 					{#if pageError}<div class="error">{pageError}</div>{/if}
 					<div class="actions">
-						<button type="button" onclick={() => connect()} disabled={loading}>{loading ? 'Connecting' : 'Connect'}</button>
+						<button type="button" onclick={() => loginAccount()} disabled={loading}>{loading ? 'Signing in' : 'Sign in'}</button>
 						<button class="secondary" type="button" onclick={refreshReady}>Refresh readiness</button>
 					</div>
+				</div>
+				<div class="panel">
+					<h1>Register</h1>
+					<p>New users join <code>guest</code> and receive a gateway key immediately.</p>
+					<label>Username<input bind:value={registerForm.username} autocomplete="username" /></label>
+					<label>Password<input type="password" bind:value={registerForm.password} autocomplete="new-password" /></label>
+					<div class="actions">
+						<button type="button" onclick={registerAccount} disabled={loading}>Create account</button>
+					</div>
+				</div>
+				<div class="panel">
+					<h1>Admin token fallback</h1>
+					<p>For local operations only. Default: <code>dev-admin-token</code> unless overridden.</p>
+					<label>Admin token<input type="password" bind:value={adminToken} placeholder="x-admin-token" onkeydown={(event) => event.key === 'Enter' && connect()} /></label>
+					<label style="display: flex; grid-template-columns: auto 1fr; align-items: center;"><input type="checkbox" bind:checked={rememberToken} style="width: auto;" />Remember token</label>
+					<div class="actions"><button class="secondary" type="button" onclick={() => connect()} disabled={loading}>Connect as operator</button></div>
+				</div>
 				</div>
 			</section>
 		</main>
@@ -565,6 +733,12 @@
 				<strong>LLM Gateway</strong>
 				<span>{diagnostics?.environment ?? 'environment'} · LiteLLM {diagnostics?.litellm_version ?? 'unknown'}</span>
 			</div>
+			{#if !isAdmin}
+				<nav class="nav-group" aria-label="Account">
+					<div class="nav-group-title">Account</div>
+					<button class="active nav-button" type="button"><span>My access</span><KeyRound size={16} /></button>
+				</nav>
+			{:else}
 			{#each navGroups as group}
 				<nav class="nav-group" aria-label={group}>
 					<div class="nav-group-title">{group}</div>
@@ -577,6 +751,7 @@
 					{/each}
 				</nav>
 			{/each}
+			{/if}
 		</aside>
 		<main class="main">
 			<div class="topbar">
@@ -586,13 +761,29 @@
 				</div>
 				<div class="actions">
 					<button class="secondary" type="button" onclick={refreshAll} disabled={loading}>{loading ? 'Working' : 'Refresh'}</button>
-					<button class="secondary" type="button" onclick={disconnect}>Clear token</button>
+					<button class="secondary" type="button" onclick={disconnect}>Sign out</button>
 				</div>
 			</div>
 			<section class="content">
 				{#if pageError}<div class="error">{pageError}</div>{/if}
 
-				{#if active === 'overview'}
+				{#if !isAdmin}
+					<div class="page-header"><div><h1>My access</h1><p>{profile?.subject.login_username ?? profile?.subject.name}</p></div></div>
+					<div class="grid">
+						<div class="metric"><span>Teams</span><strong>{profile?.teams.join(', ') || 'none'}</strong></div>
+						<div class="metric"><span>Models</span><strong>{profile?.models.length ?? 0}</strong></div>
+						<div class="metric"><span>Keys</span><strong>{profile?.keys.length ?? 0}</strong></div>
+					</div>
+					<section class="panel">
+						<h2>Available models</h2>
+						<div class="table-wrap"><table><thead><tr><th>Model alias</th></tr></thead><tbody>{#each profile?.models ?? [] as model}<tr><td>{model}</td></tr>{:else}<tr><td>No models granted yet.</td></tr>{/each}</tbody></table></div>
+					</section>
+					<section class="panel">
+						<h2>Gateway keys</h2>
+						<div class="form-grid"><label>New key name<input bind:value={ownKeyForm.name} /></label><button type="button" onclick={issueOwnKey}>Issue key</button></div>
+						<div class="table-wrap"><table><thead><tr><th>Name</th><th>Prefix</th><th>State</th></tr></thead><tbody>{#each profile?.keys ?? [] as key}<tr><td>{key.name}</td><td><code>{key.key_prefix}</code></td><td><StateBadge value={key.state} /></td></tr>{:else}<tr><td colspan="3">No keys yet.</td></tr>{/each}</tbody></table></div>
+					</section>
+				{:else if active === 'overview'}
 					<div class="page-header">
 						<div>
 							<h1>Overview</h1>
@@ -719,6 +910,16 @@
 					{@render PageTitle('Gateway keys', 'Issue, rotate, and revoke gateway-owned keys.')}
 					<section class="panel"><h2>Issue key</h2><div class="form-grid"><label>Subject<select bind:value={keyForm.subject_id}><option value="">Subject</option>{#each inventory.subjects as subject}<option value={subject.id}>{subject.name}</option>{/each}</select></label><label>Project<select bind:value={keyForm.project_id}><option value="">Project</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><label>Name<input bind:value={keyForm.name} /></label><button type="button" onclick={issueKey}>Issue key</button></div></section>
 					<section class="panel"><h2>Keys</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Prefix</th><th>Subject</th><th>Project</th><th>State</th><th>Actions</th></tr></thead><tbody>{#each inventory.keys as key}<tr><td>{key.name}</td><td><code>{key.key_prefix}</code></td><td>{subjectLabel(key.subject_id)}</td><td>{projectLabel(key.project_id)}</td><td><StateBadge value={key.state} /></td><td><button class="secondary" type="button" onclick={() => setKeyState(key.id, key.state === 'active' ? 'disabled' : 'active')}>{key.state === 'active' ? 'Disable' : 'Activate'}</button></td></tr>{/each}</tbody></table></div></section>
+				{:else if active === 'teams'}
+					{@render PageTitle('Teams', 'Self-service users inherit model access from all active teams they belong to.')}
+					<div class="split">
+						<section class="panel"><h2>Create team</h2><div class="form-grid"><label>Name<input bind:value={teamForm.name} /></label><label>Notes<input bind:value={teamForm.notes} /></label><button type="button" onclick={createTeam}>Create team</button></div></section>
+						<section class="panel"><h2>Add user to team</h2><div class="form-grid"><label>Team<select bind:value={teamMembershipForm.team_id}><option value="">Team</option>{#each inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><label>Subject<select bind:value={teamMembershipForm.subject_id}><option value="">Subject</option>{#each inventory.subjects as subject}<option value={subject.id}>{subject.name}</option>{/each}</select></label><label>Role<input bind:value={teamMembershipForm.role} /></label><button type="button" onclick={createTeamMembership}>Add membership</button></div></section>
+					</div>
+					<section class="panel"><h2>Grant model to team</h2><div class="form-grid"><label>Model<select bind:value={modelTeamGrantForm.model_alias_id}><option value="">Model</option>{#each inventory.models as model}<option value={model.id}>{model.alias}</option>{/each}</select></label><label>Team<select bind:value={modelTeamGrantForm.team_id}><option value="">Team</option>{#each inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><button type="button" onclick={createModelTeamGrant}>Grant model</button></div></section>
+					<section class="panel"><h2>Teams</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>State</th><th>Builtin</th><th>Notes</th><th>Actions</th></tr></thead><tbody>{#each inventory.teams as team}<tr><td>{team.name}<br /><span class="muted">{short(team.id)}</span></td><td><StateBadge value={team.state} /></td><td><StateBadge value={team.is_builtin} tone="accent" /></td><td>{team.notes}</td><td><button class="secondary" type="button" onclick={() => patchTeam(team.id, { state: team.state === 'active' ? 'disabled' : 'active' })}>{team.state === 'active' ? 'Disable' : 'Activate'}</button></td></tr>{/each}</tbody></table></div></section>
+					<section class="panel"><h2>Memberships</h2><div class="table-wrap"><table><thead><tr><th>Team</th><th>Subject</th><th>Role</th><th>State</th><th>Actions</th></tr></thead><tbody>{#each inventory.teamMemberships as membership}<tr><td>{teamLabel(membership.team_id)}</td><td>{subjectLabel(membership.subject_id)}</td><td>{membership.role}</td><td><StateBadge value={membership.state} /></td><td><button class="secondary" type="button" onclick={() => setTeamMembershipState(membership.id, membership.state === 'active' ? 'disabled' : 'active')}>{membership.state === 'active' ? 'Disable' : 'Activate'}</button></td></tr>{/each}</tbody></table></div></section>
+					<section class="panel"><h2>Model grants</h2><div class="table-wrap"><table><thead><tr><th>Model</th><th>Team</th><th>State</th><th>Actions</th></tr></thead><tbody>{#each inventory.modelTeamGrants as grant}<tr><td>{modelLabel(grant.model_alias_id)}</td><td>{teamLabel(grant.team_id)}</td><td><StateBadge value={grant.state} /></td><td><button class="secondary" type="button" onclick={() => setModelTeamGrantState(grant.id, grant.state === 'active' ? 'disabled' : 'active')}>{grant.state === 'active' ? 'Disable' : 'Activate'}</button></td></tr>{/each}</tbody></table></div></section>
 				{:else if active === 'entitlements'}
 					{@render PageTitle('Entitlements', 'Grant model access to projects, subjects, or individual gateway keys.')}
 					<section class="panel"><h2>Create entitlement</h2><div class="form-grid"><label>Model<select bind:value={entitlementForm.model_alias_id}><option value="">Model</option>{#each inventory.models as model}<option value={model.id}>{model.alias}</option>{/each}</select></label><label>Scope<select bind:value={entitlementForm.scope} onchange={() => (entitlementForm.scope_id = '')}><option value="project">project</option><option value="subject">subject</option><option value="key">key</option></select></label><label>Scope target<select bind:value={entitlementForm.scope_id}><option value="">Target</option>{#each scopeOptions(entitlementForm.scope) as option}<option value={option.id}>{option.label}</option>{/each}</select></label><button type="button" onclick={createEntitlement}>Grant access</button></div></section>

@@ -3,10 +3,12 @@ import type { ApiError } from './types';
 type QueryValue = string | number | boolean | null | undefined;
 
 export class AdminApiClient {
-	token = '';
+	adminToken = '';
+	sessionToken = '';
 
-	constructor(token = '') {
-		this.token = token;
+	constructor(adminToken = '', sessionToken = '') {
+		this.adminToken = adminToken;
+		this.sessionToken = sessionToken;
 	}
 
 	async get<T>(path: string, params?: Record<string, QueryValue>): Promise<T> {
@@ -25,7 +27,8 @@ export class AdminApiClient {
 		const response = await fetch(path, {
 			method,
 			headers: {
-				'x-admin-token': this.token,
+				...(this.adminToken ? { 'x-admin-token': this.adminToken } : {}),
+				...(this.sessionToken ? { 'x-session-token': this.sessionToken } : {}),
 				...(body === undefined ? {} : { 'content-type': 'application/json' })
 			},
 			body: body === undefined ? undefined : JSON.stringify(body)

@@ -23,6 +23,8 @@ export type Subject = Timestamped & {
 	type: SubjectType;
 	state: ResourceState;
 	notes: string | null;
+	login_username: string | null;
+	is_admin: boolean;
 };
 
 export type Project = Timestamped & {
@@ -76,6 +78,29 @@ export type ModelEntitlement = Timestamped & {
 	project_id: string | null;
 	gateway_key_id: string | null;
 	model_alias_id: string;
+	state: ResourceState;
+};
+
+export type Team = Timestamped & {
+	id: string;
+	name: string;
+	state: ResourceState;
+	notes: string | null;
+	is_builtin: boolean;
+};
+
+export type TeamMembership = Timestamped & {
+	id: string;
+	team_id: string;
+	subject_id: string;
+	role: string;
+	state: ResourceState;
+};
+
+export type ModelTeamGrant = Timestamped & {
+	id: string;
+	model_alias_id: string;
+	team_id: string;
 	state: ResourceState;
 };
 
@@ -163,6 +188,24 @@ export type Diagnostics = {
 	litellm_version: string;
 };
 
+export type AuthProfile = {
+	subject: Subject;
+	teams: string[];
+	models: string[];
+	keys: GatewayKey[];
+};
+
+export type LoginResponse = {
+	session_token: string;
+	session_expires_at: string;
+	profile: AuthProfile;
+};
+
+export type RegisterResponse = LoginResponse & {
+	gateway_key: GatewayKeyCreateResponse;
+	project: Project;
+};
+
 export type ApiError = {
 	status: number;
 	message: string;
@@ -176,6 +219,9 @@ export type Inventory = {
 	keys: GatewayKey[];
 	models: ModelAlias[];
 	entitlements: ModelEntitlement[];
+	teams: Team[];
+	teamMemberships: TeamMembership[];
+	modelTeamGrants: ModelTeamGrant[];
 	upstreams: UpstreamTarget[];
 	routerConfigs: RouterCommandConfigResponse[];
 	ratePolicies: RatePolicy[];

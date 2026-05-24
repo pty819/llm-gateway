@@ -7,7 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from llm_gateway.core.config import Settings, get_settings
 from llm_gateway.db.session import get_session
 from llm_gateway.services.rate_limit import redis_client
-from llm_gateway.services.security import AuthContext, authenticate_gateway_key
+from llm_gateway.services.security import (
+    AuthContext,
+    UserSessionContext,
+    authenticate_gateway_key,
+    authenticate_user_session,
+    ensure_builtin_identity,
+)
 
 
 async def session_dep() -> AsyncGenerator[AsyncSession, None]:
@@ -58,9 +64,41 @@ async def auth_dep(
 
 
 async def admin_dep(
+    request: Request,
     x_admin_token: str | None = Header(default=None),
+    x_session_token: str | None = Header(default=None),
     settings: Settings = Depends(settings_dep),
+    session: AsyncSession = Depends(session_dep),
 ) -> None:
     if not x_admin_token or x_admin_token != settings.admin_token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_admin_token")
+        raw_token = x_session_token or _session_token(request)
+        if not raw_token:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_admin_token")
+        await ensure_builtin_identity(session, settings)
+        await session.commit()
+        context = await authenticate_user_session(session, raw_token)
+        if not context or not context.subject.is_admin:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_admin_token")
 
+
+async def user_session_dep(
+    request: Request,
+    session: AsyncSession = Depends(session_dep),
+) -> UserSessionContext:
+    raw_token = _session_token(request)
+    if not raw_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing_session_token")
+    context = await authenticate_user_session(session, raw_token)
+    if not context:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_session_token")
+    return context
+
+
+def _session_token(request: Request) -> str | None:
+    explicit = request.headers.get("x-session-token")
+    if explicit:
+        return explicit.strip()
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer sess-"):
+        return auth[7:].strip()
+    return None

@@ -60,6 +60,9 @@ class Subject(TimestampMixin, table=True):
     type: SubjectType = Field(index=True)
     state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
     notes: str | None = None
+    login_username: str | None = Field(default=None, index=True, unique=True)
+    password_hash: str | None = None
+    is_admin: bool = Field(default=False, index=True)
 
 
 class Project(TimestampMixin, table=True):
@@ -118,6 +121,46 @@ class ModelEntitlement(TimestampMixin, table=True):
     project_id: UUID | None = Field(default=None, foreign_key="projects.id", index=True)
     gateway_key_id: UUID | None = Field(default=None, foreign_key="gateway_keys.id", index=True)
     model_alias_id: UUID = Field(foreign_key="model_aliases.id", index=True)
+    state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
+
+
+class Team(TimestampMixin, table=True):
+    __tablename__ = "teams"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    name: str = Field(index=True, unique=True)
+    state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
+    notes: str | None = None
+    is_builtin: bool = Field(default=False, index=True)
+
+
+class TeamMembership(TimestampMixin, table=True):
+    __tablename__ = "team_memberships"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    team_id: UUID = Field(foreign_key="teams.id", index=True)
+    subject_id: UUID = Field(foreign_key="subjects.id", index=True)
+    role: str = "member"
+    state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
+
+
+class ModelTeamGrant(TimestampMixin, table=True):
+    __tablename__ = "model_team_grants"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    model_alias_id: UUID = Field(foreign_key="model_aliases.id", index=True)
+    team_id: UUID = Field(foreign_key="teams.id", index=True)
+    state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
+
+
+class UserSession(TimestampMixin, table=True):
+    __tablename__ = "user_sessions"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    subject_id: UUID = Field(foreign_key="subjects.id", index=True)
+    token_prefix: str = Field(index=True)
+    token_hash: str
+    expires_at: datetime = Field(index=True)
     state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
 
 
