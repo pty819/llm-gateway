@@ -16,3 +16,4 @@ wheels/
 
 # Local agent/runtime state
 .omc/
+.omx/
