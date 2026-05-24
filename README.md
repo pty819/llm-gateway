@@ -156,45 +156,71 @@ Built-in behavior:
 
 ## Add A vLLM Router Aggregated Model
 
-If you have five same-model vLLM endpoints, first create a model alias in the admin console:
+Suppose you have 3 vLLM endpoints all serving `qwen3` with API key `qwne4`:
 
 ```text
-Alias: qwen-coder
-Upstream model: actual-vllm-model-name
-LiteLLM model: openai/actual-vllm-model-name
+http://gpu-a:8000
+http://gpu-b:8000
+http://gpu-c:8000
 ```
 
-Then open Router Commands and create a config:
+### Step 1 — Create A Model Alias (Models page)
+
+This is the name clients will use in their requests.
 
 ```text
-Policy: consistent_hash
-Host: 0.0.0.0
-Port: 18001
+Alias:              qwen3
+Upstream model:     qwen3
+LiteLLM model:      openai/qwen3
+```
+
+### Step 2 — Generate A Router Command (Router Commands page)
+
+```text
+Model:   qwen3
+Name:    qwen3-pool
+Policy:  consistent_hash
+Port:    18001
+
 Worker URLs:
 http://gpu-a:8000
 http://gpu-b:8000
 http://gpu-c:8000
-http://gpu-d:8000
-http://gpu-e:8000
 ```
 
 The UI generates a command like:
 
 ```bash
-vllm-router --worker-urls http://gpu-a:8000 http://gpu-b:8000 http://gpu-c:8000 http://gpu-d:8000 http://gpu-e:8000 --policy consistent_hash --host 0.0.0.0 --port 18001
+vllm-router --worker-urls http://gpu-a:8000 http://gpu-b:8000 http://gpu-c:8000 --policy consistent_hash --host 0.0.0.0 --port 18001
 ```
 
-Run that router process yourself for this MVP. Then create one upstream:
+Run this command on a machine that can reach all 3 endpoints. The router listens on `:18001` and load-balances across the pool. The gateway does not start or supervise this process for you in the MVP.
+
+### Step 3 — Create An Upstream (Upstreams page)
+
+Point it at the **router**, not individual endpoints.
 
 ```text
-Model: qwen-coder
-Name: qwen-coder-router
-Base URL: http://router-host:18001/v1
+Model:       qwen3
+Name:        qwen3-router
+Base URL:    http://router-host:18001/v1
+API Key:     qwne4
 Health path: /models
-API key value: router key if required
 ```
 
-Finally grant `qwen-coder` to the relevant teams.
+Use the **Check** button to verify the router is reachable.
+
+### Step 4 — Grant Access (Teams or Entitlements page)
+
+Team-based model access (recommended):
+
+1. Create teams such as `research`, `infra`.
+2. Add users to teams.
+3. Grant `qwen3` to the teams that need it.
+
+Or use Entitlements to grant access to a specific subject, project, or individual gateway key.
+
+A user's available models are the union of all active grants from all their active teams plus any direct entitlements.
 
 ## Client Usage
 
@@ -205,7 +231,7 @@ curl http://gateway-host:18080/v1/chat/completions \
   -H "Authorization: Bearer <gateway-key>" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "qwen-coder",
+    "model": "qwen3",
     "messages": [{"role": "user", "content": "hello"}],
     "stream": true
   }'
@@ -218,7 +244,7 @@ curl http://gateway-host:18080/v1/messages \
   -H "x-api-key: <gateway-key>" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "qwen-coder",
+    "model": "qwen3",
     "max_tokens": 128,
     "messages": [{"role": "user", "content": "hello"}]
   }'
