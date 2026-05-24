@@ -16,7 +16,6 @@ from llm_gateway.services.security import (
     create_gateway_key,
     create_registered_user,
     create_user_session,
-    ensure_builtin_identity,
     normalize_username,
     revoke_user_session,
     verify_password,
@@ -46,7 +45,6 @@ async def register(
     session: AsyncSession = Depends(session_dep),
     settings: Settings = Depends(settings_dep),
 ):
-    await ensure_builtin_identity(session, settings)
     try:
         subject, project, key, raw_key = await create_registered_user(
             session,
@@ -84,7 +82,6 @@ async def login(
     session: AsyncSession = Depends(session_dep),
     settings: Settings = Depends(settings_dep),
 ):
-    await ensure_builtin_identity(session, settings)
     username = normalize_username(payload.username)
     result = await session.execute(select(Subject).where(Subject.login_username == username))
     subject = result.scalar_one_or_none()
