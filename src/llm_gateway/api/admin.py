@@ -15,6 +15,8 @@ from llm_gateway.db.models import (
     ModelAlias,
     ModelEntitlement,
     Project,
+    ProjectMembership,
+    RatePolicy,
     RequestFact,
     RequestOutcome,
     ResourceState,
@@ -26,6 +28,7 @@ from llm_gateway.db.models import (
     utcnow,
 )
 from llm_gateway.services.facts import record_audit_event
+from llm_gateway.services.litellm_client import check_upstream_health
 from llm_gateway.services.router_command import render_router_command
 from llm_gateway.services.security import create_gateway_key
 
@@ -43,6 +46,23 @@ class ProjectCreate(BaseModel):
     name: str
     owner_subject_id: UUID | None = None
     notes: str | None = None
+
+
+class SubjectUpdate(BaseModel):
+    name: str | None = None
+    notes: str | None = None
+
+
+class ProjectUpdate(BaseModel):
+    name: str | None = None
+    owner_subject_id: UUID | None = None
+    notes: str | None = None
+
+
+class ProjectMembershipCreate(BaseModel):
+    project_id: UUID
+    subject_id: UUID
+    role: str = "member"
 
 
 class GatewayKeyCreate(BaseModel):
@@ -63,6 +83,18 @@ class ModelAliasCreate(BaseModel):
     notes: str | None = None
 
 
+class ModelAliasUpdate(BaseModel):
+    upstream_model_name: str | None = None
+    litellm_model: str | None = None
+    supports_streaming: bool | None = None
+    supports_tools: bool | None = None
+    supports_reasoning: bool | None = None
+    ip_policy_mode: IPPolicyMode | None = None
+    ip_allowlist_cidrs: list[str] | None = None
+    notes: str | None = None
+    state: ResourceState | None = None
+
+
 class ModelEntitlementCreate(BaseModel):
     model_alias_id: UUID
     subject_id: UUID | None = None
@@ -80,6 +112,16 @@ class UpstreamTargetCreate(BaseModel):
     extra_headers: dict[str, str] = Field(default_factory=dict)
 
 
+class UpstreamTargetUpdate(BaseModel):
+    name: str | None = None
+    base_url: str | None = None
+    api_key_ref: str | None = None
+    api_key_value: str | None = None
+    health_path: str | None = None
+    extra_headers: dict[str, str] | None = None
+    state: ResourceState | None = None
+
+
 class RouterCommandConfigCreate(BaseModel):
     model_alias_id: UUID
     name: str
@@ -88,6 +130,28 @@ class RouterCommandConfigCreate(BaseModel):
     host: str = "0.0.0.0"
     port: int
     extra_args: dict[str, Any] = Field(default_factory=dict)
+
+
+class RouterCommandConfigUpdate(BaseModel):
+    name: str | None = None
+    worker_urls: list[str] | None = None
+    policy: RouterPolicy | None = None
+    host: str | None = None
+    port: int | None = None
+    extra_args: dict[str, Any] | None = None
+
+
+class RatePolicyCreate(BaseModel):
+    scope: str
+    scope_id: UUID
+    requests_per_minute: int | None = None
+    concurrency_limit: int | None = None
+
+
+class RatePolicyUpdate(BaseModel):
+    requests_per_minute: int | None = None
+    concurrency_limit: int | None = None
+    state: ResourceState | None = None
 
 
 class StatePatch(BaseModel):
@@ -115,6 +179,16 @@ async def create_subject(payload: SubjectCreate, session: AsyncSession = Depends
 async def list_subjects(session: AsyncSession = Depends(session_dep)):
     result = await session.execute(select(Subject).order_by(Subject.created_at.desc()))
     return result.scalars().all()
+
+
+@router.patch("/subjects/{subject_id}")
+async def update_subject(subject_id: UUID, payload: SubjectUpdate, session: AsyncSession = Depends(session_dep)):
+    subject = await _get_or_404(session, Subject, subject_id)
+    _apply_patch(subject, payload)
+    await _audit_update(session, "subject.update", "subject", subject.id, payload)
+    await session.commit()
+    await session.refresh(subject)
+    return subject
 
 
 @router.patch("/subjects/{subject_id}/state")
@@ -154,6 +228,43 @@ async def create_project(payload: ProjectCreate, session: AsyncSession = Depends
 @router.get("/projects")
 async def list_projects(session: AsyncSession = Depends(session_dep)):
     result = await session.execute(select(Project).order_by(Project.created_at.desc()))
+    return result.scalars().all()
+
+
+@router.patch("/projects/{project_id}")
+async def update_project(project_id: UUID, payload: ProjectUpdate, session: AsyncSession = Depends(session_dep)):
+    project = await _get_or_404(session, Project, project_id)
+    if payload.owner_subject_id:
+        await _get_or_404(session, Subject, payload.owner_subject_id)
+    _apply_patch(project, payload)
+    await _audit_update(session, "project.update", "project", project.id, payload)
+    await session.commit()
+    await session.refresh(project)
+    return project
+
+
+@router.post("/project-memberships")
+async def create_project_membership(payload: ProjectMembershipCreate, session: AsyncSession = Depends(session_dep)):
+    await _get_or_404(session, Project, payload.project_id)
+    await _get_or_404(session, Subject, payload.subject_id)
+    membership = ProjectMembership(**payload.model_dump())
+    session.add(membership)
+    await session.flush()
+    await record_audit_event(
+        session,
+        action="project_membership.create",
+        resource_type="project_membership",
+        resource_id=membership.id,
+        outcome="success",
+    )
+    await session.commit()
+    await session.refresh(membership)
+    return membership
+
+
+@router.get("/project-memberships")
+async def list_project_memberships(session: AsyncSession = Depends(session_dep)):
+    result = await session.execute(select(ProjectMembership).order_by(ProjectMembership.created_at.desc()))
     return result.scalars().all()
 
 
@@ -227,6 +338,20 @@ async def list_model_aliases(session: AsyncSession = Depends(session_dep)):
     return result.scalars().all()
 
 
+@router.patch("/model-aliases/{model_alias_id}")
+async def update_model_alias(
+    model_alias_id: UUID,
+    payload: ModelAliasUpdate,
+    session: AsyncSession = Depends(session_dep),
+):
+    model_alias = await _get_or_404(session, ModelAlias, model_alias_id)
+    _apply_patch(model_alias, payload)
+    await _audit_update(session, "model_alias.update", "model_alias", model_alias.id, payload)
+    await session.commit()
+    await session.refresh(model_alias)
+    return model_alias
+
+
 @router.post("/model-entitlements")
 async def create_model_entitlement(payload: ModelEntitlementCreate, session: AsyncSession = Depends(session_dep)):
     if not any([payload.subject_id, payload.project_id, payload.gateway_key_id]):
@@ -250,6 +375,27 @@ async def create_model_entitlement(payload: ModelEntitlementCreate, session: Asy
 async def list_model_entitlements(session: AsyncSession = Depends(session_dep)):
     result = await session.execute(select(ModelEntitlement).order_by(ModelEntitlement.created_at.desc()))
     return result.scalars().all()
+
+
+@router.patch("/model-entitlements/{entitlement_id}/state")
+async def set_model_entitlement_state(
+    entitlement_id: UUID,
+    payload: StatePatch,
+    session: AsyncSession = Depends(session_dep),
+):
+    entitlement = await _get_or_404(session, ModelEntitlement, entitlement_id)
+    entitlement.state = payload.state
+    entitlement.updated_at = utcnow()
+    await record_audit_event(
+        session,
+        action="model_entitlement.set_state",
+        resource_type="model_entitlement",
+        resource_id=entitlement.id,
+        outcome="success",
+        detail={"state": payload.state.value},
+    )
+    await session.commit()
+    return entitlement
 
 
 @router.post("/upstreams")
@@ -277,6 +423,27 @@ async def list_upstreams(session: AsyncSession = Depends(session_dep)):
     return [_redact_upstream(item) for item in result.scalars().all()]
 
 
+@router.get("/upstreams/{upstream_id}/health")
+async def upstream_health(upstream_id: UUID, session: AsyncSession = Depends(session_dep)):
+    upstream = await _get_or_404(session, UpstreamTarget, upstream_id)
+    result = await check_upstream_health(upstream)
+    return {"upstream": _redact_upstream(upstream), "health": result}
+
+
+@router.patch("/upstreams/{upstream_id}")
+async def update_upstream(
+    upstream_id: UUID,
+    payload: UpstreamTargetUpdate,
+    session: AsyncSession = Depends(session_dep),
+):
+    upstream = await _get_or_404(session, UpstreamTarget, upstream_id)
+    _apply_patch(upstream, payload)
+    await _audit_update(session, "upstream.update", "upstream_target", upstream.id, payload)
+    await session.commit()
+    await session.refresh(upstream)
+    return _redact_upstream(upstream)
+
+
 @router.post("/router-command-configs")
 async def create_router_command_config(payload: RouterCommandConfigCreate, session: AsyncSession = Depends(session_dep)):
     await _get_or_404(session, ModelAlias, payload.model_alias_id)
@@ -301,6 +468,58 @@ async def list_router_command_configs(session: AsyncSession = Depends(session_de
     result = await session.execute(select(RouterCommandConfig).order_by(RouterCommandConfig.created_at.desc()))
     configs = result.scalars().all()
     return [{"config": config, "command": render_router_command(config)} for config in configs]
+
+
+@router.patch("/router-command-configs/{config_id}")
+async def update_router_command_config(
+    config_id: UUID,
+    payload: RouterCommandConfigUpdate,
+    session: AsyncSession = Depends(session_dep),
+):
+    config = await _get_or_404(session, RouterCommandConfig, config_id)
+    _apply_patch(config, payload)
+    await _audit_update(session, "router_command_config.update", "router_command_config", config.id, payload)
+    await session.commit()
+    await session.refresh(config)
+    return {"config": config, "command": render_router_command(config)}
+
+
+@router.post("/rate-policies")
+async def create_rate_policy(payload: RatePolicyCreate, session: AsyncSession = Depends(session_dep)):
+    policy = RatePolicy(**payload.model_dump())
+    session.add(policy)
+    await session.flush()
+    await record_audit_event(
+        session,
+        action="rate_policy.create",
+        resource_type="rate_policy",
+        resource_id=policy.id,
+        outcome="success",
+        detail={"scope": policy.scope, "scope_id": str(policy.scope_id)},
+    )
+    await session.commit()
+    await session.refresh(policy)
+    return policy
+
+
+@router.get("/rate-policies")
+async def list_rate_policies(session: AsyncSession = Depends(session_dep)):
+    result = await session.execute(select(RatePolicy).order_by(RatePolicy.created_at.desc()))
+    return result.scalars().all()
+
+
+@router.patch("/rate-policies/{policy_id}")
+async def update_rate_policy(
+    policy_id: UUID,
+    payload: RatePolicyUpdate,
+    session: AsyncSession = Depends(session_dep),
+):
+    policy = await _get_or_404(session, RatePolicy, policy_id)
+    _apply_patch(policy, payload)
+    await _audit_update(session, "rate_policy.update", "rate_policy", policy.id, payload)
+    await session.commit()
+    await session.refresh(policy)
+    return policy
 
 
 @router.get("/usage/summary")
@@ -360,3 +579,26 @@ def _redact_gateway_key(key: GatewayKey) -> dict[str, Any]:
     data = key.model_dump()
     data["key_hash"] = None
     return data
+
+
+def _apply_patch(target, payload: BaseModel) -> None:
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(target, key, value)
+    target.updated_at = utcnow()
+
+
+async def _audit_update(
+    session: AsyncSession,
+    action: str,
+    resource_type: str,
+    resource_id: UUID,
+    payload: BaseModel,
+) -> None:
+    await record_audit_event(
+        session,
+        action=action,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        outcome="success",
+        detail=payload.model_dump(exclude_unset=True, mode="json"),
+    )

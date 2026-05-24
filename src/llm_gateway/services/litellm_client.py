@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
 
+import httpx
 import litellm
 from litellm import acompletion, anthropic_messages
 
@@ -20,6 +21,21 @@ litellm.use_chat_completions_url_for_anthropic_messages = True
 
 def _api_key(upstream: UpstreamTarget) -> str | None:
     return upstream.api_key_value or upstream.api_key_ref
+
+
+async def check_upstream_health(upstream: UpstreamTarget, timeout_seconds: float = 10.0) -> dict[str, Any]:
+    url = upstream.base_url.rstrip("/") + "/" + upstream.health_path.lstrip("/")
+    headers = dict(upstream.extra_headers or {})
+    api_key = _api_key(upstream)
+    if api_key:
+        headers.setdefault("Authorization", f"Bearer {api_key}")
+    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+        response = await client.get(url, headers=headers)
+    return {
+        "ok": 200 <= response.status_code < 500,
+        "status_code": response.status_code,
+        "url": url,
+    }
 
 
 def _to_plain(value: Any) -> Any:
