@@ -10,6 +10,7 @@
 		Route,
 		Shield,
 		Terminal,
+		Trophy,
 		UserPlus,
 		Users
 	} from 'lucide-svelte';
@@ -27,7 +28,8 @@
 		ResourceState,
 		RouterPolicy,
 		SubjectType,
-		UpstreamHealth
+		UpstreamHealth,
+		UsageRankingRow
 	} from '$lib/api/types';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import JsonViewer from '$lib/components/JsonViewer.svelte';
@@ -63,6 +65,7 @@
 		{ id: 'entitlements', label: 'Entitlements', group: 'Policy', icon: Shield },
 		{ id: 'rate', label: 'Rate Limits', group: 'Policy', icon: Gauge },
 		{ id: 'usage', label: 'Usage', group: 'Evidence', icon: Activity },
+		{ id: 'ranking', label: 'Ranking', group: 'Evidence', icon: Trophy },
 		{ id: 'audit', label: 'Audit', group: 'Evidence', icon: Shield }
 	];
 
@@ -84,6 +87,8 @@
 	let healthResults = $state<Record<string, UpstreamHealth | string>>({});
 	let usageStart = $state('');
 	let usageEnd = $state('');
+	let rankingLimit = $state(20);
+	let rankingModel = $state('');
 	let auditDetail = $state<AuditEvent | null>(null);
 
 	let subjectForm = $state({ name: '', type: 'user' as SubjectType, notes: '' });
@@ -272,6 +277,7 @@
 				routerConfigs,
 				ratePolicies,
 				usage,
+				ranking,
 				audit
 			] = await Promise.all([
 				api.get<Inventory['subjects']>('/admin/subjects'),
@@ -287,6 +293,7 @@
 				api.get<Inventory['routerConfigs']>('/admin/router-command-configs'),
 				api.get<Inventory['ratePolicies']>('/admin/rate-policies'),
 				api.get<Inventory['usage']>('/admin/usage/summary', { start: usageStart, end: usageEnd }),
+				api.get<Inventory['ranking']>('/admin/usage/ranking', { start: usageStart, end: usageEnd, model: rankingModel, limit: rankingLimit }),
 				api.get<Inventory['audit']>('/admin/audit-events')
 			]);
 			inventory = {
@@ -303,6 +310,7 @@
 				routerConfigs,
 				ratePolicies,
 				usage,
+				ranking,
 				audit
 			};
 		});
@@ -617,6 +625,7 @@
 			routerConfigs: [],
 			ratePolicies: [],
 			usage: [],
+			ranking: [],
 			audit: []
 		};
 	}
@@ -937,6 +946,10 @@
 					<section class="panel"><div class="form-grid"><label>Start<input type="datetime-local" bind:value={usageStart} /></label><label>End<input type="datetime-local" bind:value={usageEnd} /></label><label>Model filter<select bind:value={modelFilter}><option value="">All</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>Subject filter<select bind:value={subjectFilter}><option value="">All</option>{#each inventory.subjects as subject}<option value={subject.id}>{subject.name}</option>{/each}</select></label><label>Project filter<select bind:value={projectFilter}><option value="">All</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><button type="button" onclick={refreshAll}>Query</button></div></section>
 					<div class="grid"><div class="metric"><span>Requests</span><strong>{totals.requests}</strong></div><div class="metric"><span>Total tokens</span><strong>{totals.total}</strong></div><div class="metric"><span>Success</span><strong>{totals.success}</strong></div><div class="metric"><span>Failure</span><strong>{totals.failure}</strong></div></div>
 					<section class="panel"><h2>Summary rows</h2>{@render UsageTable(usageRows, subjectLabel, projectLabel)}</section>
+				{:else if active === 'ranking'}
+					{@render PageTitle('Ranking', 'Top users by token usage within a time range.')}
+					<section class="panel"><div class="form-grid"><label>Start<input type="datetime-local" bind:value={usageStart} /></label><label>End<input type="datetime-local" bind:value={usageEnd} /></label><label>Model filter<select bind:value={rankingModel}><option value="">All</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>Top N<input type="number" bind:value={rankingLimit} min="1" max="100" /></label><button type="button" onclick={refreshAll}>Query</button></div></section>
+					<section class="panel"><div class="table-wrap"><table><thead><tr><th>#</th><th>User</th><th>Requests</th><th>Prompt tokens</th><th>Completion tokens</th><th>Total tokens</th></tr></thead><tbody>{#each inventory.ranking as row, i}<tr><td>{i + 1}</td><td>{row.login_username || row.subject_name}</td><td>{row.request_count}</td><td>{row.prompt_tokens}</td><td>{row.completion_tokens}</td><td>{row.total_tokens}</td></tr>{:else}<tr><td colspan="6" class="empty">No usage data.</td></tr>{/each}</tbody></table></div></section>
 				{:else if active === 'audit'}
 					{@render PageTitle('Audit', 'Recent privileged changes and security-significant events.')}
 					<section class="panel">{@render AuditTable(inventory.audit, (event) => (auditDetail = event))}</section>

@@ -163,6 +163,16 @@ export type UsageSummaryRow = {
 	failure_count: number;
 };
 
+export type UsageRankingRow = {
+	subject_id: string;
+	login_username: string | null;
+	subject_name: string;
+	request_count: number;
+	prompt_tokens: number;
+	completion_tokens: number;
+	total_tokens: number;
+};
+
 export type AuditEvent = {
 	id: string;
 	created_at: string;
@@ -226,5 +236,6 @@ export type Inventory = {
 	routerConfigs: RouterCommandConfigResponse[];
 	ratePolicies: RatePolicy[];
 	usage: UsageSummaryRow[];
+	ranking: UsageRankingRow[];
 	audit: AuditEvent[];
 };

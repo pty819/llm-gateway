@@ -723,6 +723,42 @@ async def usage_summary(
     return [dict(row) for row in rows]
 
 
+@router.get("/usage/ranking")
+async def usage_ranking(
+    start: datetime | None = None,
+    end: datetime | None = None,
+    model: str | None = None,
+    limit: int = 20,
+    session: AsyncSession = Depends(session_dep),
+):
+    filters = [RequestFact.subject_id.isnot(None)]
+    if start:
+        filters.append(RequestFact.started_at >= start)
+    if end:
+        filters.append(RequestFact.started_at < end)
+    if model:
+        filters.append(RequestFact.model_alias == model)
+
+    stmt = (
+        select(
+            RequestFact.subject_id,
+            Subject.login_username,
+            Subject.name.label("subject_name"),
+            func.count(RequestFact.id).label("request_count"),
+            func.coalesce(func.sum(RequestFact.prompt_tokens), 0).label("prompt_tokens"),
+            func.coalesce(func.sum(RequestFact.completion_tokens), 0).label("completion_tokens"),
+            func.coalesce(func.sum(RequestFact.total_tokens), 0).label("total_tokens"),
+        )
+        .join(Subject, RequestFact.subject_id == Subject.id)
+        .where(*filters)
+        .group_by(RequestFact.subject_id, Subject.login_username, Subject.name)
+        .order_by(func.coalesce(func.sum(RequestFact.total_tokens), 0).desc())
+        .limit(limit)
+    )
+    rows = (await session.execute(stmt)).mappings().all()
+    return [dict(row) for row in rows]
+
+
 @router.get("/audit-events")
 async def list_audit_events(session: AsyncSession = Depends(session_dep)):
     result = await session.execute(select(AuditEvent).order_by(AuditEvent.created_at.desc()).limit(200))
