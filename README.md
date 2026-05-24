@@ -148,6 +148,40 @@ user -> team1 + team3
 usable models -> a, b, c, e
 ```
 
+## Admin Team Management
+
+All team operations are on the **Teams** page in the admin console.
+
+### Create A Team
+
+Fill in **Name** and optional **Notes**, click **Create team**.
+
+Built-in teams (`guest`, `admin`) are created automatically and marked with a **builtin** badge. `guest` is the default team every self-registered user joins. `admin` always has access to every model.
+
+### Add A User To A Team
+
+Under **Add user to team**, select the team and the subject, set a role (defaults to `member`), click **Add membership**.
+
+The user immediately gains access to all models granted to that team. No restart required.
+
+### Remove A User From A Team
+
+In the **Memberships** table, click **Disable** on the membership row. The user loses access to that team's models on the next request. Click **Activate** to restore.
+
+### Grant A Model To A Team
+
+Under **Grant model to team**, select the model alias and the team, click **Grant model**.
+
+Every active member of that team can now call this model. Revoking works the same way: disable the grant row.
+
+### Typical Onboarding Workflow
+
+1. User self-registers on the frontend. They join `guest` automatically and receive a gateway key.
+2. Admin creates a team (e.g. `research`) on the Teams page.
+3. Admin adds the user to `research`.
+4. Admin grants models (e.g. `qwen3`, `deepseek`) to `research`.
+5. User logs in, sees the new models on their dashboard, and can call them immediately.
+
 Built-in behavior:
 
 - self-registered users join `guest`
