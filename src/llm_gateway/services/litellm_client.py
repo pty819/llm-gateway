@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 import litellm
-from litellm import acompletion, anthropic_messages
+from litellm import acompletion, anthropic_messages, aresponses
 
 from llm_gateway.db.models import ModelAlias, UpstreamTarget
 from llm_gateway.services.facts import extract_usage_dict
@@ -125,6 +125,53 @@ def _usage_from_response(response: Any) -> dict[str, Any] | None:
     if isinstance(response, dict):
         return extract_usage_dict(response.get("usage"))
     return extract_usage_dict(getattr(response, "usage", None))
+
+
+async def responses_once(
+    *,
+    model_alias: ModelAlias,
+    upstream: UpstreamTarget,
+    body: dict[str, Any],
+) -> LiteLLMCallResult:
+    payload = dict(body)
+    payload["model"] = model_alias.litellm_model
+    response = await aresponses(
+        api_base=upstream.base_url,
+        api_key=_api_key(upstream),
+        **payload,
+    )
+    usage = _usage_from_responses_api(response)
+    return LiteLLMCallResult(response=response, usage=usage)
+
+
+async def responses_stream(
+    *,
+    model_alias: ModelAlias,
+    upstream: UpstreamTarget,
+    body: dict[str, Any],
+) -> AsyncGenerator[tuple[str, dict[str, Any] | None], None]:
+    payload = dict(body)
+    payload["model"] = model_alias.litellm_model
+    payload["stream"] = True
+    stream = await aresponses(
+        api_base=upstream.base_url,
+        api_key=_api_key(upstream),
+        **payload,
+    )
+    async for chunk in stream:
+        usage = _usage_from_responses_api(chunk)
+        yield f"data: {_json_dumps(_to_plain(chunk))}\n\n", usage
+        await asyncio.sleep(0)
+    yield "data: [DONE]\n\n", None
+
+
+def _usage_from_responses_api(response: Any) -> dict[str, Any] | None:
+    if isinstance(response, dict):
+        return extract_usage_dict(response.get("usage"))
+    usage = getattr(response, "usage", None)
+    if usage is not None:
+        return extract_usage_dict(usage)
+    return None
 
 
 def _json_dumps(value: Any) -> str:

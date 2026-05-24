@@ -17,6 +17,8 @@ from llm_gateway.services.litellm_client import (
     anthropic_messages_stream,
     completion_once,
     completion_stream,
+    responses_once,
+    responses_stream,
 )
 from llm_gateway.services.policy import PolicyDenied, list_accessible_model_aliases, resolve_route_context
 from llm_gateway.services.rate_limit import (
@@ -215,6 +217,154 @@ async def _stream_openai_response(
             started_at=started_at,
             ended_at=utcnow(),
             endpoint_family=EndpointFamily.OPENAI_CHAT,
+            subject_id=auth.subject.id,
+            subject_type=auth.subject.type,
+            project_id=auth.project.id,
+            model_alias=route.model_alias.alias,
+            upstream_target_id=route.upstream.id,
+            streaming=True,
+            outcome=outcome,
+            usage=usage,
+            error_class=type(error).__name__ if error else None,
+            error_detail=str(error) if error else None,
+        )
+        await session.commit()
+
+
+@router.post("/v1/responses")
+async def openai_responses(
+    request: Request,
+    session: AsyncSession = Depends(session_dep),
+    redis: Redis = Depends(redis_dep),
+    settings: Settings = Depends(settings_dep),
+    client_ip: str = Depends(client_ip_dep),
+):
+    body = await request.json()
+    streaming = bool(body.get("stream"))
+    started_at = utcnow()
+    request_id = request.headers.get("x-request-id") or str(uuid4())
+    try:
+        auth = await _authenticate_proxy_request(request, session)
+    except HTTPException as exc:
+        await _record_unauthenticated_request(
+            session=session,
+            request_id=request_id,
+            started_at=started_at,
+            endpoint_family=EndpointFamily.OPENAI_RESPONSES,
+            model_alias=body.get("model") if isinstance(body.get("model"), str) else None,
+            exc=exc,
+        )
+        raise
+    try:
+        route, rate_policy = await _prepare(session=session, redis=redis, settings=settings, auth=auth, body=body, client_ip=client_ip)
+    except HTTPException as exc:
+        await _record_rejected_request(
+            session=session,
+            request_id=request_id,
+            started_at=started_at,
+            endpoint_family=EndpointFamily.OPENAI_RESPONSES,
+            auth=auth,
+            model_alias=body.get("model") if isinstance(body.get("model"), str) else None,
+            outcome=_outcome_for_http_exception(exc),
+            exc=exc,
+        )
+        raise
+
+    if streaming:
+        return StreamingResponse(
+            _stream_responses(
+                session=session,
+                redis=redis,
+                settings=settings,
+                auth=auth,
+                route=route,
+                concurrency_limit=rate_policy.concurrency_limit,
+                body=body,
+                started_at=started_at,
+                request_id=request_id,
+            ),
+            media_type="text/event-stream",
+        )
+
+    try:
+        async with concurrency_slot(
+            redis,
+            key_id=auth.key.id,
+            limit=rate_policy.concurrency_limit,
+        ):
+            result = await responses_once(model_alias=route.model_alias, upstream=route.upstream, body=body)
+        await record_request_fact(
+            session,
+            request_id=request_id,
+            started_at=started_at,
+            ended_at=utcnow(),
+            endpoint_family=EndpointFamily.OPENAI_RESPONSES,
+            subject_id=auth.subject.id,
+            subject_type=auth.subject.type,
+            project_id=auth.project.id,
+            model_alias=route.model_alias.alias,
+            upstream_target_id=route.upstream.id,
+            streaming=False,
+            outcome=RequestOutcome.SUCCESS,
+            usage=result.usage,
+        )
+        await session.commit()
+        return JSONResponse(jsonable_encoder(_plain(result.response)))
+    except Exception as exc:
+        await _record_failure(
+            session=session,
+            request_id=request_id,
+            started_at=started_at,
+            endpoint_family=EndpointFamily.OPENAI_RESPONSES,
+            auth=auth,
+            model_alias=route.model_alias.alias,
+            upstream_target_id=route.upstream.id,
+            streaming=False,
+            outcome=RequestOutcome.ADAPTER_FAILURE,
+            exc=exc,
+        )
+        return _error_response(status.HTTP_502_BAD_GATEWAY, "adapter_failure", exc)
+
+
+async def _stream_responses(
+    *,
+    session: AsyncSession,
+    redis: Redis,
+    settings: Settings,
+    auth: AuthContext,
+    route,
+    concurrency_limit: int,
+    body: dict[str, Any],
+    started_at: datetime,
+    request_id: str,
+):
+    usage = None
+    outcome = RequestOutcome.SUCCESS
+    error: Exception | None = None
+    try:
+        async with concurrency_slot(
+            redis,
+            key_id=auth.key.id,
+            limit=concurrency_limit,
+        ):
+            async for event, event_usage in responses_stream(
+                model_alias=route.model_alias,
+                upstream=route.upstream,
+                body=body,
+            ):
+                usage = event_usage or usage
+                yield event
+    except Exception as exc:
+        outcome = RequestOutcome.ADAPTER_FAILURE
+        error = exc
+        yield f"event: error\ndata: {str(exc)}\n\n"
+    finally:
+        await record_request_fact(
+            session,
+            request_id=request_id,
+            started_at=started_at,
+            ended_at=utcnow(),
+            endpoint_family=EndpointFamily.OPENAI_RESPONSES,
             subject_id=auth.subject.id,
             subject_type=auth.subject.type,
             project_id=auth.project.id,

@@ -10,6 +10,7 @@ FastAPI + Svelte enterprise LLM gateway for internal model serving. It sits in f
 - Team-based model permissions: a user can use the union of models granted to all of their active teams.
 - Admin account and admin console for users, teams, model grants, keys, upstreams, rate limits, router commands, usage, and audit.
 - OpenAI-compatible `/v1/chat/completions` proxy.
+- OpenAI-compatible `/v1/responses` proxy (for Codex and other Responses API clients).
 - Anthropic-compatible `/v1/messages` proxy through LiteLLM.
 - `/v1/models` returns only the models the caller can use.
 - Model-level IP allowlists.
@@ -188,6 +189,109 @@ Built-in behavior:
 - bootstrap admin joins `admin`
 - every model alias is automatically granted to `admin`
 
+## Entitlements (Direct Model Access)
+
+Entitlements are an alternative to team-based grants for giving a specific entity access to a model. They are useful when you need per-user, per-key, or per-project control that does not fit the team model.
+
+Manage entitlements on the **Entitlements** page in the admin console.
+
+### Create An Entitlement
+
+1. Select a **Model** (model alias).
+2. Select a **Scope**: `project`, `subject`, or `key`.
+3. Select the **Target** (the specific project, user, or key).
+4. Click **Grant access**.
+
+### Scope Semantics
+
+| Scope | Effect |
+|-------|--------|
+| `project` | All keys owned by this project can use the model. |
+| `subject` | All keys owned by this user can use the model. |
+| `key` | Only this specific gateway key can use the model. |
+
+### Enable / Disable
+
+Each entitlement row has an Enable/Disable toggle. Disabling immediately revokes access without deleting the record. Re-enable at any time.
+
+### Entitlements vs Team Grants
+
+- **Team grants** are the recommended default — add a user to a team and grant models to the team.
+- **Entitlements** are for one-off or exception cases — e.g. giving a visiting collaborator access to a single model without creating a whole team.
+
+Both paths are OR'd together: a user can use a model if they have a direct entitlement OR a team grant.
+
+## Rate Limits
+
+Rate limits control how many requests per minute (RPM) and how many concurrent requests a caller can make. They are enforced via Redis counters.
+
+Manage rate policies on the **Rate Limits** page in the admin console.
+
+### Default Values
+
+When no custom rate policy exists, the environment defaults apply:
+
+| Setting | Default | Environment Variable |
+|---------|---------|----------------------|
+| RPM | 120 | `LLM_GATEWAY_DEFAULT_RPM` |
+| Concurrency | 8 | `LLM_GATEWAY_DEFAULT_CONCURRENCY` |
+
+Override in `.env.local`:
+
+```bash
+LLM_GATEWAY_DEFAULT_RPM=200
+LLM_GATEWAY_DEFAULT_CONCURRENCY=16
+```
+
+### Create A Rate Policy
+
+On the **Rate Limits** page:
+
+1. Select **Scope**: `key`, `subject`, or `project`.
+2. Select the **Target** (the specific key, user, or project).
+3. Enter **RPM** (requests per minute) — leave empty to inherit default.
+4. Enter **Concurrency** (max simultaneous requests) — leave empty to inherit default.
+5. Click **Create policy**.
+
+### Scope Semantics
+
+| Scope | Effect |
+|-------|--------|
+| `key` | Limit applies to a single gateway key. |
+| `subject` | Limit applies to all keys owned by this user. |
+| `project` | Limit applies to all keys in this project. |
+
+### Resolution Rules
+
+When a request arrives, the gateway resolves the effective limit by combining all matching active policies:
+
+1. Start with the environment defaults.
+2. Look up active policies matching the request's key, subject, and project.
+3. Take the **minimum** across all matching policies and defaults.
+
+This means the most restrictive policy always wins. Example:
+
+```text
+default RPM:           120
+key-level RPM:         60
+subject-level RPM:     100
+effective RPM:         min(120, 60, 100) = 60
+```
+
+### Enable / Disable
+
+Each rate policy row has an Enable/Disable toggle. Disabling makes it inactive (the default or other policies take over) without deleting the record.
+
+### Typical Rate Limit Scenarios
+
+| Scenario | How |
+|----------|-----|
+| All users get default limits | Do nothing — defaults apply automatically. |
+| Heavy user needs more headroom | Create a `subject` policy with higher RPM and concurrency. |
+| Shared key needs throttling | Create a `key` policy with lower RPM and concurrency. |
+| Cap usage for a project | Create a `project` policy to limit total project throughput. |
+| Temporary burst access | Create a policy, then disable it when no longer needed. |
+
 ## Add A vLLM Router Aggregated Model
 
 Suppose you have 3 vLLM endpoints all serving `qwen3` with API key `qwne4`:
@@ -258,7 +362,7 @@ A user's available models are the union of all active grants from all their acti
 
 ## Client Usage
 
-OpenAI-compatible clients:
+OpenAI Chat Completions:
 
 ```bash
 curl http://gateway-host:18080/v1/chat/completions \
@@ -271,7 +375,20 @@ curl http://gateway-host:18080/v1/chat/completions \
   }'
 ```
 
-Anthropic-compatible clients:
+OpenAI Responses API (for Codex and similar clients):
+
+```bash
+curl http://gateway-host:18080/v1/responses \
+  -H "Authorization: Bearer <gateway-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen3",
+    "input": "hello",
+    "stream": true
+  }'
+```
+
+Anthropic Messages:
 
 ```bash
 curl http://gateway-host:18080/v1/messages \
