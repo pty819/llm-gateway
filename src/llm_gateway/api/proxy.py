@@ -369,6 +369,44 @@ async def _stream_anthropic_response(
         await session.commit()
 
 
+@router.get("/v1/models")
+async def list_models(
+    request: Request,
+    session: AsyncSession = Depends(session_dep),
+):
+    raw_key = bearer_token(request)
+    auth = await authenticate_gateway_key(session, raw_key)
+    if not auth:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_gateway_key")
+
+    from sqlalchemy import distinct, or_, select
+
+    from llm_gateway.db.models import ModelAlias, ModelEntitlement, ResourceState
+
+    stmt = (
+        select(distinct(ModelAlias.alias))
+        .join(ModelEntitlement, ModelEntitlement.model_alias_id == ModelAlias.id)
+        .where(
+            ModelAlias.state == ResourceState.ACTIVE,
+            ModelEntitlement.state == ResourceState.ACTIVE,
+            or_(
+                ModelEntitlement.gateway_key_id == auth.key.id,
+                ModelEntitlement.subject_id == auth.subject.id,
+                ModelEntitlement.project_id == auth.project.id,
+            ),
+        )
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    now = int(utcnow().timestamp())
+    return {
+        "object": "list",
+        "data": [
+            {"id": alias, "object": "model", "created": now, "owned_by": "gateway"}
+            for alias in rows
+        ],
+    }
+
+
 async def _record_failure(
     *,
     session: AsyncSession,

@@ -19,6 +19,31 @@ def _auth_headers(raw_key: str, request_id: str | None = None) -> dict[str, str]
     return headers
 
 
+async def test_list_models_returns_entitled_aliases(client, gateway_fixture):
+    response = await client.get(
+        "/v1/models",
+        headers=_auth_headers(gateway_fixture.raw_key),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["object"] == "list"
+    ids = [m["id"] for m in payload["data"]]
+    assert gateway_fixture.model_alias in ids
+    for m in payload["data"]:
+        assert m["object"] == "model"
+        assert "created" in m
+        assert m["owned_by"] == "gateway"
+
+
+async def test_list_models_rejects_invalid_key(client):
+    response = await client.get(
+        "/v1/models",
+        headers={"Authorization": "Bearer gw-invalid"},
+    )
+    assert response.status_code == 401
+
+
 async def test_health_and_admin_diagnostics(client):
     from llm_gateway.core.config import get_settings
 
