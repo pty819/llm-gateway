@@ -531,7 +531,10 @@
 			<section class="content">
 				<div class="panel" style="max-width: 560px;">
 					<h1>Connect to gateway admin</h1>
-					<p>Enter the backend admin token. The console will verify it with diagnostics before loading resources.</p>
+					<p>
+						Enter the backend admin token. Local default: <code>dev-admin-token</code> unless
+						<code>LLM_GATEWAY_ADMIN_TOKEN</code> is set.
+					</p>
 					{#if ready}
 						<div class="actions">
 							<StateBadge value={ready.ok ? 'ready' : 'not_ready'} tone={ready.ok ? 'success' : 'danger'} />
