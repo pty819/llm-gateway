@@ -1,17 +1,18 @@
 """Isolated connectivity check for PostgreSQL and Redis."""
 import asyncio
+import os
 import socket
 import sys
 import time
 
-PG_HOST = "192.168.1.21"
-PG_PORT = 5432
-PG_USER = "postgres"
-PG_PASS = "0prV2JrQ1uJSBHZ2"
-PG_DB = "postgres"
+PG_HOST = os.environ.get("LLM_GATEWAY_CHECK_PG_HOST", "localhost")
+PG_PORT = int(os.environ.get("LLM_GATEWAY_CHECK_PG_PORT", "5432"))
+PG_USER = os.environ.get("LLM_GATEWAY_CHECK_PG_USER", "postgres")
+PG_PASS = os.environ.get("LLM_GATEWAY_CHECK_PG_PASSWORD", "")
+PG_DB = os.environ.get("LLM_GATEWAY_CHECK_PG_DATABASE", "postgres")
 
-REDIS_HOST = "192.168.1.21"
-REDIS_PORT = 6379
+REDIS_HOST = os.environ.get("LLM_GATEWAY_CHECK_REDIS_HOST", "localhost")
+REDIS_PORT = int(os.environ.get("LLM_GATEWAY_CHECK_REDIS_PORT", "6379"))
 
 
 def check_tcp(host: str, port: int, name: str) -> bool:
@@ -35,6 +36,9 @@ async def check_asyncpg() -> bool:
         import asyncpg
     except ImportError:
         print("  [PostgreSQL] asyncpg not installed, skipping")
+        return False
+    if not PG_PASS:
+        print("  [PostgreSQL] LLM_GATEWAY_CHECK_PG_PASSWORD is not set")
         return False
     url = f"postgresql://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{PG_DB}"
     try:

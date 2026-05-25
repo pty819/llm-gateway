@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -728,7 +728,7 @@ async def usage_ranking(
     start: datetime | None = None,
     end: datetime | None = None,
     model: str | None = None,
-    limit: int = 20,
+    limit: int = Query(default=20, ge=1, le=100),
     session: AsyncSession = Depends(session_dep),
 ):
     filters = [RequestFact.subject_id.isnot(None)]
@@ -739,6 +739,13 @@ async def usage_ranking(
     if model:
         filters.append(RequestFact.model_alias == model)
 
+    effective_total_tokens = func.coalesce(
+        RequestFact.total_tokens,
+        func.coalesce(RequestFact.prompt_tokens, 0) + func.coalesce(RequestFact.completion_tokens, 0),
+        0,
+    )
+    total_tokens = func.coalesce(func.sum(effective_total_tokens), 0).label("total_tokens")
+
     stmt = (
         select(
             RequestFact.subject_id,
@@ -747,12 +754,12 @@ async def usage_ranking(
             func.count(RequestFact.id).label("request_count"),
             func.coalesce(func.sum(RequestFact.prompt_tokens), 0).label("prompt_tokens"),
             func.coalesce(func.sum(RequestFact.completion_tokens), 0).label("completion_tokens"),
-            func.coalesce(func.sum(RequestFact.total_tokens), 0).label("total_tokens"),
+            total_tokens,
         )
         .join(Subject, RequestFact.subject_id == Subject.id)
         .where(*filters)
         .group_by(RequestFact.subject_id, Subject.login_username, Subject.name)
-        .order_by(func.coalesce(func.sum(RequestFact.total_tokens), 0).desc())
+        .order_by(total_tokens.desc(), func.count(RequestFact.id).desc())
         .limit(limit)
     )
     rows = (await session.execute(stmt)).mappings().all()

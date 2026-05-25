@@ -176,6 +176,48 @@ async def test_admin_session_can_manage_team_union_permissions(client):
     assert set(granted_aliases).issubset(ids)
 
 
+async def test_usage_ranking_falls_back_to_prompt_plus_completion_tokens_and_bounds_limit(client, gateway_fixture):
+    from llm_gateway.core.config import get_settings
+    from llm_gateway.db.models import RequestFact, utcnow
+    from llm_gateway.db.session import AsyncSessionLocal
+
+    request_id = f"pytest-ranking-{uuid4()}"
+    async with AsyncSessionLocal() as session:
+        session.add(
+            RequestFact(
+                request_id=request_id,
+                started_at=utcnow(),
+                ended_at=utcnow(),
+                endpoint_family=EndpointFamily.OPENAI_CHAT,
+                subject_id=gateway_fixture.subject_id,
+                subject_type=None,
+                project_id=gateway_fixture.project_id,
+                model_alias=gateway_fixture.model_alias,
+                upstream_target_id=None,
+                streaming=False,
+                outcome=RequestOutcome.SUCCESS,
+                prompt_tokens=11,
+                completion_tokens=7,
+                total_tokens=None,
+            )
+        )
+        await session.commit()
+
+    headers = {"x-admin-token": get_settings().admin_token}
+    ranking = await client.get(
+        "/admin/usage/ranking",
+        headers=headers,
+        params={"model": gateway_fixture.model_alias, "limit": 1},
+    )
+    assert ranking.status_code == 200, ranking.text
+    payload = ranking.json()
+    assert payload[0]["subject_id"] == str(gateway_fixture.subject_id)
+    assert payload[0]["total_tokens"] >= 18
+
+    invalid_limit = await client.get("/admin/usage/ranking", headers=headers, params={"limit": 0})
+    assert invalid_limit.status_code == 422
+
+
 async def test_openai_chat_completion_uses_real_upstream_and_records_usage(client, gateway_fixture):
     request_id = f"pytest-openai-{uuid4()}"
     response = await client.post(
