@@ -36,11 +36,8 @@
 	import CommandBlock from '$lib/components/CommandBlock.svelte';
 	import SecretOnceDialog from '$lib/components/SecretOnceDialog.svelte';
 	import {
-		clearStoredAdminToken,
 		clearStoredSessionToken,
-		loadStoredAdminToken,
 		loadStoredSessionToken,
-		persistAdminToken,
 		persistSessionToken
 	} from '$lib/state/admin-token';
 	import { parseCidrList, parseJsonObject, validateCidrList, validateHttpUrl, validatePort } from '$lib/validators';
@@ -72,9 +69,7 @@
 	const navGroups = Array.from(new Set(sections.map((section) => section.group)));
 
 	let active = $state('overview');
-	let adminToken = $state('');
 	let sessionToken = $state('');
-	let rememberToken = $state(false);
 	let rememberSession = $state(true);
 	let connected = $state(false);
 	let loading = $state(false);
@@ -92,7 +87,7 @@
 	let auditDetail = $state<AuditEvent | null>(null);
 
 	let subjectForm = $state({ name: '', type: 'user' as SubjectType, notes: '' });
-	let loginForm = $state({ username: 'admin', password: 'dev-admin-password' });
+	let loginForm = $state({ username: '', password: '' });
 	let registerForm = $state({ username: '', password: '' });
 	let ownKeyForm = $state({ name: 'personal-key' });
 	let projectForm = $state({ name: '', owner_subject_id: '', notes: '' });
@@ -138,8 +133,8 @@
 		extra_args: '{}'
 	});
 
-	const api = $derived(new AdminApiClient(adminToken, sessionToken));
-	const isAdmin = $derived(Boolean(adminToken) || Boolean(profile?.subject.is_admin));
+	const api = $derived(new AdminApiClient('', sessionToken));
+	const isAdmin = $derived(Boolean(profile?.subject.is_admin));
 	const usageRows = $derived(
 		inventory.usage.filter((row) => {
 			if (modelFilter && row.model_alias !== modelFilter) return false;
@@ -168,13 +163,10 @@
 	);
 
 	onMount(() => {
-		adminToken = loadStoredAdminToken();
 		sessionToken = loadStoredSessionToken();
-		rememberToken = Boolean(adminToken);
 		rememberSession = Boolean(sessionToken);
 		void refreshReady();
 		if (sessionToken) void loadProfile(true);
-		else if (adminToken) void connect(true);
 	});
 
 	async function loginAccount(fromStorage = false) {
@@ -224,25 +216,10 @@
 		});
 	}
 
-	async function connect(fromStorage = false) {
-		if (!adminToken.trim()) {
-			pageError = 'Admin token is required.';
-			return;
-		}
-		await run(async () => {
-			diagnostics = await api.get<Diagnostics>('/admin/diagnostics');
-			connected = true;
-			if (!fromStorage) persistAdminToken(adminToken, rememberToken);
-			await refreshAll();
-		});
-	}
-
 	function disconnect() {
-		adminToken = '';
 		sessionToken = '';
 		profile = null;
 		connected = false;
-		clearStoredAdminToken();
 		clearStoredSessionToken();
 		inventory = emptyInventory();
 	}
@@ -690,7 +667,7 @@
 				<div class="split" style="align-items: start;">
 				<div class="panel">
 					<h1>Sign in</h1>
-					<p>Use your gateway account. Local admin default: <code>admin</code> / <code>dev-admin-password</code>.</p>
+					<p>Use your gateway account.</p>
 					{#if ready}
 						<div class="actions">
 							<StateBadge value={ready.ok ? 'ready' : 'not_ready'} tone={ready.ok ? 'success' : 'danger'} />
@@ -723,13 +700,6 @@
 					<div class="actions">
 						<button type="button" onclick={registerAccount} disabled={loading}>Create account</button>
 					</div>
-				</div>
-				<div class="panel">
-					<h1>Admin token fallback</h1>
-					<p>For local operations only. Default: <code>dev-admin-token</code> unless overridden.</p>
-					<label>Admin token<input type="password" bind:value={adminToken} placeholder="x-admin-token" onkeydown={(event) => event.key === 'Enter' && connect()} /></label>
-					<label style="display: flex; grid-template-columns: auto 1fr; align-items: center;"><input type="checkbox" bind:checked={rememberToken} style="width: auto;" />Remember token</label>
-					<div class="actions"><button class="secondary" type="button" onclick={() => connect()} disabled={loading}>Connect as operator</button></div>
 				</div>
 				</div>
 			</section>
