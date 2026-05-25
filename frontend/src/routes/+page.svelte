@@ -400,6 +400,29 @@
 		});
 	}
 
+	async function editModelCidrs(model: Inventory['models'][number]) {
+		const current = model.ip_allowlist_cidrs.join('\n');
+		const value = window.prompt(
+			'CIDR allowlist. Leave empty to allow all IPs.',
+			model.ip_policy_mode === 'allowlist' ? current : ''
+		);
+		if (value === null) return;
+		const trimmed = value.trim();
+		if (!trimmed) {
+			await patchModel(model.id, { ip_policy_mode: 'all_pass', ip_allowlist_cidrs: [] });
+			return;
+		}
+		const cidrCheck = validateCidrList(trimmed);
+		if (!cidrCheck.ok) {
+			pageError = cidrCheck.message ?? 'Invalid CIDR list';
+			return;
+		}
+		await patchModel(model.id, {
+			ip_policy_mode: 'allowlist',
+			ip_allowlist_cidrs: parseCidrList(trimmed)
+		});
+	}
+
 	async function createUpstream() {
 		const urlCheck = validateHttpUrl(upstreamForm.base_url, 'Base URL');
 		if (!urlCheck.ok) {
@@ -823,7 +846,7 @@
 											<td><StateBadge value={model.state} /></td>
 											<td>{model.ip_policy_mode}<br /><span class="muted">{model.ip_allowlist_cidrs.join(', ') || 'no CIDRs'}</span></td>
 											<td><StateBadge value={model.supports_streaming} tone="accent" /> <StateBadge value={model.supports_tools} tone="accent" /> <StateBadge value={model.supports_reasoning} tone="accent" /></td>
-											<td class="actions"><button class="secondary" type="button" onclick={() => patchModel(model.id, { state: model.state === 'active' ? 'disabled' : 'active' })}>{model.state === 'active' ? 'Disable' : 'Activate'}</button></td>
+											<td class="actions"><button class="secondary" type="button" onclick={() => editModelCidrs(model)}>Edit CIDRs</button><button class="secondary" type="button" onclick={() => patchModel(model.id, { state: model.state === 'active' ? 'disabled' : 'active' })}>{model.state === 'active' ? 'Disable' : 'Activate'}</button></td>
 										</tr>
 									{/each}
 								</tbody>
