@@ -28,8 +28,7 @@
 		ResourceState,
 		RouterPolicy,
 		SubjectType,
-		UpstreamHealth,
-		UsageRankingRow
+		UpstreamHealth
 	} from '$lib/api/types';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import JsonViewer from '$lib/components/JsonViewer.svelte';
@@ -50,20 +49,20 @@
 	};
 
 	const sections: Section[] = [
-		{ id: 'overview', label: 'Overview', group: 'Operate', icon: Activity },
-		{ id: 'diagnostics', label: 'Diagnostics', group: 'Operate', icon: Database },
-		{ id: 'models', label: 'Models', group: 'Configure', icon: BookOpen },
-		{ id: 'upstreams', label: 'Upstreams', group: 'Configure', icon: Network },
-		{ id: 'router', label: 'Router Commands', group: 'Configure', icon: Terminal },
-		{ id: 'subjects', label: 'Subjects', group: 'Access', icon: Users },
-		{ id: 'projects', label: 'Projects', group: 'Access', icon: Route },
-		{ id: 'keys', label: 'Gateway Keys', group: 'Access', icon: KeyRound },
-		{ id: 'teams', label: 'Teams', group: 'Access', icon: UserPlus },
-		{ id: 'entitlements', label: 'Entitlements', group: 'Policy', icon: Shield },
-		{ id: 'rate', label: 'Rate Limits', group: 'Policy', icon: Gauge },
-		{ id: 'usage', label: 'Usage', group: 'Evidence', icon: Activity },
-		{ id: 'ranking', label: 'Ranking', group: 'Evidence', icon: Trophy },
-		{ id: 'audit', label: 'Audit', group: 'Evidence', icon: Shield }
+		{ id: 'overview', label: '总览', group: '运行', icon: Activity },
+		{ id: 'diagnostics', label: '诊断', group: '运行', icon: Database },
+		{ id: 'models', label: '模型', group: '配置', icon: BookOpen },
+		{ id: 'upstreams', label: '上游', group: '配置', icon: Network },
+		{ id: 'router', label: 'Router 命令', group: '配置', icon: Terminal },
+		{ id: 'subjects', label: '用户', group: '访问', icon: Users },
+		{ id: 'projects', label: '项目', group: '访问', icon: Route },
+		{ id: 'keys', label: '网关密钥', group: '访问', icon: KeyRound },
+		{ id: 'teams', label: '权限组', group: '访问', icon: UserPlus },
+		{ id: 'entitlements', label: '旧授权', group: '策略', icon: Shield },
+		{ id: 'rate', label: '限流', group: '策略', icon: Gauge },
+		{ id: 'usage', label: '用量', group: '证据', icon: Activity },
+		{ id: 'ranking', label: '排行榜', group: '证据', icon: Trophy },
+		{ id: 'audit', label: '审计', group: '证据', icon: Shield }
 	];
 
 	const navGroups = Array.from(new Set(sections.map((section) => section.group)));
@@ -85,11 +84,12 @@
 	let rankingLimit = $state(20);
 	let rankingModel = $state('');
 	let auditDetail = $state<AuditEvent | null>(null);
+	let generatedRouterCommand = $state('');
 
 	let subjectForm = $state({ name: '', type: 'user' as SubjectType, notes: '' });
 	let loginForm = $state({ username: '', password: '' });
 	let registerForm = $state({ username: '', password: '' });
-	let ownKeyForm = $state({ name: 'personal-key' });
+	let ownKeyForm = $state({ name: '个人密钥' });
 	let projectForm = $state({ name: '', owner_subject_id: '', notes: '' });
 	let membershipForm = $state({ project_id: '', subject_id: '', role: 'member' });
 	let teamForm = $state({ name: '', notes: '' });
@@ -125,7 +125,6 @@
 	});
 	let routerForm = $state({
 		model_alias_id: '',
-		name: '',
 		worker_urls: '',
 		policy: 'consistent_hash' as RouterPolicy,
 		host: '0.0.0.0',
@@ -171,7 +170,7 @@
 
 	async function loginAccount(fromStorage = false) {
 		if (!loginForm.username.trim() || !loginForm.password) {
-			pageError = 'Username and password are required.';
+			pageError = '请输入用户名和密码。';
 			return;
 		}
 		await run(async () => {
@@ -190,7 +189,7 @@
 
 	async function registerAccount() {
 		if (!registerForm.username.trim() || registerForm.password.length < 8) {
-			pageError = 'Username is required and password must be at least 8 characters.';
+			pageError = '请输入用户名，密码至少 8 个字符。';
 			return;
 		}
 		await run(async () => {
@@ -251,7 +250,6 @@
 				teamMemberships,
 				modelTeamGrants,
 				upstreams,
-				routerConfigs,
 				ratePolicies,
 				usage,
 				ranking,
@@ -267,7 +265,6 @@
 				api.get<Inventory['teamMemberships']>('/admin/team-memberships'),
 				api.get<Inventory['modelTeamGrants']>('/admin/model-team-grants'),
 				api.get<Inventory['upstreams']>('/admin/upstreams'),
-				api.get<Inventory['routerConfigs']>('/admin/router-command-configs'),
 				api.get<Inventory['ratePolicies']>('/admin/rate-policies'),
 				api.get<Inventory['usage']>('/admin/usage/summary', { start: usageStart, end: usageEnd }),
 				api.get<Inventory['ranking']>('/admin/usage/ranking', { start: usageStart, end: usageEnd, model: rankingModel, limit: rankingLimit }),
@@ -284,7 +281,7 @@
 				teamMemberships,
 				modelTeamGrants,
 				upstreams,
-				routerConfigs,
+				routerConfigs: [],
 				ratePolicies,
 				usage,
 				ranking,
@@ -351,7 +348,7 @@
 		await run(async () => {
 			const response = await api.post<GatewayKeyCreateResponse>('/auth/keys', clean({ ...ownKeyForm }));
 			plaintextKey = response.plaintext_key;
-			ownKeyForm = { name: 'personal-key' };
+			ownKeyForm = { name: '个人密钥' };
 			profile = await api.get<AuthProfile>('/auth/me');
 		});
 	}
@@ -366,7 +363,7 @@
 	async function createModel() {
 		const cidrCheck = modelForm.ip_policy_mode === 'allowlist' ? validateCidrList(modelForm.ip_allowlist_cidrs) : { ok: true };
 		if (!cidrCheck.ok) {
-			pageError = cidrCheck.message ?? 'Invalid CIDR list';
+			pageError = cidrCheck.message ?? 'CIDR 列表不合法';
 			return;
 		}
 		await run(async () => {
@@ -403,7 +400,7 @@
 	async function editModelCidrs(model: Inventory['models'][number]) {
 		const current = model.ip_allowlist_cidrs.join('\n');
 		const value = window.prompt(
-			'CIDR allowlist. Leave empty to allow all IPs.',
+			'CIDR 白名单。留空表示允许所有 IP。',
 			model.ip_policy_mode === 'allowlist' ? current : ''
 		);
 		if (value === null) return;
@@ -414,7 +411,7 @@
 		}
 		const cidrCheck = validateCidrList(trimmed);
 		if (!cidrCheck.ok) {
-			pageError = cidrCheck.message ?? 'Invalid CIDR list';
+			pageError = cidrCheck.message ?? 'CIDR 列表不合法';
 			return;
 		}
 		await patchModel(model.id, {
@@ -424,13 +421,13 @@
 	}
 
 	async function createUpstream() {
-		const urlCheck = validateHttpUrl(upstreamForm.base_url, 'Base URL');
+		const urlCheck = validateHttpUrl(upstreamForm.base_url, '上游地址');
 		if (!urlCheck.ok) {
-			pageError = urlCheck.message ?? 'Invalid URL';
+			pageError = urlCheck.message ?? '上游地址不合法';
 			return;
 		}
 		if (!upstreamForm.health_path.startsWith('/')) {
-			pageError = 'Health path must start with /.';
+			pageError = '健康检查路径必须以 / 开头。';
 			return;
 		}
 		await run(async () => {
@@ -438,7 +435,7 @@
 				'/admin/upstreams',
 				clean({
 					...upstreamForm,
-					extra_headers: parseJsonObject(upstreamForm.extra_headers, 'Extra headers')
+					extra_headers: parseJsonObject(upstreamForm.extra_headers, '额外请求头')
 				})
 			);
 			upstreamForm = {
@@ -462,7 +459,7 @@
 	}
 
 	async function checkUpstream(id: string) {
-		healthResults[id] = 'checking';
+		healthResults[id] = '检查中';
 		try {
 			healthResults[id] = await api.get<UpstreamHealth>(`/admin/upstreams/${id}/health`);
 		} catch (error) {
@@ -562,9 +559,11 @@
 	}
 
 	async function createRouterConfig() {
+		pageError = '';
+		generatedRouterCommand = '';
 		const portCheck = validatePort(Number(routerForm.port));
 		if (!portCheck.ok) {
-			pageError = portCheck.message ?? 'Invalid port';
+			pageError = portCheck.message ?? '端口不合法';
 			return;
 		}
 		const worker_urls = routerForm.worker_urls
@@ -572,30 +571,61 @@
 			.map((item) => item.trim())
 			.filter(Boolean);
 		if (!worker_urls.length || worker_urls.some((url) => !validateHttpUrl(url, 'Worker URL').ok)) {
-			pageError = 'Every worker URL must start with http:// or https://.';
+			pageError = '每个 Worker URL 都必须以 http:// 或 https:// 开头。';
 			return;
 		}
-		await run(async () => {
-			await api.post('/admin/router-command-configs', {
-				model_alias_id: routerForm.model_alias_id,
-				name: routerForm.name,
-				worker_urls,
-				policy: routerForm.policy,
-				host: routerForm.host,
-				port: Number(routerForm.port),
-				extra_args: parseJsonObject(routerForm.extra_args, 'Extra args')
-			});
-			routerForm = {
-				model_alias_id: '',
-				name: '',
-				worker_urls: '',
-				policy: 'consistent_hash',
-				host: '0.0.0.0',
-				port: 18001,
-				extra_args: '{}'
-			};
-			await refreshAll();
+		let extraArgs: Record<string, unknown>;
+		try {
+			extraArgs = parseJsonObject(routerForm.extra_args, '额外参数');
+		} catch (error) {
+			pageError = errorMessage(error);
+			return;
+		}
+		generatedRouterCommand = renderRouterCommand({
+			worker_urls,
+			policy: routerForm.policy,
+			host: routerForm.host,
+			port: Number(routerForm.port),
+			extra_args: extraArgs
 		});
+	}
+
+	function renderRouterCommand(config: {
+		worker_urls: string[];
+		policy: RouterPolicy;
+		host: string;
+		port: number;
+		extra_args: Record<string, unknown>;
+	}): string {
+		const args = [
+			'vllm-router',
+			'--worker-urls',
+			...config.worker_urls,
+			'--policy',
+			config.policy,
+			'--host',
+			config.host,
+			'--port',
+			String(config.port)
+		];
+		for (const key of Object.keys(config.extra_args).sort()) {
+			const value = config.extra_args[key];
+			const flag = `--${key.replaceAll('_', '-')}`;
+			if (typeof value === 'boolean') {
+				if (value) args.push(flag);
+				continue;
+			}
+			if (Array.isArray(value)) {
+				args.push(flag, ...value.map(String));
+				continue;
+			}
+			if (value !== null && value !== undefined) args.push(flag, String(value));
+		}
+		return args.map(shellQuote).join(' ');
+	}
+
+	function shellQuote(value: string): string {
+		return value && /^[A-Za-z0-9_\-./:=,]+$/.test(value) ? value : `'${value.replaceAll("'", "'\"'\"'")}'`;
 	}
 
 	async function run(fn: () => Promise<void>) {
@@ -641,11 +671,11 @@
 	function errorMessage(error: unknown): string {
 		if (isApiError(error)) return `${error.status}: ${error.message}`;
 		if (error instanceof Error) return error.message;
-		return 'Unexpected error';
+		return '发生未知错误';
 	}
 
 	function short(id: string | null | undefined): string {
-		if (!id) return 'none';
+		if (!id) return '无';
 		return id.length > 12 ? `${id.slice(0, 8)}…` : id;
 	}
 
@@ -670,6 +700,17 @@
 		return inventory.teams.find((item) => item.id === id)?.name ?? short(id);
 	}
 
+	function subjectTypeLabel(type: string): string {
+		return type === 'service' ? '服务账号' : '用户';
+	}
+
+	function scopeLabel(scope: string): string {
+		if (scope === 'subject') return '用户';
+		if (scope === 'project') return '项目';
+		if (scope === 'key') return '密钥';
+		return scope;
+	}
+
 	function scopeOptions(scope: string) {
 		if (scope === 'subject') return inventory.subjects.map((item) => ({ id: item.id, label: item.name }));
 		if (scope === 'project') return inventory.projects.map((item) => ({ id: item.id, label: item.name }));
@@ -682,46 +723,46 @@
 		<aside class="sidebar">
 			<div class="brand">
 				<strong>LLM Gateway</strong>
-				<span>Account access</span>
+				<span>账号访问</span>
 			</div>
 		</aside>
 		<main class="main">
 			<section class="content">
 				<div class="split" style="align-items: start;">
 				<div class="panel">
-					<h1>Sign in</h1>
-					<p>Use your gateway account.</p>
+					<h1>登录</h1>
+					<p>使用你的网关账号进入控制台。</p>
 					{#if ready}
 						<div class="actions">
 							<StateBadge value={ready.ok ? 'ready' : 'not_ready'} tone={ready.ok ? 'success' : 'danger'} />
-							<span class="muted">Postgres {ready.checks.postgres ? 'ok' : 'down'} · Redis {ready.checks.redis ? 'ok' : 'down'}</span>
+							<span class="muted">Postgres {ready.checks.postgres ? '正常' : '异常'} · Redis {ready.checks.redis ? '正常' : '异常'}</span>
 						</div>
 					{/if}
 					<label>
-						Username
+						用户名
 						<input bind:value={loginForm.username} autocomplete="username" />
 					</label>
 					<label>
-						Password
+						密码
 						<input type="password" bind:value={loginForm.password} autocomplete="current-password" onkeydown={(event) => event.key === 'Enter' && loginAccount()} />
 					</label>
 					<label style="display: flex; grid-template-columns: auto 1fr; align-items: center;">
 						<input type="checkbox" bind:checked={rememberSession} style="width: auto;" />
-						Remember on this device
+						在这台设备上记住登录
 					</label>
 					{#if pageError}<div class="error">{pageError}</div>{/if}
 					<div class="actions">
-						<button type="button" onclick={() => loginAccount()} disabled={loading}>{loading ? 'Signing in' : 'Sign in'}</button>
-						<button class="secondary" type="button" onclick={refreshReady}>Refresh readiness</button>
+						<button type="button" onclick={() => loginAccount()} disabled={loading}>{loading ? '登录中' : '登录'}</button>
+						<button class="secondary" type="button" onclick={refreshReady}>刷新就绪状态</button>
 					</div>
 				</div>
 				<div class="panel">
-					<h1>Register</h1>
-					<p>New users join <code>guest</code> and receive a gateway key immediately.</p>
-					<label>Username<input bind:value={registerForm.username} autocomplete="username" /></label>
-					<label>Password<input type="password" bind:value={registerForm.password} autocomplete="new-password" /></label>
+					<h1>注册</h1>
+					<p>新用户会自动加入 <code>guest</code> 权限组，并立即获得一个网关密钥。</p>
+					<label>用户名<input bind:value={registerForm.username} autocomplete="username" /></label>
+					<label>密码<input type="password" bind:value={registerForm.password} autocomplete="new-password" /></label>
 					<div class="actions">
-						<button type="button" onclick={registerAccount} disabled={loading}>Create account</button>
+						<button type="button" onclick={registerAccount} disabled={loading}>创建账号</button>
 					</div>
 				</div>
 				</div>
@@ -733,12 +774,12 @@
 		<aside class="sidebar">
 			<div class="brand">
 				<strong>LLM Gateway</strong>
-				<span>{diagnostics?.environment ?? 'environment'} · LiteLLM {diagnostics?.litellm_version ?? 'unknown'}</span>
+				<span>{diagnostics?.environment ?? '环境未知'} · LiteLLM {diagnostics?.litellm_version ?? '未知'}</span>
 			</div>
 			{#if !isAdmin}
-				<nav class="nav-group" aria-label="Account">
-					<div class="nav-group-title">Account</div>
-					<button class="active nav-button" type="button"><span>My access</span><KeyRound size={16} /></button>
+				<nav class="nav-group" aria-label="账号">
+					<div class="nav-group-title">账号</div>
+					<button class="active nav-button" type="button"><span>我的访问权限</span><KeyRound size={16} /></button>
 				</nav>
 			{:else}
 			{#each navGroups as group}
@@ -759,94 +800,94 @@
 			<div class="topbar">
 				<div class="actions">
 					<StateBadge value={ready?.ok ? 'ready' : 'not_ready'} tone={ready?.ok ? 'success' : 'danger'} />
-					<span class="muted">Postgres {ready?.checks.postgres ? 'ok' : 'down'} · Redis {ready?.checks.redis ? 'ok' : 'down'}</span>
+					<span class="muted">Postgres {ready?.checks.postgres ? '正常' : '异常'} · Redis {ready?.checks.redis ? '正常' : '异常'}</span>
 				</div>
 				<div class="actions">
-					<button class="secondary" type="button" onclick={refreshAll} disabled={loading}>{loading ? 'Working' : 'Refresh'}</button>
-					<button class="secondary" type="button" onclick={disconnect}>Sign out</button>
+					<button class="secondary" type="button" onclick={refreshAll} disabled={loading}>{loading ? '处理中' : '刷新'}</button>
+					<button class="secondary" type="button" onclick={disconnect}>退出登录</button>
 				</div>
 			</div>
 			<section class="content">
 				{#if pageError}<div class="error">{pageError}</div>{/if}
 
 				{#if !isAdmin}
-					<div class="page-header"><div><h1>My access</h1><p>{profile?.subject.login_username ?? profile?.subject.name}</p></div></div>
+					<div class="page-header"><div><h1>我的访问权限</h1><p>{profile?.subject.login_username ?? profile?.subject.name}</p></div></div>
 					<div class="grid">
-						<div class="metric"><span>Teams</span><strong>{profile?.teams.join(', ') || 'none'}</strong></div>
-						<div class="metric"><span>Models</span><strong>{profile?.models.length ?? 0}</strong></div>
-						<div class="metric"><span>Keys</span><strong>{profile?.keys.length ?? 0}</strong></div>
+						<div class="metric"><span>权限组</span><strong>{profile?.teams.join(', ') || '无'}</strong></div>
+						<div class="metric"><span>可用模型</span><strong>{profile?.models.length ?? 0}</strong></div>
+						<div class="metric"><span>密钥</span><strong>{profile?.keys.length ?? 0}</strong></div>
 					</div>
 					<section class="panel">
-						<h2>Available models</h2>
-						<div class="table-wrap"><table><thead><tr><th>Model alias</th></tr></thead><tbody>{#each profile?.models ?? [] as model}<tr><td>{model}</td></tr>{:else}<tr><td>No models granted yet.</td></tr>{/each}</tbody></table></div>
+						<h2>可用模型</h2>
+						<div class="table-wrap"><table><thead><tr><th>模型别名</th></tr></thead><tbody>{#each profile?.models ?? [] as model}<tr><td>{model}</td></tr>{:else}<tr><td>还没有可用模型。</td></tr>{/each}</tbody></table></div>
 					</section>
 					<section class="panel">
-						<h2>Gateway keys</h2>
-						<div class="form-grid"><label>New key name<input bind:value={ownKeyForm.name} /></label><button type="button" onclick={issueOwnKey}>Issue key</button></div>
-						<div class="table-wrap"><table><thead><tr><th>Name</th><th>Prefix</th><th>State</th></tr></thead><tbody>{#each profile?.keys ?? [] as key}<tr><td>{key.name}</td><td><code>{key.key_prefix}</code></td><td><StateBadge value={key.state} /></td></tr>{:else}<tr><td colspan="3">No keys yet.</td></tr>{/each}</tbody></table></div>
+						<h2>网关密钥</h2>
+						<div class="form-grid"><label>新密钥名称<input bind:value={ownKeyForm.name} /></label><button type="button" onclick={issueOwnKey}>签发密钥</button></div>
+						<div class="table-wrap"><table><thead><tr><th>名称</th><th>前缀</th><th>状态</th></tr></thead><tbody>{#each profile?.keys ?? [] as key}<tr><td>{key.name}</td><td><code>{key.key_prefix}</code></td><td><StateBadge value={key.state} /></td></tr>{:else}<tr><td colspan="3">还没有密钥。</td></tr>{/each}</tbody></table></div>
 					</section>
 				{:else if active === 'overview'}
 					<div class="page-header">
 						<div>
-							<h1>Overview</h1>
-							<p>Runtime status, recent pressure, and latest privileged changes.</p>
+							<h1>总览</h1>
+							<p>运行状态、近期推理压力和最新管理变更。</p>
 						</div>
 					</div>
 					<div class="grid">
-						<div class="metric"><span>Requests</span><strong>{totals.requests}</strong></div>
-						<div class="metric"><span>Total tokens</span><strong>{totals.total}</strong></div>
-						<div class="metric"><span>Prompt tokens</span><strong>{totals.prompt}</strong></div>
-						<div class="metric"><span>Completion tokens</span><strong>{totals.completion}</strong></div>
-						<div class="metric"><span>Success / failure</span><strong>{totals.success} / {totals.failure}</strong></div>
+						<div class="metric"><span>请求数</span><strong>{totals.requests}</strong></div>
+						<div class="metric"><span>总 token</span><strong>{totals.total}</strong></div>
+						<div class="metric"><span>输入 token</span><strong>{totals.prompt}</strong></div>
+						<div class="metric"><span>输出 token</span><strong>{totals.completion}</strong></div>
+						<div class="metric"><span>成功 / 失败</span><strong>{totals.success} / {totals.failure}</strong></div>
 					</div>
 					<div class="split">
 						<section class="panel">
-							<h2>Inventory</h2>
+							<h2>资源概览</h2>
 							<div class="grid">
-								<div class="metric"><span>Subjects</span><strong>{inventory.subjects.length}</strong></div>
-								<div class="metric"><span>Projects</span><strong>{inventory.projects.length}</strong></div>
-								<div class="metric"><span>Keys</span><strong>{inventory.keys.length}</strong></div>
-								<div class="metric"><span>Models</span><strong>{inventory.models.length}</strong></div>
+								<div class="metric"><span>用户</span><strong>{inventory.subjects.length}</strong></div>
+								<div class="metric"><span>项目</span><strong>{inventory.projects.length}</strong></div>
+								<div class="metric"><span>密钥</span><strong>{inventory.keys.length}</strong></div>
+								<div class="metric"><span>模型</span><strong>{inventory.models.length}</strong></div>
 							</div>
 						</section>
 						<section class="panel">
-							<h2>Recent audit</h2>
+							<h2>最近审计</h2>
 							{@render AuditTable(inventory.audit.slice(0, 6), (event) => (auditDetail = event))}
 						</section>
 					</div>
 				{:else if active === 'models'}
-					{@render PageTitle('Model aliases', 'Downstream model names, LiteLLM mapping, capabilities, and model-level IP policy.')}
+					{@render PageTitle('模型别名', '配置下游模型名称、LiteLLM 映射、能力标记和模型级 IP 策略。')}
 					<section class="panel">
-						<h2>Create model alias</h2>
+						<h2>创建模型别名</h2>
 						<div class="form-grid">
-							<label>Alias<input bind:value={modelForm.alias} placeholder="dev-model" /></label>
-							<label>Upstream model<input bind:value={modelForm.upstream_model_name} /></label>
-							<label>LiteLLM model<input bind:value={modelForm.litellm_model} placeholder="openai/model-name" /></label>
-							<label>IP policy<select bind:value={modelForm.ip_policy_mode}><option value="all_pass">all_pass</option><option value="allowlist">allowlist</option></select></label>
+							<label>别名<input bind:value={modelForm.alias} placeholder="dev-model" /></label>
+							<label>上游模型名<input bind:value={modelForm.upstream_model_name} /></label>
+							<label>LiteLLM 模型<input bind:value={modelForm.litellm_model} placeholder="openai/model-name" /></label>
+							<label>IP 策略<select bind:value={modelForm.ip_policy_mode}><option value="all_pass">全部放行</option><option value="allowlist">白名单</option></select></label>
 							<label>CIDRs<textarea bind:value={modelForm.ip_allowlist_cidrs} placeholder="10.0.0.0/8"></textarea></label>
-							<label>Notes<input bind:value={modelForm.notes} /></label>
+							<label>备注<input bind:value={modelForm.notes} /></label>
 						</div>
 						<div class="actions">
 							<label style="display:flex; width:auto; align-items:center;"><input type="checkbox" bind:checked={modelForm.supports_streaming} style="width:auto;" /> Streaming</label>
 							<label style="display:flex; width:auto; align-items:center;"><input type="checkbox" bind:checked={modelForm.supports_tools} style="width:auto;" /> Tools</label>
 							<label style="display:flex; width:auto; align-items:center;"><input type="checkbox" bind:checked={modelForm.supports_reasoning} style="width:auto;" /> Reasoning</label>
-							<button type="button" onclick={createModel}>Create alias</button>
+							<button type="button" onclick={createModel}>创建别名</button>
 						</div>
 					</section>
 					<section class="panel">
-						<h2>Aliases</h2>
+						<h2>模型别名</h2>
 						<div class="table-wrap">
 							<table>
-								<thead><tr><th>Alias</th><th>LiteLLM</th><th>State</th><th>IP policy</th><th>Capabilities</th><th>Actions</th></tr></thead>
+								<thead><tr><th>别名</th><th>LiteLLM</th><th>状态</th><th>IP 策略</th><th>能力</th><th>操作</th></tr></thead>
 								<tbody>
 									{#each inventory.models as model}
 										<tr>
 											<td><strong>{model.alias}</strong><br /><span class="muted">{model.upstream_model_name}</span></td>
 											<td>{model.litellm_model}</td>
 											<td><StateBadge value={model.state} /></td>
-											<td>{model.ip_policy_mode}<br /><span class="muted">{model.ip_allowlist_cidrs.join(', ') || 'no CIDRs'}</span></td>
+											<td><StateBadge value={model.ip_policy_mode} /><br /><span class="muted">{model.ip_allowlist_cidrs.join(', ') || '未配置 CIDR'}</span></td>
 											<td><StateBadge value={model.supports_streaming} tone="accent" /> <StateBadge value={model.supports_tools} tone="accent" /> <StateBadge value={model.supports_reasoning} tone="accent" /></td>
-											<td class="actions"><button class="secondary" type="button" onclick={() => editModelCidrs(model)}>Edit CIDRs</button><button class="secondary" type="button" onclick={() => patchModel(model.id, { state: model.state === 'active' ? 'disabled' : 'active' })}>{model.state === 'active' ? 'Disable' : 'Activate'}</button></td>
+											<td class="actions"><button class="secondary" type="button" onclick={() => editModelCidrs(model)}>编辑 CIDR</button><button class="secondary" type="button" onclick={() => patchModel(model.id, { state: model.state === 'active' ? 'disabled' : 'active' })}>{model.state === 'active' ? '禁用' : '启用'}</button></td>
 										</tr>
 									{/each}
 								</tbody>
@@ -854,101 +895,103 @@
 						</div>
 					</section>
 				{:else if active === 'upstreams'}
-					{@render PageTitle('Upstreams', 'OpenAI-compatible upstreams or vLLM Router pools behind model aliases.')}
+					{@render PageTitle('上游端点', '模型别名背后的 OpenAI 兼容上游或 vLLM Router 聚合池。')}
 					<section class="panel">
-						<h2>Create upstream</h2>
+						<h2>创建上游</h2>
 						<div class="form-grid">
-							<label>Model<select bind:value={upstreamForm.model_alias_id}><option value="">Select model</option>{#each inventory.models as model}<option value={model.id}>{model.alias}</option>{/each}</select></label>
-							<label>Name<input bind:value={upstreamForm.name} /></label>
+							<label>模型<select bind:value={upstreamForm.model_alias_id}><option value="">选择模型</option>{#each inventory.models as model}<option value={model.id}>{model.alias}</option>{/each}</select></label>
+							<label>名称<input bind:value={upstreamForm.name} /></label>
 							<label>Base URL<input bind:value={upstreamForm.base_url} placeholder="http://host:8000/v1" /></label>
-							<label>Health path<input bind:value={upstreamForm.health_path} /></label>
-							<label>API key ref<input bind:value={upstreamForm.api_key_ref} /></label>
-							<label>API key value<input type="password" bind:value={upstreamForm.api_key_value} /></label>
-							<label>Extra headers<textarea bind:value={upstreamForm.extra_headers}></textarea></label>
-							<button type="button" onclick={createUpstream}>Create upstream</button>
+							<label>健康检查路径<input bind:value={upstreamForm.health_path} /></label>
+							<label>API key 引用<input bind:value={upstreamForm.api_key_ref} /></label>
+							<label>API key 明文<input type="password" bind:value={upstreamForm.api_key_value} /></label>
+							<label>额外请求头<textarea bind:value={upstreamForm.extra_headers}></textarea></label>
+							<button type="button" onclick={createUpstream}>创建上游</button>
 						</div>
 					</section>
 					{@render UpstreamTable(inventory.upstreams, healthResults, modelLabel, checkUpstream, setUpstreamState)}
 				{:else if active === 'subjects'}
-					{@render PageTitle('Subjects', 'Gateway-managed human users and service accounts.')}
+					{@render PageTitle('用户', '由网关管理的人类用户和服务账号。')}
 					<section class="panel">
-						<h2>Create subject</h2>
+						<h2>创建用户</h2>
 						<div class="form-grid">
-							<label>Name<input bind:value={subjectForm.name} /></label>
-							<label>Type<select bind:value={subjectForm.type}><option value="user">user</option><option value="service">service</option></select></label>
-							<label>Notes<input bind:value={subjectForm.notes} /></label>
-							<button type="button" onclick={createSubject}>Create subject</button>
+							<label>名称<input bind:value={subjectForm.name} /></label>
+							<label>类型<select bind:value={subjectForm.type}><option value="user">用户</option><option value="service">服务账号</option></select></label>
+							<label>备注<input bind:value={subjectForm.notes} /></label>
+							<button type="button" onclick={createSubject}>创建用户</button>
 						</div>
 					</section>
 					<section class="panel">
-						<h2>Subjects</h2>
-						<div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>State</th><th>Notes</th><th>Actions</th></tr></thead><tbody>{#each inventory.subjects as subject}<tr><td>{subject.name}<br /><span class="muted">{short(subject.id)}</span></td><td>{subject.type}</td><td><StateBadge value={subject.state} /></td><td>{subject.notes}</td><td class="actions"><button class="secondary" type="button" onclick={() => patchSubject(subject.id, { notes: prompt('Notes', subject.notes ?? '') ?? subject.notes })}>Edit notes</button><button class="secondary" type="button" onclick={() => setSubjectState(subject.id, subject.state === 'active' ? 'disabled' : 'active')}>{subject.state === 'active' ? 'Disable' : 'Activate'}</button></td></tr>{/each}</tbody></table></div>
+						<h2>用户</h2>
+						<div class="table-wrap"><table><thead><tr><th>名称</th><th>类型</th><th>状态</th><th>备注</th><th>操作</th></tr></thead><tbody>{#each inventory.subjects as subject}<tr><td>{subject.name}<br /><span class="muted">{short(subject.id)}</span></td><td>{subjectTypeLabel(subject.type)}</td><td><StateBadge value={subject.state} /></td><td>{subject.notes}</td><td class="actions"><button class="secondary" type="button" onclick={() => patchSubject(subject.id, { notes: prompt('备注', subject.notes ?? '') ?? subject.notes })}>编辑备注</button><button class="secondary" type="button" onclick={() => setSubjectState(subject.id, subject.state === 'active' ? 'disabled' : 'active')}>{subject.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div>
 					</section>
 				{:else if active === 'projects'}
-					{@render PageTitle('Projects', 'Usage attribution and project membership.')}
+					{@render PageTitle('项目', '用量归因和项目成员关系。')}
 					<div class="split">
 						<section class="panel">
-							<h2>Create project</h2>
+							<h2>创建项目</h2>
 							<div class="form-grid">
-								<label>Name<input bind:value={projectForm.name} /></label>
-								<label>Owner<select bind:value={projectForm.owner_subject_id}><option value="">None</option>{#each inventory.subjects as subject}<option value={subject.id}>{subject.name}</option>{/each}</select></label>
-								<label>Notes<input bind:value={projectForm.notes} /></label>
-								<button type="button" onclick={createProject}>Create project</button>
+								<label>名称<input bind:value={projectForm.name} /></label>
+								<label>负责人<select bind:value={projectForm.owner_subject_id}><option value="">无</option>{#each inventory.subjects as subject}<option value={subject.id}>{subject.name}</option>{/each}</select></label>
+								<label>备注<input bind:value={projectForm.notes} /></label>
+								<button type="button" onclick={createProject}>创建项目</button>
 							</div>
 						</section>
 						<section class="panel">
-							<h2>Add membership</h2>
+							<h2>添加项目成员</h2>
 							<div class="form-grid">
-								<label>Project<select bind:value={membershipForm.project_id}><option value="">Project</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label>
-								<label>Subject<select bind:value={membershipForm.subject_id}><option value="">Subject</option>{#each inventory.subjects as subject}<option value={subject.id}>{subject.name}</option>{/each}</select></label>
-								<label>Role<input bind:value={membershipForm.role} /></label>
-								<button type="button" onclick={createMembership}>Add member</button>
+								<label>项目<select bind:value={membershipForm.project_id}><option value="">项目</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label>
+								<label>用户<select bind:value={membershipForm.subject_id}><option value="">用户</option>{#each inventory.subjects as subject}<option value={subject.id}>{subject.name}</option>{/each}</select></label>
+								<label>角色<input bind:value={membershipForm.role} /></label>
+								<button type="button" onclick={createMembership}>添加成员</button>
 							</div>
 						</section>
 					</div>
-					<section class="panel"><h2>Projects</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Owner</th><th>State</th><th>Notes</th><th>Actions</th></tr></thead><tbody>{#each inventory.projects as project}<tr><td>{project.name}<br /><span class="muted">{short(project.id)}</span></td><td>{subjectLabel(project.owner_subject_id)}</td><td><StateBadge value={project.state} /></td><td>{project.notes}</td><td><button class="secondary" type="button" onclick={() => patchProject(project.id, { notes: prompt('Notes', project.notes ?? '') ?? project.notes })}>Edit notes</button></td></tr>{/each}</tbody></table></div></section>
-					<section class="panel"><h2>Memberships</h2><div class="table-wrap"><table><thead><tr><th>Project</th><th>Subject</th><th>Role</th></tr></thead><tbody>{#each inventory.memberships as membership}<tr><td>{projectLabel(membership.project_id)}</td><td>{subjectLabel(membership.subject_id)}</td><td>{membership.role}</td></tr>{/each}</tbody></table></div></section>
+					<section class="panel"><h2>项目</h2><div class="table-wrap"><table><thead><tr><th>名称</th><th>负责人</th><th>状态</th><th>备注</th><th>操作</th></tr></thead><tbody>{#each inventory.projects as project}<tr><td>{project.name}<br /><span class="muted">{short(project.id)}</span></td><td>{subjectLabel(project.owner_subject_id)}</td><td><StateBadge value={project.state} /></td><td>{project.notes}</td><td><button class="secondary" type="button" onclick={() => patchProject(project.id, { notes: prompt('备注', project.notes ?? '') ?? project.notes })}>编辑备注</button></td></tr>{/each}</tbody></table></div></section>
+					<section class="panel"><h2>项目成员</h2><div class="table-wrap"><table><thead><tr><th>项目</th><th>用户</th><th>角色</th></tr></thead><tbody>{#each inventory.memberships as membership}<tr><td>{projectLabel(membership.project_id)}</td><td>{subjectLabel(membership.subject_id)}</td><td>{membership.role}</td></tr>{/each}</tbody></table></div></section>
 				{:else if active === 'keys'}
-					{@render PageTitle('Gateway keys', 'Issue, rotate, and revoke gateway-owned keys.')}
-					<section class="panel"><h2>Issue key</h2><div class="form-grid"><label>Subject<select bind:value={keyForm.subject_id}><option value="">Subject</option>{#each inventory.subjects as subject}<option value={subject.id}>{subject.name}</option>{/each}</select></label><label>Project<select bind:value={keyForm.project_id}><option value="">Project</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><label>Name<input bind:value={keyForm.name} /></label><button type="button" onclick={issueKey}>Issue key</button></div></section>
-					<section class="panel"><h2>Keys</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Prefix</th><th>Subject</th><th>Project</th><th>State</th><th>Actions</th></tr></thead><tbody>{#each inventory.keys as key}<tr><td>{key.name}</td><td><code>{key.key_prefix}</code></td><td>{subjectLabel(key.subject_id)}</td><td>{projectLabel(key.project_id)}</td><td><StateBadge value={key.state} /></td><td><button class="secondary" type="button" onclick={() => setKeyState(key.id, key.state === 'active' ? 'disabled' : 'active')}>{key.state === 'active' ? 'Disable' : 'Activate'}</button></td></tr>{/each}</tbody></table></div></section>
+					{@render PageTitle('网关密钥', '签发、轮换和停用网关管理的密钥。')}
+					<section class="panel"><h2>签发密钥</h2><div class="form-grid"><label>用户<select bind:value={keyForm.subject_id}><option value="">用户</option>{#each inventory.subjects as subject}<option value={subject.id}>{subject.name}</option>{/each}</select></label><label>项目<select bind:value={keyForm.project_id}><option value="">项目</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><label>名称<input bind:value={keyForm.name} /></label><button type="button" onclick={issueKey}>签发密钥</button></div></section>
+					<section class="panel"><h2>密钥</h2><div class="table-wrap"><table><thead><tr><th>名称</th><th>前缀</th><th>用户</th><th>项目</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each inventory.keys as key}<tr><td>{key.name}</td><td><code>{key.key_prefix}</code></td><td>{subjectLabel(key.subject_id)}</td><td>{projectLabel(key.project_id)}</td><td><StateBadge value={key.state} /></td><td><button class="secondary" type="button" onclick={() => setKeyState(key.id, key.state === 'active' ? 'disabled' : 'active')}>{key.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
 				{:else if active === 'teams'}
-					{@render PageTitle('Teams', 'Self-service users inherit model access from all active teams they belong to.')}
+					{@render PageTitle('权限组', '自助注册用户会继承其所有启用权限组的模型访问权限。')}
 					<div class="split">
-						<section class="panel"><h2>Create team</h2><div class="form-grid"><label>Name<input bind:value={teamForm.name} /></label><label>Notes<input bind:value={teamForm.notes} /></label><button type="button" onclick={createTeam}>Create team</button></div></section>
-						<section class="panel"><h2>Add user to team</h2><div class="form-grid"><label>Team<select bind:value={teamMembershipForm.team_id}><option value="">Team</option>{#each inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><label>Subject<select bind:value={teamMembershipForm.subject_id}><option value="">Subject</option>{#each inventory.subjects as subject}<option value={subject.id}>{subject.name}</option>{/each}</select></label><label>Role<input bind:value={teamMembershipForm.role} /></label><button type="button" onclick={createTeamMembership}>Add membership</button></div></section>
+						<section class="panel"><h2>创建权限组</h2><div class="form-grid"><label>名称<input bind:value={teamForm.name} /></label><label>备注<input bind:value={teamForm.notes} /></label><button type="button" onclick={createTeam}>创建权限组</button></div></section>
+						<section class="panel"><h2>把用户加入权限组</h2><div class="form-grid"><label>权限组<select bind:value={teamMembershipForm.team_id}><option value="">权限组</option>{#each inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><label>用户<select bind:value={teamMembershipForm.subject_id}><option value="">用户</option>{#each inventory.subjects as subject}<option value={subject.id}>{subject.name}</option>{/each}</select></label><label>角色<input bind:value={teamMembershipForm.role} /></label><button type="button" onclick={createTeamMembership}>添加成员</button></div></section>
 					</div>
-					<section class="panel"><h2>Grant model to team</h2><div class="form-grid"><label>Model<select bind:value={modelTeamGrantForm.model_alias_id}><option value="">Model</option>{#each inventory.models as model}<option value={model.id}>{model.alias}</option>{/each}</select></label><label>Team<select bind:value={modelTeamGrantForm.team_id}><option value="">Team</option>{#each inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><button type="button" onclick={createModelTeamGrant}>Grant model</button></div></section>
-					<section class="panel"><h2>Teams</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>State</th><th>Builtin</th><th>Notes</th><th>Actions</th></tr></thead><tbody>{#each inventory.teams as team}<tr><td>{team.name}<br /><span class="muted">{short(team.id)}</span></td><td><StateBadge value={team.state} /></td><td><StateBadge value={team.is_builtin} tone="accent" /></td><td>{team.notes}</td><td><button class="secondary" type="button" onclick={() => patchTeam(team.id, { state: team.state === 'active' ? 'disabled' : 'active' })}>{team.state === 'active' ? 'Disable' : 'Activate'}</button></td></tr>{/each}</tbody></table></div></section>
-					<section class="panel"><h2>Memberships</h2><div class="table-wrap"><table><thead><tr><th>Team</th><th>Subject</th><th>Role</th><th>State</th><th>Actions</th></tr></thead><tbody>{#each inventory.teamMemberships as membership}<tr><td>{teamLabel(membership.team_id)}</td><td>{subjectLabel(membership.subject_id)}</td><td>{membership.role}</td><td><StateBadge value={membership.state} /></td><td><button class="secondary" type="button" onclick={() => setTeamMembershipState(membership.id, membership.state === 'active' ? 'disabled' : 'active')}>{membership.state === 'active' ? 'Disable' : 'Activate'}</button></td></tr>{/each}</tbody></table></div></section>
-					<section class="panel"><h2>Model grants</h2><div class="table-wrap"><table><thead><tr><th>Model</th><th>Team</th><th>State</th><th>Actions</th></tr></thead><tbody>{#each inventory.modelTeamGrants as grant}<tr><td>{modelLabel(grant.model_alias_id)}</td><td>{teamLabel(grant.team_id)}</td><td><StateBadge value={grant.state} /></td><td><button class="secondary" type="button" onclick={() => setModelTeamGrantState(grant.id, grant.state === 'active' ? 'disabled' : 'active')}>{grant.state === 'active' ? 'Disable' : 'Activate'}</button></td></tr>{/each}</tbody></table></div></section>
+					<section class="panel"><h2>给权限组授权模型</h2><div class="form-grid"><label>模型<select bind:value={modelTeamGrantForm.model_alias_id}><option value="">模型</option>{#each inventory.models as model}<option value={model.id}>{model.alias}</option>{/each}</select></label><label>权限组<select bind:value={modelTeamGrantForm.team_id}><option value="">权限组</option>{#each inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><button type="button" onclick={createModelTeamGrant}>授权模型</button></div></section>
+					<section class="panel"><h2>权限组</h2><div class="table-wrap"><table><thead><tr><th>名称</th><th>状态</th><th>内置</th><th>备注</th><th>操作</th></tr></thead><tbody>{#each inventory.teams as team}<tr><td>{team.name}<br /><span class="muted">{short(team.id)}</span></td><td><StateBadge value={team.state} /></td><td><StateBadge value={team.is_builtin} tone="accent" /></td><td>{team.notes}</td><td><button class="secondary" type="button" onclick={() => patchTeam(team.id, { state: team.state === 'active' ? 'disabled' : 'active' })}>{team.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
+					<section class="panel"><h2>成员关系</h2><div class="table-wrap"><table><thead><tr><th>权限组</th><th>用户</th><th>角色</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each inventory.teamMemberships as membership}<tr><td>{teamLabel(membership.team_id)}</td><td>{subjectLabel(membership.subject_id)}</td><td>{membership.role}</td><td><StateBadge value={membership.state} /></td><td><button class="secondary" type="button" onclick={() => setTeamMembershipState(membership.id, membership.state === 'active' ? 'disabled' : 'active')}>{membership.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
+					<section class="panel"><h2>模型授权</h2><div class="table-wrap"><table><thead><tr><th>模型</th><th>权限组</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each inventory.modelTeamGrants as grant}<tr><td>{modelLabel(grant.model_alias_id)}</td><td>{teamLabel(grant.team_id)}</td><td><StateBadge value={grant.state} /></td><td><button class="secondary" type="button" onclick={() => setModelTeamGrantState(grant.id, grant.state === 'active' ? 'disabled' : 'active')}>{grant.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
 				{:else if active === 'entitlements'}
-					{@render PageTitle('Entitlements', 'Grant model access to projects, subjects, or individual gateway keys.')}
-					<section class="panel"><h2>Create entitlement</h2><div class="form-grid"><label>Model<select bind:value={entitlementForm.model_alias_id}><option value="">Model</option>{#each inventory.models as model}<option value={model.id}>{model.alias}</option>{/each}</select></label><label>Scope<select bind:value={entitlementForm.scope} onchange={() => (entitlementForm.scope_id = '')}><option value="project">project</option><option value="subject">subject</option><option value="key">key</option></select></label><label>Scope target<select bind:value={entitlementForm.scope_id}><option value="">Target</option>{#each scopeOptions(entitlementForm.scope) as option}<option value={option.id}>{option.label}</option>{/each}</select></label><button type="button" onclick={createEntitlement}>Grant access</button></div></section>
-					<section class="panel"><h2>Entitlements</h2><div class="table-wrap"><table><thead><tr><th>Model</th><th>Scope</th><th>State</th><th>Actions</th></tr></thead><tbody>{#each inventory.entitlements as entitlement}<tr><td>{modelLabel(entitlement.model_alias_id)}</td><td>{entitlement.project_id ? `project: ${projectLabel(entitlement.project_id)}` : entitlement.subject_id ? `subject: ${subjectLabel(entitlement.subject_id)}` : `key: ${keyLabel(entitlement.gateway_key_id)}`}</td><td><StateBadge value={entitlement.state} /></td><td><button class="secondary" type="button" onclick={() => setEntitlementState(entitlement.id, entitlement.state === 'active' ? 'disabled' : 'active')}>{entitlement.state === 'active' ? 'Disable' : 'Activate'}</button></td></tr>{/each}</tbody></table></div></section>
+					{@render PageTitle('旧授权', '给项目、用户或单个网关密钥授予模型访问权限。')}
+					<section class="panel"><h2>创建授权</h2><div class="form-grid"><label>模型<select bind:value={entitlementForm.model_alias_id}><option value="">模型</option>{#each inventory.models as model}<option value={model.id}>{model.alias}</option>{/each}</select></label><label>范围<select bind:value={entitlementForm.scope} onchange={() => (entitlementForm.scope_id = '')}><option value="project">项目</option><option value="subject">用户</option><option value="key">密钥</option></select></label><label>授权对象<select bind:value={entitlementForm.scope_id}><option value="">对象</option>{#each scopeOptions(entitlementForm.scope) as option}<option value={option.id}>{option.label}</option>{/each}</select></label><button type="button" onclick={createEntitlement}>授权访问</button></div></section>
+					<section class="panel"><h2>授权</h2><div class="table-wrap"><table><thead><tr><th>模型</th><th>范围</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each inventory.entitlements as entitlement}<tr><td>{modelLabel(entitlement.model_alias_id)}</td><td>{entitlement.project_id ? `项目: ${projectLabel(entitlement.project_id)}` : entitlement.subject_id ? `用户: ${subjectLabel(entitlement.subject_id)}` : `密钥: ${keyLabel(entitlement.gateway_key_id)}`}</td><td><StateBadge value={entitlement.state} /></td><td><button class="secondary" type="button" onclick={() => setEntitlementState(entitlement.id, entitlement.state === 'active' ? 'disabled' : 'active')}>{entitlement.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
 				{:else if active === 'rate'}
-					{@render PageTitle('Rate limits', 'DB-backed request-per-minute and active-concurrency policies.')}
-					<section class="panel"><h2>Create rate policy</h2><p>Effective limits are the minimum active policy across key, subject, project, and environment defaults.</p><div class="form-grid"><label>Scope<select bind:value={rateForm.scope} onchange={() => (rateForm.scope_id = '')}><option value="key">key</option><option value="subject">subject</option><option value="project">project</option></select></label><label>Target<select bind:value={rateForm.scope_id}><option value="">Target</option>{#each scopeOptions(rateForm.scope) as option}<option value={option.id}>{option.label}</option>{/each}</select></label><label>RPM<input type="number" min="0" bind:value={rateForm.requests_per_minute} /></label><label>Concurrency<input type="number" min="0" bind:value={rateForm.concurrency_limit} /></label><button type="button" onclick={createRatePolicy}>Create policy</button></div></section>
-					<section class="panel"><h2>Policies</h2><div class="table-wrap"><table><thead><tr><th>Scope</th><th>Target</th><th>RPM</th><th>Concurrency</th><th>State</th><th>Actions</th></tr></thead><tbody>{#each inventory.ratePolicies as policy}<tr><td>{policy.scope}</td><td>{policy.scope === 'subject' ? subjectLabel(policy.scope_id) : policy.scope === 'project' ? projectLabel(policy.scope_id) : keyLabel(policy.scope_id)}</td><td>{policy.requests_per_minute ?? 'inherit'}</td><td>{policy.concurrency_limit ?? 'inherit'}</td><td><StateBadge value={policy.state} /></td><td><button class="secondary" type="button" onclick={() => setRateState(policy.id, policy.state === 'active' ? 'disabled' : 'active')}>{policy.state === 'active' ? 'Disable' : 'Activate'}</button></td></tr>{/each}</tbody></table></div></section>
+					{@render PageTitle('限流策略', '基于数据库配置的每分钟请求数和并发限制。')}
+					<section class="panel"><h2>创建限流策略</h2><p>实际生效限制会取密钥、用户、项目和环境默认值中的最小启用策略。</p><div class="form-grid"><label>范围<select bind:value={rateForm.scope} onchange={() => (rateForm.scope_id = '')}><option value="key">密钥</option><option value="subject">用户</option><option value="project">项目</option></select></label><label>对象<select bind:value={rateForm.scope_id}><option value="">对象</option>{#each scopeOptions(rateForm.scope) as option}<option value={option.id}>{option.label}</option>{/each}</select></label><label>每分钟请求数<input type="number" min="0" bind:value={rateForm.requests_per_minute} /></label><label>并发限制<input type="number" min="0" bind:value={rateForm.concurrency_limit} /></label><button type="button" onclick={createRatePolicy}>创建策略</button></div></section>
+					<section class="panel"><h2>策略</h2><div class="table-wrap"><table><thead><tr><th>范围</th><th>对象</th><th>RPM</th><th>并发</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each inventory.ratePolicies as policy}<tr><td>{scopeLabel(policy.scope)}</td><td>{policy.scope === 'subject' ? subjectLabel(policy.scope_id) : policy.scope === 'project' ? projectLabel(policy.scope_id) : keyLabel(policy.scope_id)}</td><td>{policy.requests_per_minute ?? '继承'}</td><td>{policy.concurrency_limit ?? '继承'}</td><td><StateBadge value={policy.state} /></td><td><button class="secondary" type="button" onclick={() => setRateState(policy.id, policy.state === 'active' ? 'disabled' : 'active')}>{policy.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
 				{:else if active === 'router'}
-					{@render PageTitle('Router commands', 'Generate vLLM Router commands; MVP does not start or supervise router processes.')}
-					<section class="panel"><h2>Create command config</h2><div class="form-grid"><label>Model<select bind:value={routerForm.model_alias_id}><option value="">Model</option>{#each inventory.models as model}<option value={model.id}>{model.alias}</option>{/each}</select></label><label>Name<input bind:value={routerForm.name} /></label><label>Policy<select bind:value={routerForm.policy}><option value="consistent_hash">consistent_hash</option><option value="cache_aware">cache_aware</option></select></label><label>Host<input bind:value={routerForm.host} /></label><label>Port<input type="number" bind:value={routerForm.port} /></label><label>Worker URLs<textarea bind:value={routerForm.worker_urls} placeholder="http://gpu-a:8000&#10;http://gpu-b:8000"></textarea></label><label>Extra args<textarea bind:value={routerForm.extra_args}></textarea></label><button type="button" onclick={createRouterConfig}>Create config</button></div></section>
-					<section class="panel"><h2>Generated commands</h2>{#each inventory.routerConfigs as item}<div class="panel compact"><div class="toolbar"><div><strong>{item.config.name}</strong><p>{modelLabel(item.config.model_alias_id)} · {item.config.policy} · {item.config.host}:{item.config.port}</p></div></div><CommandBlock command={item.command} /></div>{:else}<p class="empty">No router command configs yet.</p>{/each}</section>
+					{@render PageTitle('Router 命令', '一次性生成 vLLM Router 启动命令；当前 MVP 不负责启动或托管 Router 进程。')}
+					<section class="panel"><h2>生成命令</h2><div class="form-grid"><label>模型<select bind:value={routerForm.model_alias_id}><option value="">模型</option>{#each inventory.models as model}<option value={model.id}>{model.alias}</option>{/each}</select></label><label>路由策略<select bind:value={routerForm.policy}><option value="consistent_hash">consistent_hash</option><option value="cache_aware">cache_aware</option></select></label><label>监听地址<input bind:value={routerForm.host} /></label><label>端口<input type="number" bind:value={routerForm.port} /></label><label>Worker URLs<textarea bind:value={routerForm.worker_urls} placeholder="http://gpu-a:8000&#10;http://gpu-b:8000"></textarea></label><label>额外参数<textarea bind:value={routerForm.extra_args}></textarea></label><button type="button" onclick={createRouterConfig}>生成命令</button></div></section>
+					{#if generatedRouterCommand}
+						<section class="panel"><h2>本次生成结果</h2><CommandBlock command={generatedRouterCommand} /></section>
+					{/if}
 				{:else if active === 'usage'}
-					{@render PageTitle('Usage', 'Grouped request and token pressure by model, subject, and project.')}
-					<section class="panel"><div class="form-grid"><label>Start<input type="datetime-local" bind:value={usageStart} /></label><label>End<input type="datetime-local" bind:value={usageEnd} /></label><label>Model filter<select bind:value={modelFilter}><option value="">All</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>Subject filter<select bind:value={subjectFilter}><option value="">All</option>{#each inventory.subjects as subject}<option value={subject.id}>{subject.name}</option>{/each}</select></label><label>Project filter<select bind:value={projectFilter}><option value="">All</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><button type="button" onclick={refreshAll}>Query</button></div></section>
-					<div class="grid"><div class="metric"><span>Requests</span><strong>{totals.requests}</strong></div><div class="metric"><span>Total tokens</span><strong>{totals.total}</strong></div><div class="metric"><span>Success</span><strong>{totals.success}</strong></div><div class="metric"><span>Failure</span><strong>{totals.failure}</strong></div></div>
-					<section class="panel"><h2>Summary rows</h2>{@render UsageTable(usageRows, subjectLabel, projectLabel)}</section>
+					{@render PageTitle('用量', '按模型、用户和项目聚合请求量与 token 压力。')}
+					<section class="panel"><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>模型筛选<select bind:value={modelFilter}><option value="">全部</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>用户筛选<select bind:value={subjectFilter}><option value="">全部</option>{#each inventory.subjects as subject}<option value={subject.id}>{subject.name}</option>{/each}</select></label><label>项目筛选<select bind:value={projectFilter}><option value="">全部</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><button type="button" onclick={refreshAll}>查询</button></div></section>
+					<div class="grid"><div class="metric"><span>请求数</span><strong>{totals.requests}</strong></div><div class="metric"><span>总 token</span><strong>{totals.total}</strong></div><div class="metric"><span>成功</span><strong>{totals.success}</strong></div><div class="metric"><span>失败</span><strong>{totals.failure}</strong></div></div>
+					<section class="panel"><h2>汇总明细</h2>{@render UsageTable(usageRows, subjectLabel, projectLabel)}</section>
 				{:else if active === 'ranking'}
-					{@render PageTitle('Ranking', 'Top users by token usage within a time range.')}
-					<section class="panel"><div class="form-grid"><label>Start<input type="datetime-local" bind:value={usageStart} /></label><label>End<input type="datetime-local" bind:value={usageEnd} /></label><label>Model filter<select bind:value={rankingModel}><option value="">All</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>Top N<input type="number" bind:value={rankingLimit} min="1" max="100" /></label><button type="button" onclick={refreshAll}>Query</button></div></section>
-					<section class="panel"><div class="table-wrap"><table><thead><tr><th>#</th><th>User</th><th>Requests</th><th>Prompt tokens</th><th>Completion tokens</th><th>Total tokens</th></tr></thead><tbody>{#each inventory.ranking as row, i}<tr><td>{i + 1}</td><td>{row.login_username || row.subject_name}</td><td>{row.request_count}</td><td>{row.prompt_tokens}</td><td>{row.completion_tokens}</td><td>{row.total_tokens}</td></tr>{:else}<tr><td colspan="6" class="empty">No usage data.</td></tr>{/each}</tbody></table></div></section>
+					{@render PageTitle('排行榜', '按时间范围统计 token 用量最高的用户。')}
+					<section class="panel"><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>模型筛选<select bind:value={rankingModel}><option value="">全部</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>Top N<input type="number" bind:value={rankingLimit} min="1" max="100" /></label><button type="button" onclick={refreshAll}>查询</button></div></section>
+					<section class="panel"><div class="table-wrap"><table><thead><tr><th>#</th><th>用户</th><th>请求数</th><th>输入 token</th><th>输出 token</th><th>总 token</th></tr></thead><tbody>{#each inventory.ranking as row, i}<tr><td>{i + 1}</td><td>{row.login_username || row.subject_name}</td><td>{row.request_count}</td><td>{row.prompt_tokens}</td><td>{row.completion_tokens}</td><td>{row.total_tokens}</td></tr>{:else}<tr><td colspan="6" class="empty">暂无用量数据。</td></tr>{/each}</tbody></table></div></section>
 				{:else if active === 'audit'}
-					{@render PageTitle('Audit', 'Recent privileged changes and security-significant events.')}
+					{@render PageTitle('审计', '最近的权限变更和安全相关事件。')}
 					<section class="panel">{@render AuditTable(inventory.audit, (event) => (auditDetail = event))}</section>
 				{:else if active === 'diagnostics'}
-					{@render PageTitle('Diagnostics', 'Runtime dependencies and upstream health checks.')}
-					<div class="grid"><div class="metric"><span>Postgres</span><strong>{ready?.checks.postgres ? 'OK' : 'Down'}</strong></div><div class="metric"><span>Redis</span><strong>{ready?.checks.redis ? 'OK' : 'Down'}</strong></div><div class="metric"><span>Environment</span><strong>{diagnostics?.environment}</strong></div><div class="metric"><span>LiteLLM</span><strong>{diagnostics?.litellm_version}</strong></div></div>
+					{@render PageTitle('诊断', '运行时依赖和上游健康检查。')}
+					<div class="grid"><div class="metric"><span>Postgres</span><strong>{ready?.checks.postgres ? '正常' : '异常'}</strong></div><div class="metric"><span>Redis</span><strong>{ready?.checks.redis ? '正常' : '异常'}</strong></div><div class="metric"><span>环境</span><strong>{diagnostics?.environment}</strong></div><div class="metric"><span>LiteLLM</span><strong>{diagnostics?.litellm_version}</strong></div></div>
 					{@render UpstreamTable(inventory.upstreams, healthResults, modelLabel, checkUpstream, setUpstreamState)}
 				{/if}
 			</section>
@@ -958,10 +1001,10 @@
 
 {#if auditDetail}
 	<div class="modal-backdrop" role="presentation">
-		<section class="modal" aria-label="Audit detail">
+		<section class="modal" aria-label="审计详情">
 			<header><h2>{auditDetail.action}</h2><p>{auditDetail.resource_type} · {auditDetail.created_at}</p></header>
 			<JsonViewer value={auditDetail} />
-			<footer><button class="secondary" type="button" onclick={() => (auditDetail = null)}>Close</button></footer>
+			<footer><button class="secondary" type="button" onclick={() => (auditDetail = null)}>关闭</button></footer>
 		</section>
 	</div>
 {/if}
@@ -980,7 +1023,7 @@
 {#snippet AuditTable(rows: AuditEvent[], onDetail: (event: AuditEvent) => void)}
 	<div class="table-wrap">
 		<table>
-			<thead><tr><th>Time</th><th>Action</th><th>Resource</th><th>Outcome</th><th>Detail</th></tr></thead>
+			<thead><tr><th>时间</th><th>动作</th><th>资源</th><th>结果</th><th>详情</th></tr></thead>
 			<tbody>
 				{#each rows as event}
 					<tr>
@@ -988,10 +1031,10 @@
 						<td>{event.action}</td>
 						<td>{event.resource_type}<br /><span class="muted">{short(event.resource_id)}</span></td>
 						<td><StateBadge value={event.outcome} /></td>
-						<td><button class="secondary icon-button" type="button" onclick={() => onDetail(event)}>View</button></td>
+						<td><button class="secondary icon-button" type="button" onclick={() => onDetail(event)}>查看</button></td>
 					</tr>
 				{:else}
-					<tr><td colspan="5" class="empty">No audit events.</td></tr>
+					<tr><td colspan="5" class="empty">暂无审计事件。</td></tr>
 				{/each}
 			</tbody>
 		</table>
@@ -1001,12 +1044,12 @@
 {#snippet UsageTable(rows: Inventory['usage'], subjectLabel: (id: string | null | undefined) => string, projectLabel: (id: string | null | undefined) => string)}
 	<div class="table-wrap">
 		<table>
-			<thead><tr><th>Model</th><th>Subject</th><th>Project</th><th>Requests</th><th>Prompt</th><th>Completion</th><th>Total</th><th>Success</th><th>Failure</th></tr></thead>
+			<thead><tr><th>模型</th><th>用户</th><th>项目</th><th>请求数</th><th>输入</th><th>输出</th><th>总计</th><th>成功</th><th>失败</th></tr></thead>
 			<tbody>
 				{#each rows as row}
-					<tr><td>{row.model_alias ?? 'none'}</td><td>{subjectLabel(row.subject_id)}</td><td>{projectLabel(row.project_id)}</td><td>{row.request_count}</td><td>{row.prompt_tokens}</td><td>{row.completion_tokens}</td><td>{row.total_tokens}</td><td>{row.success_count}</td><td>{row.failure_count}</td></tr>
+					<tr><td>{row.model_alias ?? '无'}</td><td>{subjectLabel(row.subject_id)}</td><td>{projectLabel(row.project_id)}</td><td>{row.request_count}</td><td>{row.prompt_tokens}</td><td>{row.completion_tokens}</td><td>{row.total_tokens}</td><td>{row.success_count}</td><td>{row.failure_count}</td></tr>
 				{:else}
-					<tr><td colspan="9" class="empty">No usage rows for this window.</td></tr>
+					<tr><td colspan="9" class="empty">这个时间范围内暂无用量数据。</td></tr>
 				{/each}
 			</tbody>
 		</table>
@@ -1021,10 +1064,10 @@
 	onState: (id: string, state: ResourceState) => void
 )}
 	<section class="panel">
-		<h2>Upstreams</h2>
+		<h2>上游端点</h2>
 		<div class="table-wrap">
 			<table>
-				<thead><tr><th>Name</th><th>Model</th><th>Base URL</th><th>State</th><th>Secret</th><th>Health</th><th>Actions</th></tr></thead>
+				<thead><tr><th>名称</th><th>模型</th><th>Base URL</th><th>状态</th><th>密钥</th><th>健康</th><th>操作</th></tr></thead>
 				<tbody>
 					{#each rows as upstream}
 						<tr>
@@ -1039,13 +1082,13 @@
 								{:else if healthResults[upstream.id]}
 									<StateBadge value={(healthResults[upstream.id] as UpstreamHealth).health.status_code} tone={(healthResults[upstream.id] as UpstreamHealth).health.ok ? 'success' : 'danger'} />
 								{:else}
-									<span class="muted">not checked</span>
+									<span class="muted">未检查</span>
 								{/if}
 							</td>
-							<td class="actions"><button class="secondary" type="button" onclick={() => onCheck(upstream.id)}>Check</button><button class="secondary" type="button" onclick={() => onState(upstream.id, upstream.state === 'active' ? 'disabled' : 'active')}>{upstream.state === 'active' ? 'Disable' : 'Activate'}</button></td>
+							<td class="actions"><button class="secondary" type="button" onclick={() => onCheck(upstream.id)}>检查</button><button class="secondary" type="button" onclick={() => onState(upstream.id, upstream.state === 'active' ? 'disabled' : 'active')}>{upstream.state === 'active' ? '禁用' : '启用'}</button></td>
 						</tr>
 					{:else}
-						<tr><td colspan="7" class="empty">No upstreams configured.</td></tr>
+						<tr><td colspan="7" class="empty">还没有配置上游端点。</td></tr>
 					{/each}
 				</tbody>
 			</table>

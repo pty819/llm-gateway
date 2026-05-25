@@ -19,7 +19,7 @@ describe('validators', () => {
 
 	it('parses only JSON objects', () => {
 		expect(parseJsonObject('{"x":1}')).toEqual({ x: 1 });
-		expect(() => parseJsonObject('[]')).toThrow('must be a JSON object');
+		expect(() => parseJsonObject('[]')).toThrow('必须是 JSON 对象');
 	});
 
 	it('masks secret-looking keys recursively', () => {

@@ -6,7 +6,7 @@ export type ValidationResult = {
 export function validateCidrList(value: string): ValidationResult {
 	const items = splitLines(value);
 	for (const item of items) {
-		if (!isCidr(item)) return { ok: false, message: `Invalid CIDR: ${item}` };
+		if (!isCidr(item)) return { ok: false, message: `CIDR 不合法: ${item}` };
 	}
 	return { ok: true };
 }
@@ -16,21 +16,21 @@ export function parseCidrList(value: string): string[] {
 }
 
 export function validateHttpUrl(value: string, label = 'URL'): ValidationResult {
-	if (!value.trim()) return { ok: false, message: `${label} is required` };
+	if (!value.trim()) return { ok: false, message: `请填写${label}` };
 	try {
 		const url = new URL(value);
 		if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-			return { ok: false, message: `${label} must start with http:// or https://` };
+			return { ok: false, message: `${label}必须以 http:// 或 https:// 开头` };
 		}
 		return { ok: true };
 	} catch {
-		return { ok: false, message: `${label} is invalid` };
+		return { ok: false, message: `${label}不合法` };
 	}
 }
 
 export function validatePort(port: number): ValidationResult {
 	if (!Number.isInteger(port) || port < 1 || port > 65535) {
-		return { ok: false, message: 'Port must be an integer from 1 to 65535' };
+		return { ok: false, message: '端口必须是 1 到 65535 之间的整数' };
 	}
 	return { ok: true };
 }
@@ -39,7 +39,7 @@ export function parseJsonObject(value: string, label = 'JSON'): Record<string, u
 	if (!value.trim()) return {};
 	const parsed = JSON.parse(value) as unknown;
 	if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-		throw new Error(`${label} must be a JSON object`);
+		throw new Error(`${label}必须是 JSON 对象`);
 	}
 	return parsed as Record<string, unknown>;
 }

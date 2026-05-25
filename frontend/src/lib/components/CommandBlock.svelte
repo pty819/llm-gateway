@@ -11,5 +11,5 @@
 
 <div class="command-block">
 	<pre>{command}</pre>
-	<button class="icon-button" type="button" onclick={copy}>{copied ? 'Copied' : 'Copy'}</button>
+	<button class="icon-button" type="button" onclick={copy}>{copied ? '已复制' : '复制'}</button>
 </div>

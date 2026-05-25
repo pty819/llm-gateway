@@ -8,7 +8,7 @@
 	let {
 		rows,
 		columns,
-		empty = 'No rows',
+		empty = '暂无数据',
 		onSelect
 	}: {
 		rows: T[];
