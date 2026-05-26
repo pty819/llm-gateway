@@ -2,7 +2,7 @@ export type SubjectType = 'user' | 'service';
 export type ResourceState = 'active' | 'disabled';
 export type IPPolicyMode = 'all_pass' | 'allowlist';
 export type RouterPolicy = 'consistent_hash' | 'cache_aware';
-export type EndpointFamily = 'openai_chat' | 'anthropic_messages';
+export type EndpointFamily = 'openai_chat' | 'openai_responses' | 'anthropic_messages';
 export type RequestOutcome =
 	| 'success'
 	| 'auth_failure'
@@ -156,6 +156,17 @@ export type UsageSummaryRow = {
 	model_alias: string | null;
 	subject_id: string | null;
 	project_id: string | null;
+	request_count: number;
+	prompt_tokens: number;
+	completion_tokens: number;
+	total_tokens: number;
+	success_count: number;
+	failure_count: number;
+};
+
+export type OwnUsageSummary = {
+	start: string | null;
+	end: string | null;
 	request_count: number;
 	prompt_tokens: number;
 	completion_tokens: number;

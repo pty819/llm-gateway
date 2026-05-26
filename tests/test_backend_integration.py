@@ -333,6 +333,103 @@ async def test_usage_ranking_falls_back_to_prompt_plus_completion_tokens_and_bou
     assert invalid_limit.status_code == 422
 
 
+async def test_self_service_usage_summary_is_scoped_to_current_user(client):
+    from datetime import timedelta
+
+    from llm_gateway.db.models import RequestFact, SubjectType, utcnow
+    from llm_gateway.db.session import AsyncSessionLocal
+
+    username = _employee_username()
+    registered = await client.post(
+        "/auth/register",
+        json={"username": username, "full_name": "用量用户", "password": "correct-horse-battery"},
+    )
+    assert registered.status_code == 200, registered.text
+    payload = registered.json()
+    session_token = payload["session_token"]
+    subject_id = payload["profile"]["subject"]["id"]
+    project_id = payload["project"]["id"]
+
+    other = await client.post(
+        "/auth/register",
+        json={"username": _employee_username(), "full_name": "其他用户", "password": "correct-horse-battery"},
+    )
+    assert other.status_code == 200, other.text
+
+    now = utcnow()
+    async with AsyncSessionLocal() as session:
+        session.add_all(
+            [
+                RequestFact(
+                    request_id=f"pytest-own-usage-success-{uuid4()}",
+                    started_at=now - timedelta(minutes=10),
+                    ended_at=now - timedelta(minutes=9),
+                    endpoint_family=EndpointFamily.OPENAI_CHAT,
+                    subject_id=subject_id,
+                    subject_type=SubjectType.USER,
+                    project_id=project_id,
+                    model_alias="own-model",
+                    upstream_target_id=None,
+                    streaming=False,
+                    outcome=RequestOutcome.SUCCESS,
+                    prompt_tokens=11,
+                    completion_tokens=7,
+                    total_tokens=None,
+                ),
+                RequestFact(
+                    request_id=f"pytest-own-usage-failure-{uuid4()}",
+                    started_at=now - timedelta(minutes=5),
+                    ended_at=now - timedelta(minutes=4),
+                    endpoint_family=EndpointFamily.ANTHROPIC_MESSAGES,
+                    subject_id=subject_id,
+                    subject_type=SubjectType.USER,
+                    project_id=project_id,
+                    model_alias="own-model",
+                    upstream_target_id=None,
+                    streaming=True,
+                    outcome=RequestOutcome.ADAPTER_FAILURE,
+                    prompt_tokens=3,
+                    completion_tokens=2,
+                    total_tokens=20,
+                ),
+                RequestFact(
+                    request_id=f"pytest-other-usage-{uuid4()}",
+                    started_at=now - timedelta(minutes=5),
+                    ended_at=now - timedelta(minutes=4),
+                    endpoint_family=EndpointFamily.OPENAI_CHAT,
+                    subject_id=other.json()["profile"]["subject"]["id"],
+                    subject_type=SubjectType.USER,
+                    project_id=other.json()["project"]["id"],
+                    model_alias="other-model",
+                    upstream_target_id=None,
+                    streaming=False,
+                    outcome=RequestOutcome.SUCCESS,
+                    prompt_tokens=1000,
+                    completion_tokens=1000,
+                    total_tokens=2000,
+                ),
+            ]
+        )
+        await session.commit()
+
+    response = await client.get(
+        "/auth/usage/summary",
+        headers={"x-session-token": session_token},
+        params={
+            "start": (now - timedelta(hours=1)).isoformat(),
+            "end": (now + timedelta(hours=1)).isoformat(),
+        },
+    )
+    assert response.status_code == 200, response.text
+    summary = response.json()
+    assert summary["request_count"] == 2
+    assert summary["prompt_tokens"] == 14
+    assert summary["completion_tokens"] == 9
+    assert summary["total_tokens"] == 38
+    assert summary["success_count"] == 1
+    assert summary["failure_count"] == 1
+
+
 async def test_openai_chat_completion_uses_real_upstream_and_records_usage(client, gateway_fixture):
     request_id = f"pytest-openai-{uuid4()}"
     response = await client.post(

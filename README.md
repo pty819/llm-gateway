@@ -58,6 +58,17 @@ Initialize or migrate the database:
 uv run python scripts/init_db.py
 ```
 
+Run this command on every backend upgrade before starting the new server. The script is intentionally idempotent: it stamps a legacy schema that already has gateway tables but no Alembic version, then upgrades to the current migration head. This keeps PostgreSQL aligned with the backend without asking operators to hand-edit tables.
+
+For deployments, make the startup order explicit:
+
+```bash
+uv run python scripts/init_db.py
+uv run python main.py
+```
+
+The current user-usage dashboard reads the existing `request_facts` table, so this release does not require a new migration file. Future schema changes should add an Alembic revision and continue using the same `scripts/init_db.py` upgrade step.
+
 Optionally seed a development upstream/model:
 
 ```bash
@@ -430,6 +441,6 @@ npm run test:e2e
 ## Current MVP Boundaries
 
 - vLLM Router process management is not automatic yet; the UI generates commands only.
-- Password reset and SSO are intentionally out of scope.
+- SSO is intentionally out of scope; registration, login, self-service password change, and admin password reset are handled by the gateway.
 - Gateway keys are shown once when issued; existing keys are listed only by prefix.
 - ClickHouse or other heavyweight analytics stores are intentionally not used.

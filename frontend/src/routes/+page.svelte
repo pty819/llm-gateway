@@ -3,6 +3,7 @@
 	import {
 		Activity,
 		BookOpen,
+		Copy,
 		Database,
 		Gauge,
 		KeyRound,
@@ -23,6 +24,7 @@
 		Inventory,
 		IPPolicyMode,
 		LoginResponse,
+		OwnUsageSummary,
 		ReadyStatus,
 		RegisterResponse,
 		ResourceState,
@@ -81,8 +83,13 @@
 	let healthResults = $state<Record<string, UpstreamHealth | string>>({});
 	let usageStart = $state('');
 	let usageEnd = $state('');
+	let ownUsageStart = $state('');
+	let ownUsageEnd = $state('');
+	let ownUsage = $state<OwnUsageSummary | null>(null);
 	let rankingLimit = $state(20);
 	let rankingModel = $state('');
+	let gatewayBaseUrl = $state('');
+	let copiedItem = $state('');
 	let auditDetail = $state<AuditEvent | null>(null);
 	let generatedRouterCommand = $state('');
 	let subjectSearch = $state('');
@@ -143,6 +150,35 @@
 	const api = $derived(new AdminApiClient('', sessionToken));
 	const isAdmin = $derived(Boolean(profile?.subject.is_admin));
 	const mustProvideRealName = $derived(Boolean(profile?.subject.requires_real_name));
+	const gatewayOrigin = $derived((gatewayBaseUrl || 'http://127.0.0.1:18080').replace(/\/+$/, ''));
+	const gatewayV1Base = $derived(`${gatewayOrigin}/v1`);
+	const responsesEndpoint = $derived(`${gatewayV1Base}/responses`);
+	const messagesEndpoint = $derived(`${gatewayV1Base}/messages`);
+	const preferredModel = $derived(profile?.models[0] ?? '<model-alias>');
+	const visibleKeyHint = $derived(profile?.keys[0]?.key_prefix ? `${profile.keys[0].key_prefix}...` : 'gw-...');
+	const codexEnvCommand = $derived(`export LLM_GATEWAY_API_KEY="<粘贴你的完整网关密钥>"`);
+	const claudeEnvCommand = $derived(
+		[
+			`export ANTHROPIC_BASE_URL="${gatewayOrigin}"`,
+			`export ANTHROPIC_AUTH_TOKEN="<粘贴你的完整网关密钥>"`,
+			`export ANTHROPIC_MODEL="${preferredModel}"`,
+			`export ANTHROPIC_CUSTOM_MODEL_OPTION="${preferredModel}"`,
+			`export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="${preferredModel}"`
+		].join('\n')
+	);
+	const codexConfigCommand = $derived(
+		[
+			'#:schema https://developers.openai.com/codex/config-schema.json',
+			`model = "${preferredModel}"`,
+			'model_provider = "llm-gateway"',
+			'',
+			'[model_providers.llm-gateway]',
+			'name = "LLM Gateway"',
+			`base_url = "${gatewayV1Base}"`,
+			'env_key = "LLM_GATEWAY_API_KEY"',
+			'wire_api = "responses"'
+		].join('\n')
+	);
 	const usageRows = $derived(
 		inventory.usage.filter((row) => {
 			if (modelFilter && row.model_alias !== modelFilter) return false;
@@ -172,6 +208,10 @@
 	);
 
 	onMount(() => {
+		const range = defaultUsageRange();
+		ownUsageStart = range.start;
+		ownUsageEnd = range.end;
+		gatewayBaseUrl = inferGatewayBaseUrl();
 		sessionToken = loadStoredSessionToken();
 		rememberSession = Boolean(sessionToken);
 		void refreshReady();
@@ -193,6 +233,8 @@
 				const authedApi = new AdminApiClient('', sessionToken);
 				diagnostics = await authedApi.get<Diagnostics>('/admin/diagnostics');
 				await refreshAll();
+			} else {
+				await fetchOwnUsage();
 			}
 		});
 	}
@@ -214,6 +256,7 @@
 			connected = true;
 			persistSessionToken(sessionToken, rememberSession);
 			registerForm = { username: '', full_name: '', password: '' };
+			await fetchOwnUsage();
 		});
 	}
 
@@ -225,6 +268,8 @@
 			if (profile.subject.is_admin) {
 				diagnostics = await api.get<Diagnostics>('/admin/diagnostics');
 				await refreshAll();
+			} else {
+				await fetchOwnUsage();
 			}
 		});
 	}
@@ -251,6 +296,7 @@
 			await refreshReady();
 			if (!isAdmin) {
 				profile = await api.get<AuthProfile>('/auth/me');
+				await fetchOwnUsage();
 				return;
 			}
 			const [
@@ -389,6 +435,7 @@
 			plaintextKey = response.plaintext_key;
 			ownKeyForm = { name: '个人密钥' };
 			profile = await api.get<AuthProfile>('/auth/me');
+			await fetchOwnUsage();
 		});
 	}
 
@@ -729,6 +776,54 @@
 		return value && /^[A-Za-z0-9_\-./:=,]+$/.test(value) ? value : `'${value.replaceAll("'", "'\"'\"'")}'`;
 	}
 
+	async function refreshOwnUsage() {
+		await run(fetchOwnUsage);
+	}
+
+	async function fetchOwnUsage() {
+		ownUsage = await api.get<OwnUsageSummary>('/auth/usage/summary', {
+			start: ownUsageStart,
+			end: ownUsageEnd
+		});
+	}
+
+	function defaultUsageRange() {
+		const end = new Date();
+		const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+		return { start: toDateTimeLocal(start), end: toDateTimeLocal(end) };
+	}
+
+	function toDateTimeLocal(date: Date): string {
+		const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+		return local.toISOString().slice(0, 16);
+	}
+
+	function inferGatewayBaseUrl(): string {
+		if (typeof window === 'undefined') return 'http://127.0.0.1:18080';
+		if (window.location.port === '5173') return `${window.location.protocol}//${window.location.hostname}:18080`;
+		return window.location.origin;
+	}
+
+	async function copyText(value: string, key: string) {
+		if (navigator.clipboard?.writeText) {
+			await navigator.clipboard.writeText(value);
+		} else {
+			const textarea = document.createElement('textarea');
+			textarea.value = value;
+			textarea.style.position = 'fixed';
+			textarea.style.opacity = '0';
+			document.body.appendChild(textarea);
+			textarea.focus();
+			textarea.select();
+			document.execCommand('copy');
+			textarea.remove();
+		}
+		copiedItem = key;
+		setTimeout(() => {
+			if (copiedItem === key) copiedItem = '';
+		}, 1400);
+	}
+
 	async function run(fn: () => Promise<void>) {
 		loading = true;
 		pageError = '';
@@ -947,7 +1042,24 @@
 						<div class="metric"><span>权限组</span><strong>{profile?.teams.join(', ') || '无'}</strong></div>
 						<div class="metric"><span>可用模型</span><strong>{profile?.models.length ?? 0}</strong></div>
 						<div class="metric"><span>密钥</span><strong>{profile?.keys.length ?? 0}</strong></div>
+						<div class="metric"><span>当前范围请求数</span><strong>{ownUsage?.request_count ?? 0}</strong></div>
+						<div class="metric"><span>当前范围总 token</span><strong>{ownUsage?.total_tokens ?? 0}</strong></div>
 					</div>
+					<section class="panel">
+						<h2>我的用量</h2>
+						<div class="form-grid">
+							<label>开始时间<input type="datetime-local" bind:value={ownUsageStart} /></label>
+							<label>结束时间<input type="datetime-local" bind:value={ownUsageEnd} /></label>
+							<button type="button" onclick={refreshOwnUsage} disabled={loading}>{loading ? '查询中' : '查询用量'}</button>
+						</div>
+						<div class="grid">
+							<div class="metric"><span>请求数</span><strong>{ownUsage?.request_count ?? 0}</strong></div>
+							<div class="metric"><span>输入 token</span><strong>{ownUsage?.prompt_tokens ?? 0}</strong></div>
+							<div class="metric"><span>输出 token</span><strong>{ownUsage?.completion_tokens ?? 0}</strong></div>
+							<div class="metric"><span>总 token</span><strong>{ownUsage?.total_tokens ?? 0}</strong></div>
+							<div class="metric"><span>成功 / 失败</span><strong>{ownUsage?.success_count ?? 0} / {ownUsage?.failure_count ?? 0}</strong></div>
+						</div>
+					</section>
 					<section class="panel">
 						<h2>可用模型</h2>
 						<div class="table-wrap"><table><thead><tr><th>模型别名</th></tr></thead><tbody>{#each profile?.models ?? [] as model}<tr><td>{model}</td></tr>{:else}<tr><td>还没有可用模型。</td></tr>{/each}</tbody></table></div>
@@ -956,6 +1068,33 @@
 						<h2>网关密钥</h2>
 						<div class="form-grid"><label>新密钥名称<input bind:value={ownKeyForm.name} /></label><button type="button" onclick={issueOwnKey}>签发密钥</button></div>
 						<div class="table-wrap"><table><thead><tr><th>名称</th><th>前缀</th><th>状态</th></tr></thead><tbody>{#each profile?.keys ?? [] as key}<tr><td>{key.name}</td><td><code>{key.key_prefix}</code></td><td><StateBadge value={key.state} /></td></tr>{:else}<tr><td colspan="3">还没有密钥。</td></tr>{/each}</tbody></table></div>
+					</section>
+					<section class="panel">
+						<h2>工具接入</h2>
+						<div class="form-grid">
+							<label>网关 Host<input bind:value={gatewayBaseUrl} /></label>
+							<label>首选模型<input value={preferredModel} readonly /></label>
+							<label>当前密钥前缀<input value={visibleKeyHint} readonly /></label>
+						</div>
+						<div class="endpoint-grid">
+							{@render CopyValue('OpenAI Base URL', gatewayV1Base, 'openai-base')}
+							{@render CopyValue('Responses Endpoint', responsesEndpoint, 'responses-endpoint')}
+							{@render CopyValue('Claude Messages Endpoint', messagesEndpoint, 'messages-endpoint')}
+							{@render CopyValue('Claude Base URL', gatewayOrigin, 'claude-base')}
+						</div>
+						<div class="doc-grid">
+							<section class="doc-panel">
+								<h3>Codex</h3>
+								<p>Codex 走 OpenAI Responses 协议，Base URL 使用 <code>/v1</code>，实际请求会落到 <code>/v1/responses</code>。</p>
+								<CommandBlock command={codexEnvCommand} />
+								<CommandBlock command={codexConfigCommand} />
+							</section>
+							<section class="doc-panel">
+								<h3>Claude Code</h3>
+								<p>Claude Code 走 Anthropic Messages 协议，Base URL 不带 <code>/v1/messages</code>；客户端会自己拼接 <code>/v1/messages</code>。如果模型别名不是 <code>claude</code> 或 <code>anthropic</code> 开头，用自定义模型变量把它放进选择器。</p>
+								<CommandBlock command={claudeEnvCommand} />
+							</section>
+						</div>
 					</section>
 					<section class="panel">
 						<h2>修改密码</h2>
@@ -1238,6 +1377,17 @@
 				{/each}
 			</tbody>
 		</table>
+	</div>
+{/snippet}
+
+{#snippet CopyValue(label: string, value: string, key: string)}
+	<div class="copy-value">
+		<span>{label}</span>
+		<code>{value}</code>
+		<button class="secondary icon-button" type="button" onclick={() => copyText(value, key)} aria-label={`复制 ${label}`}>
+			<Copy size={14} />
+			{copiedItem === key ? '已复制' : '复制'}
+		</button>
 	</div>
 {/snippet}
 

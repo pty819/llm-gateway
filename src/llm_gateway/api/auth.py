@@ -1,13 +1,14 @@
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from llm_gateway.api.deps import session_dep, settings_dep, user_session_dep
 from llm_gateway.core.config import Settings
-from llm_gateway.db.models import GatewayKey, Project, ResourceState, Subject, utcnow
+from llm_gateway.db.models import GatewayKey, Project, RequestFact, RequestOutcome, ResourceState, Subject, utcnow
 from llm_gateway.services.facts import record_audit_event
 from llm_gateway.services.policy import list_accessible_model_aliases_for_subject, list_subject_team_names
 from llm_gateway.services.security import (
@@ -149,6 +150,54 @@ async def me(
     session: AsyncSession = Depends(session_dep),
 ):
     return await _profile_payload(session, context.subject)
+
+
+@router.get("/usage/summary")
+async def own_usage_summary(
+    start: datetime | None = None,
+    end: datetime | None = None,
+    context: UserSessionContext = Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    filters = [RequestFact.subject_id == context.subject.id]
+    if start:
+        filters.append(RequestFact.started_at >= start)
+    if end:
+        filters.append(RequestFact.started_at < end)
+
+    effective_total_tokens = func.coalesce(
+        RequestFact.total_tokens,
+        func.coalesce(RequestFact.prompt_tokens, 0) + func.coalesce(RequestFact.completion_tokens, 0),
+        0,
+    )
+    success_count = func.coalesce(
+        func.sum(case((RequestFact.outcome == RequestOutcome.SUCCESS, 1), else_=0)),
+        0,
+    ).label("success_count")
+    failure_count = func.coalesce(
+        func.sum(case((RequestFact.outcome != RequestOutcome.SUCCESS, 1), else_=0)),
+        0,
+    ).label("failure_count")
+
+    stmt = select(
+        func.count(RequestFact.id).label("request_count"),
+        func.coalesce(func.sum(RequestFact.prompt_tokens), 0).label("prompt_tokens"),
+        func.coalesce(func.sum(RequestFact.completion_tokens), 0).label("completion_tokens"),
+        func.coalesce(func.sum(effective_total_tokens), 0).label("total_tokens"),
+        success_count,
+        failure_count,
+    ).where(*filters)
+    row = (await session.execute(stmt)).mappings().one()
+    return {
+        "start": start,
+        "end": end,
+        "request_count": row["request_count"],
+        "prompt_tokens": row["prompt_tokens"],
+        "completion_tokens": row["completion_tokens"],
+        "total_tokens": row["total_tokens"],
+        "success_count": row["success_count"],
+        "failure_count": row["failure_count"],
+    }
 
 
 @router.patch("/password")
