@@ -16,6 +16,7 @@ from llm_gateway.services.security import (
     create_gateway_key,
     create_registered_user,
     create_user_session,
+    hash_password,
     normalize_username,
     revoke_user_session,
     verify_password,
@@ -26,7 +27,8 @@ router = APIRouter(prefix="/auth")
 
 
 class RegisterRequest(BaseModel):
-    username: str = Field(min_length=2, max_length=80)
+    username: str = Field(min_length=9, max_length=9, pattern=r"^[A-Za-z]\d{8}$")
+    full_name: str = Field(min_length=1, max_length=120)
     password: str = Field(min_length=8, max_length=256)
 
 
@@ -39,6 +41,15 @@ class KeyIssueRequest(BaseModel):
     name: str = Field(default="personal-key", min_length=1, max_length=120)
 
 
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=8, max_length=256)
+
+
+class ProfileUpdateRequest(BaseModel):
+    full_name: str = Field(min_length=1, max_length=120)
+
+
 @router.post("/register")
 async def register(
     payload: RegisterRequest,
@@ -49,10 +60,17 @@ async def register(
         subject, project, key, raw_key = await create_registered_user(
             session,
             username=payload.username,
+            full_name=payload.full_name,
             password=payload.password,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        detail = str(exc)
+        status_code = (
+            status.HTTP_409_CONFLICT
+            if detail == "username_already_registered"
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     user_session, raw_session = await create_user_session(
         session,
         subject_id=subject.id,
@@ -133,6 +151,52 @@ async def me(
     return await _profile_payload(session, context.subject)
 
 
+@router.patch("/password")
+async def change_password(
+    payload: PasswordChangeRequest,
+    context: UserSessionContext = Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    if not context.subject.password_hash or not verify_password(payload.current_password, context.subject.password_hash):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="invalid_current_password")
+    context.subject.password_hash = hash_password(payload.new_password)
+    context.subject.updated_at = utcnow()
+    await record_audit_event(
+        session,
+        actor_subject_id=context.subject.id,
+        action="auth.password.change",
+        resource_type="subject",
+        resource_id=context.subject.id,
+        outcome="success",
+    )
+    await session.commit()
+    return {"ok": True}
+
+
+@router.patch("/profile")
+async def update_profile(
+    payload: ProfileUpdateRequest,
+    context: UserSessionContext = Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    full_name = payload.full_name.strip()
+    if not full_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="full_name_required")
+    context.subject.name = full_name
+    context.subject.updated_at = utcnow()
+    await record_audit_event(
+        session,
+        actor_subject_id=context.subject.id,
+        action="auth.profile.update",
+        resource_type="subject",
+        resource_id=context.subject.id,
+        outcome="success",
+        detail={"field": "name"},
+    )
+    await session.commit()
+    return await _profile_payload(session, context.subject)
+
+
 @router.post("/keys")
 async def issue_own_key(
     payload: KeyIssueRequest,
@@ -193,9 +257,18 @@ def _public_subject(subject: Subject) -> dict[str, Any]:
         "notes": subject.notes,
         "login_username": subject.login_username,
         "is_admin": subject.is_admin,
+        "requires_real_name": _requires_real_name(subject),
         "created_at": subject.created_at,
         "updated_at": subject.updated_at,
     }
+
+
+def _requires_real_name(subject: Subject) -> bool:
+    if subject.is_admin:
+        return False
+    name = subject.name.strip()
+    username = normalize_username(subject.login_username or "")
+    return not name or (bool(username) and normalize_username(name) == username)
 
 
 def _redact_gateway_key(key: GatewayKey) -> dict[str, Any]:

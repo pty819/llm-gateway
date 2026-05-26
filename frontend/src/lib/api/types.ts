@@ -25,6 +25,7 @@ export type Subject = Timestamped & {
 	notes: string | null;
 	login_username: string | null;
 	is_admin: boolean;
+	requires_real_name?: boolean;
 };
 
 export type Project = Timestamped & {

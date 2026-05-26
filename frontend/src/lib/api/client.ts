@@ -23,6 +23,10 @@ export class AdminApiClient {
 		return this.request<T>('PATCH', path, body);
 	}
 
+	async delete<T>(path: string, params?: Record<string, QueryValue>): Promise<T> {
+		return this.request<T>('DELETE', withQuery(path, params));
+	}
+
 	private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
 		const response = await fetch(path, {
 			method,

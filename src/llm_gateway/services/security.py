@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import timedelta
@@ -25,6 +26,7 @@ from llm_gateway.db.models import (
 
 
 KEY_PREFIX_LENGTH = 12
+EMPLOYEE_USERNAME_PATTERN = re.compile(r"^[a-z]\d{8}$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,10 @@ def verify_gateway_key(raw_key: str, stored_hash: str) -> bool:
 
 def normalize_username(username: str) -> str:
     return username.strip().lower()
+
+
+def is_employee_username(username: str) -> bool:
+    return bool(EMPLOYEE_USERNAME_PATTERN.fullmatch(normalize_username(username)))
 
 
 def hash_password(password: str) -> str:
@@ -287,11 +293,17 @@ async def create_registered_user(
     session: AsyncSession,
     *,
     username: str,
+    full_name: str,
     password: str,
 ) -> tuple[Subject, Project, GatewayKey, str]:
     normalized = normalize_username(username)
     if not normalized:
         raise ValueError("username_required")
+    if not is_employee_username(normalized):
+        raise ValueError("username_must_match_employee_id")
+    full_name = full_name.strip()
+    if not full_name:
+        raise ValueError("full_name_required")
     existing = (await session.execute(select(Subject).where(Subject.login_username == normalized))).scalar_one_or_none()
     if existing:
         raise ValueError("username_already_registered")
@@ -303,7 +315,7 @@ async def create_registered_user(
         is_builtin=True,
     )
     subject = Subject(
-        name=normalized,
+        name=full_name,
         type=SubjectType.USER,
         login_username=normalized,
         password_hash=hash_password(password),

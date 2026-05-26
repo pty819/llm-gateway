@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import case, func, select
+from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from llm_gateway.api.deps import admin_dep, session_dep
@@ -28,6 +28,7 @@ from llm_gateway.db.models import (
     TeamMembership,
     ModelTeamGrant,
     UpstreamTarget,
+    UserSession,
     utcnow,
 )
 from llm_gateway.services.facts import record_audit_event
@@ -38,6 +39,9 @@ from llm_gateway.services.security import (
     ensure_model_team_grant,
     ensure_team_membership,
     get_or_create_team,
+    hash_password,
+    is_employee_username,
+    normalize_username,
 )
 
 
@@ -47,6 +51,8 @@ router = APIRouter(prefix="/admin", dependencies=[Depends(admin_dep)])
 class SubjectCreate(BaseModel):
     name: str
     type: SubjectType
+    login_username: str | None = None
+    password: str | None = Field(default=None, min_length=8, max_length=256)
     notes: str | None = None
 
 
@@ -58,7 +64,12 @@ class ProjectCreate(BaseModel):
 
 class SubjectUpdate(BaseModel):
     name: str | None = None
+    login_username: str | None = None
     notes: str | None = None
+
+
+class SubjectPasswordReset(BaseModel):
+    new_password: str = Field(min_length=8, max_length=256)
 
 
 class ProjectUpdate(BaseModel):
@@ -190,7 +201,15 @@ class StatePatch(BaseModel):
 
 @router.post("/subjects")
 async def create_subject(payload: SubjectCreate, session: AsyncSession = Depends(session_dep)):
-    subject = Subject(**payload.model_dump())
+    data = payload.model_dump(exclude={"password"})
+    if data.get("login_username"):
+        data["login_username"] = _validate_login_username(data["login_username"])
+        await _ensure_login_username_available(session, data["login_username"])
+    subject = Subject(**data)
+    if payload.password:
+        if not subject.login_username:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="login_username_required_for_password")
+        subject.password_hash = hash_password(payload.password)
     session.add(subject)
     await session.flush()
     await record_audit_event(
@@ -206,19 +225,52 @@ async def create_subject(payload: SubjectCreate, session: AsyncSession = Depends
 
 
 @router.get("/subjects")
-async def list_subjects(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(select(Subject).order_by(Subject.created_at.desc()))
+async def list_subjects(
+    q: str | None = Query(default=None, max_length=120),
+    session: AsyncSession = Depends(session_dep),
+):
+    stmt = select(Subject)
+    if q and q.strip():
+        needle = f"%{q.strip()}%"
+        stmt = stmt.where(or_(Subject.name.ilike(needle), Subject.login_username.ilike(needle)))
+    result = await session.execute(stmt.order_by(Subject.created_at.desc()))
     return result.scalars().all()
 
 
 @router.patch("/subjects/{subject_id}")
 async def update_subject(subject_id: UUID, payload: SubjectUpdate, session: AsyncSession = Depends(session_dep)):
     subject = await _get_or_404(session, Subject, subject_id)
+    if payload.login_username is not None:
+        payload.login_username = _validate_login_username(payload.login_username)
+        if payload.login_username:
+            await _ensure_login_username_available(session, payload.login_username, subject_id=subject.id)
     _apply_patch(subject, payload)
     await _audit_update(session, "subject.update", "subject", subject.id, payload)
     await session.commit()
     await session.refresh(subject)
     return subject
+
+
+@router.patch("/subjects/{subject_id}/password")
+async def reset_subject_password(
+    subject_id: UUID,
+    payload: SubjectPasswordReset,
+    session: AsyncSession = Depends(session_dep),
+):
+    subject = await _get_or_404(session, Subject, subject_id)
+    if not subject.login_username:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="subject_has_no_login_username")
+    subject.password_hash = hash_password(payload.new_password)
+    subject.updated_at = utcnow()
+    await record_audit_event(
+        session,
+        action="subject.password.reset",
+        resource_type="subject",
+        resource_id=subject.id,
+        outcome="success",
+    )
+    await session.commit()
+    return {"ok": True}
 
 
 @router.patch("/subjects/{subject_id}/state")
@@ -236,6 +288,59 @@ async def set_subject_state(subject_id: UUID, payload: StatePatch, session: Asyn
     )
     await session.commit()
     return subject
+
+
+@router.delete("/subjects/{subject_id}")
+async def delete_subject(subject_id: UUID, session: AsyncSession = Depends(session_dep)):
+    subject = await _get_or_404(session, Subject, subject_id)
+    if subject.is_admin:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="cannot_delete_admin_subject")
+
+    request_count = await _count_rows(session, select(func.count(RequestFact.id)).where(RequestFact.subject_id == subject.id))
+    if request_count:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "subject_has_usage_history", "request_count": request_count},
+        )
+
+    owned_projects = (
+        await session.execute(select(Project).where(Project.owner_subject_id == subject.id))
+    ).scalars().all()
+    for project in owned_projects:
+        project_usage_count = await _count_rows(
+            session,
+            select(func.count(RequestFact.id)).where(RequestFact.project_id == project.id),
+        )
+        if project_usage_count:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "subject_project_has_usage_history",
+                    "project_id": str(project.id),
+                    "request_count": project_usage_count,
+                },
+            )
+
+    await record_audit_event(
+        session,
+        action="subject.delete",
+        resource_type="subject",
+        resource_id=subject.id,
+        outcome="success",
+        detail={"login_username": subject.login_username, "name": subject.name},
+    )
+    await session.execute(delete(UserSession).where(UserSession.subject_id == subject.id))
+    await session.execute(delete(TeamMembership).where(TeamMembership.subject_id == subject.id))
+    await session.execute(delete(ProjectMembership).where(ProjectMembership.subject_id == subject.id))
+    await session.execute(delete(ModelEntitlement).where(ModelEntitlement.subject_id == subject.id))
+    await session.execute(delete(RatePolicy).where(RatePolicy.scope == "subject", RatePolicy.scope_id == subject.id))
+    for project in owned_projects:
+        await _delete_project_without_usage(session, project)
+    await session.execute(delete(GatewayKey).where(GatewayKey.subject_id == subject.id))
+    await session.execute(update(AuditEvent).where(AuditEvent.actor_subject_id == subject.id).values(actor_subject_id=None))
+    await session.delete(subject)
+    await session.commit()
+    return {"ok": True}
 
 
 @router.post("/projects")
@@ -387,6 +492,50 @@ async def update_model_alias(
     await session.commit()
     await session.refresh(model_alias)
     return model_alias
+
+
+@router.delete("/model-aliases/{model_alias_id}")
+async def delete_model_alias(
+    model_alias_id: UUID,
+    cascade_upstreams: bool = Query(default=False),
+    session: AsyncSession = Depends(session_dep),
+):
+    model_alias = await _get_or_404(session, ModelAlias, model_alias_id)
+    upstreams = (
+        await session.execute(select(UpstreamTarget).where(UpstreamTarget.model_alias_id == model_alias.id))
+    ).scalars().all()
+    if upstreams and not cascade_upstreams:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "model_alias_has_upstreams",
+                "upstream_count": len(upstreams),
+                "upstreams": [{"id": str(item.id), "name": item.name} for item in upstreams],
+            },
+        )
+    for upstream in upstreams:
+        await _ensure_upstream_deletable(session, upstream)
+
+    await record_audit_event(
+        session,
+        action="model_alias.delete",
+        resource_type="model_alias",
+        resource_id=model_alias.id,
+        outcome="success",
+        detail={
+            "alias": model_alias.alias,
+            "cascade_upstreams": cascade_upstreams,
+            "upstream_count": len(upstreams),
+        },
+    )
+    await session.execute(delete(ModelEntitlement).where(ModelEntitlement.model_alias_id == model_alias.id))
+    await session.execute(delete(ModelTeamGrant).where(ModelTeamGrant.model_alias_id == model_alias.id))
+    await session.execute(delete(RouterCommandConfig).where(RouterCommandConfig.model_alias_id == model_alias.id))
+    for upstream in upstreams:
+        await session.delete(upstream)
+    await session.delete(model_alias)
+    await session.commit()
+    return {"ok": True, "deleted_upstreams": len(upstreams)}
 
 
 @router.post("/model-entitlements")
@@ -612,6 +761,23 @@ async def update_upstream(
     return _redact_upstream(upstream)
 
 
+@router.delete("/upstreams/{upstream_id}")
+async def delete_upstream(upstream_id: UUID, session: AsyncSession = Depends(session_dep)):
+    upstream = await _get_or_404(session, UpstreamTarget, upstream_id)
+    await _ensure_upstream_deletable(session, upstream)
+    await record_audit_event(
+        session,
+        action="upstream.delete",
+        resource_type="upstream_target",
+        resource_id=upstream.id,
+        outcome="success",
+        detail={"name": upstream.name, "base_url": upstream.base_url},
+    )
+    await session.delete(upstream)
+    await session.commit()
+    return {"ok": True}
+
+
 @router.post("/router-command-configs")
 async def create_router_command_config(payload: RouterCommandConfigCreate, session: AsyncSession = Depends(session_dep)):
     await _get_or_404(session, ModelAlias, payload.model_alias_id)
@@ -777,6 +943,58 @@ async def _get_or_404(session: AsyncSession, model, item_id: UUID):
     if not item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{model.__name__}_not_found")
     return item
+
+
+def _validate_login_username(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = normalize_username(value)
+    if not normalized:
+        return None
+    if not is_employee_username(normalized):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="username_must_match_employee_id")
+    return normalized
+
+
+async def _ensure_login_username_available(
+    session: AsyncSession,
+    login_username: str,
+    *,
+    subject_id: UUID | None = None,
+) -> None:
+    result = await session.execute(select(Subject).where(Subject.login_username == login_username))
+    existing = result.scalar_one_or_none()
+    if existing and existing.id != subject_id:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="username_already_registered")
+
+
+async def _count_rows(session: AsyncSession, stmt) -> int:
+    return int((await session.execute(stmt)).scalar_one() or 0)
+
+
+async def _ensure_upstream_deletable(session: AsyncSession, upstream: UpstreamTarget) -> None:
+    request_count = await _count_rows(
+        session,
+        select(func.count(RequestFact.id)).where(RequestFact.upstream_target_id == upstream.id),
+    )
+    if request_count:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "upstream_has_usage_history",
+                "upstream_id": str(upstream.id),
+                "name": upstream.name,
+                "request_count": request_count,
+            },
+        )
+
+
+async def _delete_project_without_usage(session: AsyncSession, project: Project) -> None:
+    await session.execute(delete(ProjectMembership).where(ProjectMembership.project_id == project.id))
+    await session.execute(delete(ModelEntitlement).where(ModelEntitlement.project_id == project.id))
+    await session.execute(delete(RatePolicy).where(RatePolicy.scope == "project", RatePolicy.scope_id == project.id))
+    await session.execute(delete(GatewayKey).where(GatewayKey.project_id == project.id))
+    await session.delete(project)
 
 
 def _redact_upstream(upstream: UpstreamTarget) -> dict[str, Any]:

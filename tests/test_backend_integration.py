@@ -19,6 +19,10 @@ def _auth_headers(raw_key: str, request_id: str | None = None) -> dict[str, str]
     return headers
 
 
+def _employee_username() -> str:
+    return f"l{uuid4().int % 100_000_000:08d}"
+
+
 async def test_list_models_returns_entitled_aliases(client, gateway_fixture):
     response = await client.get(
         "/v1/models",
@@ -95,10 +99,10 @@ async def test_self_service_register_login_and_guest_team_model_access(client):
     )
     assert grant.status_code == 200, grant.text
 
-    username = f"new-user-{suffix}"
+    username = _employee_username()
     registered = await client.post(
         "/auth/register",
-        json={"username": username, "password": "correct-horse-battery"},
+        json={"username": username, "full_name": "测试用户", "password": "correct-horse-battery"},
     )
     assert registered.status_code == 200, registered.text
     payload = registered.json()
@@ -133,7 +137,7 @@ async def test_admin_session_can_manage_team_union_permissions(client):
 
     registered = await client.post(
         "/auth/register",
-        json={"username": f"union-user-{suffix}", "password": "correct-horse-battery"},
+        json={"username": _employee_username(), "full_name": "权限用户", "password": "correct-horse-battery"},
     )
     assert registered.status_code == 200, registered.text
     subject_id = registered.json()["profile"]["subject"]["id"]
@@ -174,6 +178,117 @@ async def test_admin_session_can_manage_team_union_permissions(client):
     assert models.status_code == 200, models.text
     ids = {item["id"] for item in models.json()["data"]}
     assert set(granted_aliases).issubset(ids)
+
+
+async def test_legacy_user_must_complete_real_name_after_login(client):
+    from llm_gateway.db.models import Subject, SubjectType
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.security import hash_password
+
+    username = _employee_username()
+    async with AsyncSessionLocal() as session:
+        subject = Subject(
+            name=username,
+            type=SubjectType.USER,
+            login_username=username,
+            password_hash=hash_password("correct-horse-battery"),
+        )
+        session.add(subject)
+        await session.commit()
+
+    logged_in = await client.post("/auth/login", json={"username": username, "password": "correct-horse-battery"})
+    assert logged_in.status_code == 200, logged_in.text
+    assert logged_in.json()["profile"]["subject"]["requires_real_name"] is True
+
+    updated = await client.patch(
+        "/auth/profile",
+        headers={"x-session-token": logged_in.json()["session_token"]},
+        json={"full_name": "遗留用户"},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["subject"]["name"] == "遗留用户"
+    assert updated.json()["subject"]["requires_real_name"] is False
+
+
+async def test_registration_rejects_non_employee_username(client):
+    response = await client.post(
+        "/auth/register",
+        json={"username": "alice", "full_name": "Alice", "password": "correct-horse-battery"},
+    )
+    assert response.status_code == 422
+
+
+async def test_admin_can_reset_password_and_delete_unused_subject(client):
+    from llm_gateway.core.config import get_settings
+
+    headers = {"x-admin-token": get_settings().admin_token}
+    username = _employee_username()
+    created = await client.post(
+        "/admin/subjects",
+        headers=headers,
+        json={
+            "name": "待删用户",
+            "login_username": username,
+            "password": "old-correct-horse",
+            "type": "user",
+        },
+    )
+    assert created.status_code == 200, created.text
+    subject_id = created.json()["id"]
+
+    reset = await client.patch(
+        f"/admin/subjects/{subject_id}/password",
+        headers=headers,
+        json={"new_password": "new-correct-horse"},
+    )
+    assert reset.status_code == 200, reset.text
+
+    login = await client.post("/auth/login", json={"username": username, "password": "new-correct-horse"})
+    assert login.status_code == 200, login.text
+
+    deleted = await client.delete(f"/admin/subjects/{subject_id}", headers=headers)
+    assert deleted.status_code == 200, deleted.text
+
+
+async def test_model_alias_delete_requires_cascade_for_upstreams(client):
+    from llm_gateway.core.config import get_settings
+
+    headers = {"x-admin-token": get_settings().admin_token}
+    suffix = uuid4().hex
+    model = await client.post(
+        "/admin/model-aliases",
+        headers=headers,
+        json={
+            "alias": f"delete-model-{suffix}",
+            "upstream_model_name": "delete-upstream-model",
+            "litellm_model": "openai/delete-upstream-model",
+        },
+    )
+    assert model.status_code == 200, model.text
+    model_id = model.json()["id"]
+
+    upstream = await client.post(
+        "/admin/upstreams",
+        headers=headers,
+        json={
+            "model_alias_id": model_id,
+            "name": f"delete-upstream-{suffix}",
+            "base_url": "http://127.0.0.1:65530/v1",
+        },
+    )
+    assert upstream.status_code == 200, upstream.text
+
+    blocked = await client.delete(f"/admin/model-aliases/{model_id}", headers=headers)
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["code"] == "model_alias_has_upstreams"
+
+    deleted = await client.delete(
+        f"/admin/model-aliases/{model_id}",
+        headers=headers,
+        params={"cascade_upstreams": True},
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["deleted_upstreams"] == 1
 
 
 async def test_usage_ranking_falls_back_to_prompt_plus_completion_tokens_and_bounds_limit(client, gateway_fixture):
