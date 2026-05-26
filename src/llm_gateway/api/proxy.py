@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -220,8 +221,9 @@ async def _stream_openai_response(
     request_id: str,
 ):
     usage = None
+    first_token_at: datetime | None = None
     outcome = RequestOutcome.SUCCESS
-    error: Exception | None = None
+    error: BaseException | None = None
     try:
         async with concurrency_slot(
             redis,
@@ -233,8 +235,14 @@ async def _stream_openai_response(
                 upstream=route.upstream,
                 body=body,
             ):
+                if first_token_at is None:
+                    first_token_at = utcnow()
                 usage = event_usage or usage
                 yield event
+    except asyncio.CancelledError as exc:
+        outcome = RequestOutcome.CLIENT_CANCELLED
+        error = exc
+        raise
     except Exception as exc:
         outcome = RequestOutcome.ADAPTER_FAILURE
         error = exc
@@ -254,6 +262,7 @@ async def _stream_openai_response(
             streaming=True,
             outcome=outcome,
             usage=usage,
+            first_token_at=first_token_at,
             error_class=type(error).__name__ if error else None,
             error_detail=str(error) if error else None,
         )
@@ -381,8 +390,9 @@ async def _stream_responses(
     request_id: str,
 ):
     usage = None
+    first_token_at: datetime | None = None
     outcome = RequestOutcome.SUCCESS
-    error: Exception | None = None
+    error: BaseException | None = None
     try:
         async with concurrency_slot(
             redis,
@@ -394,8 +404,14 @@ async def _stream_responses(
                 upstream=route.upstream,
                 body=body,
             ):
+                if first_token_at is None:
+                    first_token_at = utcnow()
                 usage = event_usage or usage
                 yield event
+    except asyncio.CancelledError as exc:
+        outcome = RequestOutcome.CLIENT_CANCELLED
+        error = exc
+        raise
     except Exception as exc:
         outcome = RequestOutcome.ADAPTER_FAILURE
         error = exc
@@ -415,6 +431,7 @@ async def _stream_responses(
             streaming=True,
             outcome=outcome,
             usage=usage,
+            first_token_at=first_token_at,
             error_class=type(error).__name__ if error else None,
             error_detail=str(error) if error else None,
         )
@@ -540,8 +557,9 @@ async def _stream_anthropic_response(
     request_id: str,
 ):
     usage = None
+    first_token_at: datetime | None = None
     outcome = RequestOutcome.SUCCESS
-    error: Exception | None = None
+    error: BaseException | None = None
     try:
         async with concurrency_slot(redis, key_id=auth.key.id, limit=concurrency_limit):
             async for event, event_usage in anthropic_messages_stream(
@@ -549,8 +567,14 @@ async def _stream_anthropic_response(
                 upstream=route.upstream,
                 body=body,
             ):
+                if first_token_at is None:
+                    first_token_at = utcnow()
                 usage = event_usage or usage
                 yield event
+    except asyncio.CancelledError as exc:
+        outcome = RequestOutcome.CLIENT_CANCELLED
+        error = exc
+        raise
     except Exception as exc:
         outcome = RequestOutcome.ADAPTER_FAILURE
         error = exc
@@ -570,6 +594,7 @@ async def _stream_anthropic_response(
             streaming=True,
             outcome=outcome,
             usage=usage,
+            first_token_at=first_token_at,
             error_class=type(error).__name__ if error else None,
             error_detail=str(error) if error else None,
         )

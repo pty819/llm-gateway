@@ -83,6 +83,8 @@
 	let healthResults = $state<Record<string, UpstreamHealth | string>>({});
 	let usageStart = $state('');
 	let usageEnd = $state('');
+	let analyticsBucket = $state<'minute' | 'hour' | 'day'>('hour');
+	let analyticsDimension = $state<'model' | 'subject' | 'project' | 'endpoint' | 'outcome' | 'streaming'>('model');
 	let ownUsageStart = $state('');
 	let ownUsageEnd = $state('');
 	let ownUsage = $state<OwnUsageSummary | null>(null);
@@ -206,6 +208,29 @@
 			{ requests: 0, prompt: 0, completion: 0, total: 0, success: 0, failure: 0 }
 		)
 	);
+	const analyticsMaxTokens = $derived(
+		Math.max(1, ...inventory.analyticsBuckets.map((row) => Number(row.total_tokens ?? 0)))
+	);
+	const analyticsPerformance = $derived(
+		inventory.analyticsBuckets.reduce(
+			(acc, row) => {
+				acc.requests += Number(row.request_count ?? 0);
+				acc.retry += Number(row.retry_count ?? 0);
+				acc.fallback += Number(row.fallback_count ?? 0);
+				acc.vllmObserved += Number(row.vllm_metrics_count ?? 0);
+				if (row.avg_latency_ms !== null) {
+					acc.latencyTotal += row.avg_latency_ms * Number(row.request_count ?? 0);
+					acc.latencyWeight += Number(row.request_count ?? 0);
+				}
+				if (row.avg_ttft_ms !== null) {
+					acc.ttftTotal += row.avg_ttft_ms * Number(row.request_count ?? 0);
+					acc.ttftWeight += Number(row.request_count ?? 0);
+				}
+				return acc;
+			},
+			{ requests: 0, retry: 0, fallback: 0, vllmObserved: 0, latencyTotal: 0, latencyWeight: 0, ttftTotal: 0, ttftWeight: 0 }
+		)
+	);
 
 	onMount(() => {
 		const range = defaultUsageRange();
@@ -313,6 +338,8 @@
 				ratePolicies,
 				usage,
 				ranking,
+				analyticsBuckets,
+				analyticsDrilldown,
 				audit
 			] = await Promise.all([
 				api.get<Inventory['subjects']>('/admin/subjects'),
@@ -328,6 +355,22 @@
 				api.get<Inventory['ratePolicies']>('/admin/rate-policies'),
 				api.get<Inventory['usage']>('/admin/usage/summary', { start: usageStart, end: usageEnd }),
 				api.get<Inventory['ranking']>('/admin/usage/ranking', { start: usageStart, end: usageEnd, model: rankingModel, limit: rankingLimit }),
+				api.get<Inventory['analyticsBuckets']>('/admin/analytics/time-buckets', {
+					start: usageStart,
+					end: usageEnd,
+					bucket: analyticsBucket,
+					model: modelFilter,
+					subject_id: subjectFilter,
+					project_id: projectFilter
+				}),
+				api.get<Inventory['analyticsDrilldown']>('/admin/analytics/drilldown', {
+					start: usageStart,
+					end: usageEnd,
+					dimension: analyticsDimension,
+					model: modelFilter,
+					subject_id: subjectFilter,
+					project_id: projectFilter
+				}),
 				api.get<Inventory['audit']>('/admin/audit-events')
 			]);
 			inventory = {
@@ -345,6 +388,8 @@
 				ratePolicies,
 				usage,
 				ranking,
+				analyticsBuckets,
+				analyticsDrilldown,
 				audit
 			};
 		});
@@ -851,6 +896,8 @@
 			ratePolicies: [],
 			usage: [],
 			ranking: [],
+			analyticsBuckets: [],
+			analyticsDrilldown: [],
 			audit: []
 		};
 	}
@@ -894,6 +941,14 @@
 
 	function teamLabel(id: string | null | undefined): string {
 		return inventory.teams.find((item) => item.id === id)?.name ?? short(id);
+	}
+
+	function msLabel(value: number | null | undefined): string {
+		return value === null || value === undefined ? '无数据' : `${Math.round(value)} ms`;
+	}
+
+	function ratioLabel(value: number | null | undefined): string {
+		return value === null || value === undefined ? '无数据' : `${Math.round(value * 100)}%`;
 	}
 
 	function subjectTypeLabel(type: string): string {
@@ -1269,9 +1324,11 @@
 						<section class="panel"><h2>本次生成结果</h2><CommandBlock command={generatedRouterCommand} /></section>
 					{/if}
 				{:else if active === 'usage'}
-					{@render PageTitle('用量', '按模型、用户和项目聚合请求量与 token 压力。')}
-					<section class="panel"><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>模型筛选<select bind:value={modelFilter}><option value="">全部</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>用户筛选<select bind:value={subjectFilter}><option value="">全部</option>{#each filteredSubjects(subjectSelectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>项目筛选<select bind:value={projectFilter}><option value="">全部</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><button type="button" onclick={refreshAll}>查询</button></div></section>
-					<div class="grid"><div class="metric"><span>请求数</span><strong>{totals.requests}</strong></div><div class="metric"><span>总 token</span><strong>{totals.total}</strong></div><div class="metric"><span>成功</span><strong>{totals.success}</strong></div><div class="metric"><span>失败</span><strong>{totals.failure}</strong></div></div>
+					{@render PageTitle('用量', '分时段、分模型、分项目和分用户观察推理压力。')}
+					<section class="panel"><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>时间粒度<select bind:value={analyticsBucket}><option value="minute">分钟</option><option value="hour">小时</option><option value="day">天</option></select></label><label>分析维度<select bind:value={analyticsDimension}><option value="model">模型</option><option value="subject">用户</option><option value="project">项目</option><option value="endpoint">协议</option><option value="outcome">结果</option><option value="streaming">流式</option></select></label><label>模型筛选<select bind:value={modelFilter}><option value="">全部</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>用户筛选<select bind:value={subjectFilter}><option value="">全部</option>{#each filteredSubjects(subjectSelectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>项目筛选<select bind:value={projectFilter}><option value="">全部</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><button type="button" onclick={refreshAll}>查询</button></div></section>
+					<div class="grid"><div class="metric"><span>请求数</span><strong>{totals.requests}</strong></div><div class="metric"><span>总 token</span><strong>{totals.total}</strong></div><div class="metric"><span>成功</span><strong>{totals.success}</strong></div><div class="metric"><span>失败</span><strong>{totals.failure}</strong></div><div class="metric"><span>平均延迟</span><strong>{msLabel(analyticsPerformance.latencyWeight ? analyticsPerformance.latencyTotal / analyticsPerformance.latencyWeight : null)}</strong></div><div class="metric"><span>平均 TTFT</span><strong>{msLabel(analyticsPerformance.ttftWeight ? analyticsPerformance.ttftTotal / analyticsPerformance.ttftWeight : null)}</strong></div><div class="metric"><span>Retry / Fallback</span><strong>{analyticsPerformance.retry} / {analyticsPerformance.fallback}</strong></div><div class="metric"><span>vLLM 指标覆盖</span><strong>{analyticsPerformance.vllmObserved} / {analyticsPerformance.requests}</strong></div></div>
+					<section class="panel"><h2>分时段趋势</h2>{@render AnalyticsBucketTable(inventory.analyticsBuckets, analyticsMaxTokens)}</section>
+					<section class="panel"><h2>多维 Drilldown</h2>{@render AnalyticsDrilldownTable(inventory.analyticsDrilldown)}</section>
 					<section class="panel"><h2>汇总明细</h2>{@render UsageTable(usageRows, subjectLabel, projectLabel)}</section>
 				{:else if active === 'ranking'}
 					{@render PageTitle('排行榜', '按时间范围统计 token 用量最高的用户。')}
@@ -1373,6 +1430,57 @@
 					<tr><td>{row.model_alias ?? '无'}</td><td>{subjectLabel(row.subject_id)}</td><td>{projectLabel(row.project_id)}</td><td>{row.request_count}</td><td>{row.prompt_tokens}</td><td>{row.completion_tokens}</td><td>{row.total_tokens}</td><td>{row.success_count}</td><td>{row.failure_count}</td></tr>
 				{:else}
 					<tr><td colspan="9" class="empty">这个时间范围内暂无用量数据。</td></tr>
+				{/each}
+			</tbody>
+		</table>
+	</div>
+{/snippet}
+
+{#snippet AnalyticsBucketTable(rows: Inventory['analyticsBuckets'], maxTokens: number)}
+	<div class="table-wrap">
+		<table>
+			<thead><tr><th>时间</th><th>压力</th><th>请求</th><th>Token</th><th>缓存</th><th>成功 / 失败</th><th>延迟</th><th>TTFT</th><th>流时长</th><th>vLLM</th></tr></thead>
+			<tbody>
+				{#each rows as row}
+					<tr>
+						<td>{new Date(row.bucket_start).toLocaleString()}</td>
+						<td><div class="bar-track"><span style={`width: ${Math.max(4, Math.round((row.total_tokens / maxTokens) * 100))}%`}></span></div></td>
+						<td>{row.request_count}</td>
+						<td>{row.total_tokens}<br /><span class="muted">入 {row.prompt_tokens} / 出 {row.completion_tokens}</span></td>
+						<td>{row.cached_tokens}</td>
+						<td>{row.success_count} / {row.failure_count}</td>
+						<td>{msLabel(row.avg_latency_ms)}</td>
+						<td>{msLabel(row.avg_ttft_ms)}</td>
+						<td>{msLabel(row.avg_stream_duration_ms)}</td>
+						<td>{row.vllm_metrics_count ? `${row.vllm_metrics_count} 条` : '无上游指标'}<br /><span class="muted">queue {msLabel(row.avg_queue_ms)} · prefill {msLabel(row.avg_prefill_ms)} · decode {msLabel(row.avg_decode_ms)} · KV {ratioLabel(row.avg_kv_cache_usage)}</span></td>
+					</tr>
+				{:else}
+					<tr><td colspan="10" class="empty">这个时间范围内暂无趋势数据。</td></tr>
+				{/each}
+			</tbody>
+		</table>
+	</div>
+{/snippet}
+
+{#snippet AnalyticsDrilldownTable(rows: Inventory['analyticsDrilldown'])}
+	<div class="table-wrap">
+		<table>
+			<thead><tr><th>维度</th><th>请求</th><th>Token</th><th>缓存</th><th>成功 / 失败</th><th>延迟</th><th>TTFT</th><th>Retry / Fallback</th><th>vLLM</th></tr></thead>
+			<tbody>
+				{#each rows as row}
+					<tr>
+						<td><strong>{row.dimension_label}</strong><br /><span class="muted">{short(row.dimension_id)}</span></td>
+						<td>{row.request_count}</td>
+						<td>{row.total_tokens}<br /><span class="muted">入 {row.prompt_tokens} / 出 {row.completion_tokens}</span></td>
+						<td>{row.cached_tokens}</td>
+						<td>{row.success_count} / {row.failure_count}</td>
+						<td>{msLabel(row.avg_latency_ms)}</td>
+						<td>{msLabel(row.avg_ttft_ms)}</td>
+						<td>{row.retry_count} / {row.fallback_count}<br /><span class="muted">fallback token {row.fallback_tokens}</span></td>
+						<td>{row.vllm_metrics_count ? `${row.vllm_metrics_count} 条` : '无上游指标'}</td>
+					</tr>
+				{:else}
+					<tr><td colspan="9" class="empty">暂无 drilldown 数据。</td></tr>
 				{/each}
 			</tbody>
 		</table>

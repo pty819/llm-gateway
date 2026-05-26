@@ -152,7 +152,8 @@ Frontend requirements:
 - No delete endpoints.
 - No project state mutation endpoint.
 - No role-based admin authorization beyond static admin token.
-- No backend route for time-bucketed charts.
+- No dedicated charting library; rich pressure analytics now come from admin
+  analytics APIs and are rendered as lightweight tables/bars.
 - No vLLM Router process management.
-- No OpenAI `/v1/completions` or Responses endpoint.
+- OpenAI `/v1/completions` is out of scope; Codex uses `/v1/responses`.
 - No secret manager integration; upstream secret values are stored in the configured backend field and redacted on read.

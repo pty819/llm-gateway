@@ -156,7 +156,7 @@ Pool-local endpoint identity is optional gateway evidence. It should be captured
 
 ## Acceptance Checks
 
-1. A supported `v1/completions` request can be routed from one alias to one eligible vLLM Router pool.
+1. A supported OpenAI-compatible chat or responses request can be routed from one alias to one eligible vLLM Router pool.
 2. A disabled or policy-ineligible route cannot be selected by fallback.
 3. The route contract names affinity hints without storing prompt content as the key.
 4. The spec never describes worker-level prefix/cache endpoint routing as a gateway duty.

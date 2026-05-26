@@ -31,7 +31,8 @@ This file shows how to prune the broad blueprint into delivery slices without re
 - Project attribution and basic model entitlement.
 - IP allowlist on at least key or policy scope.
 - Rate/concurrency baseline.
-- Model alias to one vLLM Router pool route for `v1/completions`.
+- Model alias to one vLLM Router/OpenAI-compatible route target; legacy
+  `v1/completions` is out of scope.
 - One explicit legacy-to-Anthropic adapter subset or a scoped test route.
 - Codex-scoped Responses bridge subset if Codex is an early consumer.
 - Usage facts in PostgreSQL and online counters in Redis where needed.

@@ -91,7 +91,7 @@ This directory is the broad product blueprint for the enterprise LLM gateway. It
 | --- | --- | --- |
 | Prefix-aware efficiency | Architecture and routing delegate serving-locality routing to vLLM Router pools | Routing invariant scenario |
 | User/token/request audit | Capacity analytics facts and dashboards | Analytics matrix |
-| vLLM `v1/completions` balancing | Routing and protocol specs | vLLM completion path scenario |
+| vLLM Router route target balancing | Routing and protocol specs | vLLM route target scenario |
 | OpenAI legacy to Anthropic | Protocol compatibility matrix | Conversion matrix review |
 | Codex path to Responses | Protocol compatibility matrix | Codex bridge scenario |
 | IP whitelist | Policy/security policy order | Negative policy bypass scenario |

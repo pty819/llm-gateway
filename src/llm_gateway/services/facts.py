@@ -33,6 +33,30 @@ def token_from_usage(usage: dict[str, Any] | None, key: str) -> int | None:
     return value if isinstance(value, int) else None
 
 
+def _nested_int(value: Any, *keys: str) -> int | None:
+    current = value
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current if isinstance(current, int) else None
+
+
+def _nested_float(value: Any, *keys: str) -> float | None:
+    current = value
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    if isinstance(current, int | float):
+        return float(current)
+    return None
+
+
+def _duration_ms(started_at: datetime, ended_at: datetime) -> int:
+    return max(0, round((ended_at - started_at).total_seconds() * 1000))
+
+
 def prompt_tokens_from_usage(usage: dict[str, Any] | None) -> int | None:
     return token_from_usage(usage, "prompt_tokens") or token_from_usage(
         usage, "input_tokens"
@@ -43,6 +67,43 @@ def completion_tokens_from_usage(usage: dict[str, Any] | None) -> int | None:
     return token_from_usage(usage, "completion_tokens") or token_from_usage(
         usage, "output_tokens"
     )
+
+
+def total_tokens_from_usage(usage: dict[str, Any] | None) -> int | None:
+    return token_from_usage(usage, "total_tokens") or token_from_usage(
+        usage, "total_tokens_used"
+    )
+
+
+def cached_tokens_from_usage(usage: dict[str, Any] | None) -> int | None:
+    return (
+        token_from_usage(usage, "cached_tokens")
+        or _nested_int(usage, "prompt_tokens_details", "cached_tokens")
+        or _nested_int(usage, "input_tokens_details", "cached_tokens")
+        or _nested_int(usage, "input_token_details", "cached_tokens")
+        or token_from_usage(usage, "cache_read_input_tokens")
+    )
+
+
+def performance_int_from_usage(usage: dict[str, Any] | None, key: str) -> int | None:
+    if not usage:
+        return None
+    return (
+        token_from_usage(usage, key)
+        or _nested_int(usage, "performance", key)
+        or _nested_int(usage, "vllm", key)
+    )
+
+
+def performance_float_from_usage(
+    usage: dict[str, Any] | None, key: str
+) -> float | None:
+    if not usage:
+        return None
+    value = usage.get(key)
+    if isinstance(value, int | float):
+        return float(value)
+    return _nested_float(usage, "performance", key) or _nested_float(usage, "vllm", key)
 
 
 async def record_request_fact(
@@ -60,10 +121,19 @@ async def record_request_fact(
     streaming: bool,
     outcome: RequestOutcome,
     usage: dict[str, Any] | None,
+    first_token_at: datetime | None = None,
+    retry_count: int = 0,
+    fallback_count: int = 0,
+    fallback_tokens: int | None = None,
+    performance_detail: dict[str, Any] | None = None,
     error_class: str | None = None,
     error_detail: str | None = None,
 ) -> RequestFact:
     usage_source = UsageSource.LITELLM if usage else UsageSource.MISSING
+    latency_ms = _duration_ms(started_at, ended_at)
+    time_to_first_token_ms = (
+        _duration_ms(started_at, first_token_at) if first_token_at else None
+    )
     fact = RequestFact(
         request_id=request_id,
         started_at=started_at,
@@ -79,7 +149,19 @@ async def record_request_fact(
         usage_source=usage_source,
         prompt_tokens=prompt_tokens_from_usage(usage),
         completion_tokens=completion_tokens_from_usage(usage),
-        total_tokens=token_from_usage(usage, "total_tokens"),
+        total_tokens=total_tokens_from_usage(usage),
+        cached_tokens=cached_tokens_from_usage(usage),
+        latency_ms=latency_ms,
+        time_to_first_token_ms=time_to_first_token_ms,
+        stream_duration_ms=latency_ms if streaming else None,
+        retry_count=retry_count,
+        fallback_count=fallback_count,
+        fallback_tokens=fallback_tokens,
+        queue_ms=performance_int_from_usage(usage, "queue_ms"),
+        prefill_ms=performance_int_from_usage(usage, "prefill_ms"),
+        decode_ms=performance_int_from_usage(usage, "decode_ms"),
+        kv_cache_usage=performance_float_from_usage(usage, "kv_cache_usage"),
+        performance_detail=performance_detail or {},
         error_class=error_class,
         error_detail=error_detail[:1000] if error_detail else None,
     )

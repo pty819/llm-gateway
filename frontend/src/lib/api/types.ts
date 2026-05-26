@@ -185,6 +185,33 @@ export type UsageRankingRow = {
 	total_tokens: number;
 };
 
+export type AnalyticsBucketRow = {
+	bucket_start: string;
+	request_count: number;
+	prompt_tokens: number;
+	completion_tokens: number;
+	total_tokens: number;
+	cached_tokens: number;
+	success_count: number;
+	failure_count: number;
+	avg_latency_ms: number | null;
+	avg_ttft_ms: number | null;
+	avg_stream_duration_ms: number | null;
+	retry_count: number;
+	fallback_count: number;
+	fallback_tokens: number;
+	avg_queue_ms: number | null;
+	avg_prefill_ms: number | null;
+	avg_decode_ms: number | null;
+	avg_kv_cache_usage: number | null;
+	vllm_metrics_count: number;
+};
+
+export type AnalyticsDrilldownRow = Omit<AnalyticsBucketRow, 'bucket_start'> & {
+	dimension_id: string | null;
+	dimension_label: string;
+};
+
 export type AuditEvent = {
 	id: string;
 	created_at: string;
@@ -249,5 +276,7 @@ export type Inventory = {
 	ratePolicies: RatePolicy[];
 	usage: UsageSummaryRow[];
 	ranking: UsageRankingRow[];
+	analyticsBuckets: AnalyticsBucketRow[];
+	analyticsDrilldown: AnalyticsDrilldownRow[];
 	audit: AuditEvent[];
 };

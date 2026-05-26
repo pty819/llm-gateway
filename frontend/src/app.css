@@ -343,6 +343,21 @@ tr.clickable:hover {
 	background: #f8fafc;
 }
 
+.bar-track {
+	width: 9rem;
+	height: 0.55rem;
+	overflow: hidden;
+	border-radius: 999px;
+	background: #e6ebf2;
+}
+
+.bar-track span {
+	display: block;
+	height: 100%;
+	border-radius: inherit;
+	background: linear-gradient(90deg, #2878bd, #35a176);
+}
+
 .empty {
 	color: var(--text-muted);
 	text-align: center;

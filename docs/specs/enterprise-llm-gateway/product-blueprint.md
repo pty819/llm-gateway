@@ -75,7 +75,8 @@ The enterprise LLM gateway gives one organization a governable downstream entran
 ### Serving Integrations
 
 - vLLM Router pools for same-model-type vLLM endpoints.
-- vLLM `v1/completions` path.
+- vLLM OpenAI-compatible chat/responses route targets; legacy `v1/completions`
+  is no longer a product target.
 - Provider or OpenAI-compatible route targets.
 - Future route target families behind the same route-target interface.
 

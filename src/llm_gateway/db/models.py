@@ -248,5 +248,19 @@ class RequestFact(SQLModel, table=True):
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
+    cached_tokens: int | None = None
+    latency_ms: int | None = None
+    time_to_first_token_ms: int | None = None
+    stream_duration_ms: int | None = None
+    retry_count: int = 0
+    fallback_count: int = 0
+    fallback_tokens: int | None = None
+    queue_ms: int | None = None
+    prefill_ms: int | None = None
+    decode_ms: int | None = None
+    kv_cache_usage: float | None = None
+    performance_detail: dict[str, Any] = Field(
+        default_factory=dict, sa_column=Column(JSONB)
+    )
     error_class: str | None = Field(default=None, index=True)
     error_detail: str | None = None

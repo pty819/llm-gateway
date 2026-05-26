@@ -18,9 +18,9 @@ This contract prevents "OpenAI-compatible" from becoming an untested promise. Ev
 
 | Path | Product Need | Contract Posture |
 | --- | --- | --- |
-| Gateway legacy OpenAI `v1/completions` to vLLM Router pool | Required | Preserve supported completion subset |
 | Gateway legacy OpenAI chat-facing shape to Anthropic | Required | Explicit subset mapped to native Anthropic behavior |
 | Codex legacy-facing path to OpenAI Responses | Required for Codex route family | Explicit bridge, not universal shim |
+| Gateway legacy OpenAI `v1/completions` | Removed from scope | Historical requirement; no MVP support planned |
 | Arbitrary provider compatibility | Future | Requires its own matrix |
 
 The gateway should prefer explicit adapters over relying on upstream silent field ignoring.
