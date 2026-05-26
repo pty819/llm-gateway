@@ -531,8 +531,7 @@ async def delete_model_alias(
     await session.execute(delete(ModelEntitlement).where(ModelEntitlement.model_alias_id == model_alias.id))
     await session.execute(delete(ModelTeamGrant).where(ModelTeamGrant.model_alias_id == model_alias.id))
     await session.execute(delete(RouterCommandConfig).where(RouterCommandConfig.model_alias_id == model_alias.id))
-    for upstream in upstreams:
-        await session.delete(upstream)
+    await session.execute(delete(UpstreamTarget).where(UpstreamTarget.model_alias_id == model_alias.id))
     await session.delete(model_alias)
     await session.commit()
     return {"ok": True, "deleted_upstreams": len(upstreams)}
