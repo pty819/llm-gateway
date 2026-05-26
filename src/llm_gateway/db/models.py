@@ -72,7 +72,9 @@ class Project(TimestampMixin, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     name: str = Field(index=True, unique=True)
     state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
-    owner_subject_id: UUID | None = Field(default=None, foreign_key="subjects.id", index=True)
+    owner_subject_id: UUID | None = Field(
+        default=None, foreign_key="subjects.id", index=True
+    )
     notes: str | None = None
 
 
@@ -120,7 +122,9 @@ class ModelEntitlement(TimestampMixin, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     subject_id: UUID | None = Field(default=None, foreign_key="subjects.id", index=True)
     project_id: UUID | None = Field(default=None, foreign_key="projects.id", index=True)
-    gateway_key_id: UUID | None = Field(default=None, foreign_key="gateway_keys.id", index=True)
+    gateway_key_id: UUID | None = Field(
+        default=None, foreign_key="gateway_keys.id", index=True
+    )
     model_alias_id: UUID = Field(foreign_key="model_aliases.id", index=True)
     state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
 
@@ -213,7 +217,9 @@ class AuditEvent(SQLModel, table=True):
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     created_at: datetime = Field(default_factory=utcnow, index=True)
-    actor_subject_id: UUID | None = Field(default=None, foreign_key="subjects.id", index=True)
+    actor_subject_id: UUID | None = Field(
+        default=None, foreign_key="subjects.id", index=True
+    )
     action: str = Field(index=True)
     resource_type: str = Field(index=True)
     resource_id: UUID | None = Field(default=None, index=True)
@@ -233,7 +239,9 @@ class RequestFact(SQLModel, table=True):
     subject_type: SubjectType | None = Field(default=None, index=True)
     project_id: UUID | None = Field(default=None, foreign_key="projects.id", index=True)
     model_alias: str | None = Field(default=None, index=True)
-    upstream_target_id: UUID | None = Field(default=None, foreign_key="upstream_targets.id", index=True)
+    upstream_target_id: UUID | None = Field(
+        default=None, foreign_key="upstream_targets.id", index=True
+    )
     streaming: bool = Field(default=False, index=True)
     outcome: RequestOutcome = Field(index=True)
     usage_source: UsageSource = Field(default=UsageSource.MISSING, index=True)

@@ -26,6 +26,7 @@ async def main() -> None:
     load_dotenv()
 
     from sqlalchemy import select
+    from sqlmodel import col
 
     from llm_gateway.db.models import (
         GatewayKey,
@@ -42,12 +43,16 @@ async def main() -> None:
 
     base_url = os.environ["LLM_GATEWAY_UPSTREAM_BASE_URL"]
     upstream_model = os.environ["LLM_GATEWAY_UPSTREAM_MODEL"]
-    litellm_model = os.environ.get("LLM_GATEWAY_LITELLM_MODEL", f"openai/{upstream_model}")
+    litellm_model = os.environ.get(
+        "LLM_GATEWAY_LITELLM_MODEL", f"openai/{upstream_model}"
+    )
     api_key = os.environ["LLM_GATEWAY_UPSTREAM_API_KEY"]
 
     async with AsyncSessionLocal() as session:
         subject = (
-            await session.execute(select(Subject).where(Subject.name == "dev-user"))
+            await session.execute(
+                select(Subject).where(col(Subject.name) == "dev-user")
+            )
         ).scalar_one_or_none()
         if not subject:
             subject = Subject(name="dev-user", type=SubjectType.USER)
@@ -55,7 +60,9 @@ async def main() -> None:
             await session.flush()
 
         project = (
-            await session.execute(select(Project).where(Project.name == "dev-project"))
+            await session.execute(
+                select(Project).where(col(Project.name) == "dev-project")
+            )
         ).scalar_one_or_none()
         if not project:
             project = Project(name="dev-project", owner_subject_id=subject.id)
@@ -63,7 +70,9 @@ async def main() -> None:
             await session.flush()
 
         model_alias = (
-            await session.execute(select(ModelAlias).where(ModelAlias.alias == "dev-model"))
+            await session.execute(
+                select(ModelAlias).where(col(ModelAlias.alias) == "dev-model")
+            )
         ).scalar_one_or_none()
         if not model_alias:
             model_alias = ModelAlias(
@@ -77,8 +86,8 @@ async def main() -> None:
         upstream = (
             await session.execute(
                 select(UpstreamTarget).where(
-                    UpstreamTarget.model_alias_id == model_alias.id,
-                    UpstreamTarget.name == "dev-upstream",
+                    col(UpstreamTarget.model_alias_id) == model_alias.id,
+                    col(UpstreamTarget.name) == "dev-upstream",
                 )
             )
         ).scalar_one_or_none()
@@ -99,18 +108,23 @@ async def main() -> None:
         entitlement = (
             await session.execute(
                 select(ModelEntitlement).where(
-                    ModelEntitlement.project_id == project.id,
-                    ModelEntitlement.model_alias_id == model_alias.id,
+                    col(ModelEntitlement.project_id) == project.id,
+                    col(ModelEntitlement.model_alias_id) == model_alias.id,
                 )
             )
         ).scalar_one_or_none()
         if not entitlement:
-            entitlement = ModelEntitlement(project_id=project.id, model_alias_id=model_alias.id)
+            entitlement = ModelEntitlement(
+                project_id=project.id, model_alias_id=model_alias.id
+            )
             session.add(entitlement)
 
         existing_key = (
             await session.execute(
-                select(GatewayKey).where(GatewayKey.name == "dev-key", GatewayKey.project_id == project.id)
+                select(GatewayKey).where(
+                    col(GatewayKey.name) == "dev-key",
+                    col(GatewayKey.project_id) == project.id,
+                )
             )
         ).scalar_one_or_none()
         plaintext_key = None
@@ -127,14 +141,18 @@ async def main() -> None:
         await session.commit()
 
     print("seeded dev subject/project/model/upstream")
-    print(f"model_alias=dev-model")
+    print("model_alias=dev-model")
     print(f"gateway_key_prefix={gateway_key.key_prefix}")
     if plaintext_key and os.environ.get("LLM_GATEWAY_PRINT_SEEDED_KEY") == "true":
         print(f"gateway_key={plaintext_key}")
     elif plaintext_key:
-        print("gateway_key created; set LLM_GATEWAY_PRINT_SEEDED_KEY=true only when plaintext output is needed")
+        print(
+            "gateway_key created; set LLM_GATEWAY_PRINT_SEEDED_KEY=true only when plaintext output is needed"
+        )
     else:
-        print("gateway_key already exists; create a new key through /admin/gateway-keys if plaintext is needed")
+        print(
+            "gateway_key already exists; create a new key through /admin/gateway-keys if plaintext is needed"
+        )
 
 
 if __name__ == "__main__":

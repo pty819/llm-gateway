@@ -34,11 +34,15 @@ def token_from_usage(usage: dict[str, Any] | None, key: str) -> int | None:
 
 
 def prompt_tokens_from_usage(usage: dict[str, Any] | None) -> int | None:
-    return token_from_usage(usage, "prompt_tokens") or token_from_usage(usage, "input_tokens")
+    return token_from_usage(usage, "prompt_tokens") or token_from_usage(
+        usage, "input_tokens"
+    )
 
 
 def completion_tokens_from_usage(usage: dict[str, Any] | None) -> int | None:
-    return token_from_usage(usage, "completion_tokens") or token_from_usage(usage, "output_tokens")
+    return token_from_usage(usage, "completion_tokens") or token_from_usage(
+        usage, "output_tokens"
+    )
 
 
 async def record_request_fact(

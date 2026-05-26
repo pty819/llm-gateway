@@ -49,7 +49,9 @@ def bearer_token(request: Request) -> str:
     anthropic_key = request.headers.get("x-api-key")
     if anthropic_key:
         return anthropic_key.strip()
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing_gateway_key")
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED, detail="missing_gateway_key"
+    )
 
 
 async def auth_dep(
@@ -59,7 +61,9 @@ async def auth_dep(
     raw_key = bearer_token(request)
     context = await authenticate_gateway_key(session, raw_key)
     if not context:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_gateway_key")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_gateway_key"
+        )
     return context
 
 
@@ -73,12 +77,16 @@ async def admin_dep(
     if not x_admin_token or x_admin_token != settings.admin_token:
         raw_token = x_session_token or _session_token(request)
         if not raw_token:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_admin_token")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_admin_token"
+            )
         await ensure_builtin_identity(session, settings)
         await session.commit()
         context = await authenticate_user_session(session, raw_token)
         if not context or not context.subject.is_admin:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_admin_token")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_admin_token"
+            )
 
 
 async def user_session_dep(
@@ -87,10 +95,14 @@ async def user_session_dep(
 ) -> UserSessionContext:
     raw_token = _session_token(request)
     if not raw_token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing_session_token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="missing_session_token"
+        )
     context = await authenticate_user_session(session, raw_token)
     if not context:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_session_token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_session_token"
+        )
     return context
 
 

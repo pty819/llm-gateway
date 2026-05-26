@@ -3,6 +3,7 @@ from ipaddress import ip_address, ip_network
 
 from sqlalchemy import distinct, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 
 from llm_gateway.db.models import (
     IPPolicyMode,
@@ -52,12 +53,16 @@ async def resolve_route_context(
     requested_model: str,
     client_ip: str,
 ) -> RouteContext:
-    alias_result = await session.execute(select(ModelAlias).where(ModelAlias.alias == requested_model))
+    alias_result = await session.execute(
+        select(ModelAlias).where(col(ModelAlias.alias) == requested_model)
+    )
     model_alias = alias_result.scalar_one_or_none()
     if not model_alias or model_alias.state != ResourceState.ACTIVE:
         raise PolicyDenied("model_alias_not_found_or_inactive")
 
-    if not await subject_can_use_model(session, auth=auth, model_alias_id=model_alias.id):
+    if not await subject_can_use_model(
+        session, auth=auth, model_alias_id=model_alias.id
+    ):
         raise PolicyDenied("model_not_entitled")
 
     if not client_ip_allowed(model_alias, client_ip):
@@ -65,8 +70,8 @@ async def resolve_route_context(
 
     upstream_result = await session.execute(
         select(UpstreamTarget).where(
-            UpstreamTarget.model_alias_id == model_alias.id,
-            UpstreamTarget.state == ResourceState.ACTIVE,
+            col(UpstreamTarget.model_alias_id) == model_alias.id,
+            col(UpstreamTarget.state) == ResourceState.ACTIVE,
         )
     )
     upstream = upstream_result.scalar_one_or_none()
@@ -76,15 +81,17 @@ async def resolve_route_context(
     return RouteContext(model_alias=model_alias, upstream=upstream)
 
 
-async def subject_can_use_model(session: AsyncSession, *, auth: AuthContext, model_alias_id) -> bool:
+async def subject_can_use_model(
+    session: AsyncSession, *, auth: AuthContext, model_alias_id
+) -> bool:
     entitlement_result = await session.execute(
-        select(ModelEntitlement.id).where(
-            ModelEntitlement.model_alias_id == model_alias_id,
-            ModelEntitlement.state == ResourceState.ACTIVE,
+        select(col(ModelEntitlement.id)).where(
+            col(ModelEntitlement.model_alias_id) == model_alias_id,
+            col(ModelEntitlement.state) == ResourceState.ACTIVE,
             or_(
-                ModelEntitlement.gateway_key_id == auth.key.id,
-                ModelEntitlement.subject_id == auth.subject.id,
-                ModelEntitlement.project_id == auth.project.id,
+                col(ModelEntitlement.gateway_key_id) == auth.key.id,
+                col(ModelEntitlement.subject_id) == auth.subject.id,
+                col(ModelEntitlement.project_id) == auth.project.id,
             ),
         )
     )
@@ -92,45 +99,49 @@ async def subject_can_use_model(session: AsyncSession, *, auth: AuthContext, mod
         return True
 
     team_result = await session.execute(
-        select(ModelTeamGrant.id)
-        .join(Team, Team.id == ModelTeamGrant.team_id)
-        .join(TeamMembership, TeamMembership.team_id == Team.id)
+        select(col(ModelTeamGrant.id))
+        .join(Team, col(Team.id) == col(ModelTeamGrant.team_id))
+        .join(TeamMembership, col(TeamMembership.team_id) == col(Team.id))
         .where(
-            ModelTeamGrant.model_alias_id == model_alias_id,
-            ModelTeamGrant.state == ResourceState.ACTIVE,
-            Team.state == ResourceState.ACTIVE,
-            TeamMembership.state == ResourceState.ACTIVE,
-            TeamMembership.subject_id == auth.subject.id,
+            col(ModelTeamGrant.model_alias_id) == model_alias_id,
+            col(ModelTeamGrant.state) == ResourceState.ACTIVE,
+            col(Team.state) == ResourceState.ACTIVE,
+            col(TeamMembership.state) == ResourceState.ACTIVE,
+            col(TeamMembership.subject_id) == auth.subject.id,
         )
     )
     return team_result.scalars().first() is not None
 
 
-async def list_accessible_model_aliases(session: AsyncSession, *, auth: AuthContext) -> list[str]:
+async def list_accessible_model_aliases(
+    session: AsyncSession, *, auth: AuthContext
+) -> list[str]:
     legacy_stmt = (
-        select(distinct(ModelAlias.alias))
-        .join(ModelEntitlement, ModelEntitlement.model_alias_id == ModelAlias.id)
+        select(distinct(col(ModelAlias.alias)))
+        .join(
+            ModelEntitlement, col(ModelEntitlement.model_alias_id) == col(ModelAlias.id)
+        )
         .where(
-            ModelAlias.state == ResourceState.ACTIVE,
-            ModelEntitlement.state == ResourceState.ACTIVE,
+            col(ModelAlias.state) == ResourceState.ACTIVE,
+            col(ModelEntitlement.state) == ResourceState.ACTIVE,
             or_(
-                ModelEntitlement.gateway_key_id == auth.key.id,
-                ModelEntitlement.subject_id == auth.subject.id,
-                ModelEntitlement.project_id == auth.project.id,
+                col(ModelEntitlement.gateway_key_id) == auth.key.id,
+                col(ModelEntitlement.subject_id) == auth.subject.id,
+                col(ModelEntitlement.project_id) == auth.project.id,
             ),
         )
     )
     team_stmt = (
-        select(distinct(ModelAlias.alias))
-        .join(ModelTeamGrant, ModelTeamGrant.model_alias_id == ModelAlias.id)
-        .join(Team, Team.id == ModelTeamGrant.team_id)
-        .join(TeamMembership, TeamMembership.team_id == Team.id)
+        select(distinct(col(ModelAlias.alias)))
+        .join(ModelTeamGrant, col(ModelTeamGrant.model_alias_id) == col(ModelAlias.id))
+        .join(Team, col(Team.id) == col(ModelTeamGrant.team_id))
+        .join(TeamMembership, col(TeamMembership.team_id) == col(Team.id))
         .where(
-            ModelAlias.state == ResourceState.ACTIVE,
-            ModelTeamGrant.state == ResourceState.ACTIVE,
-            Team.state == ResourceState.ACTIVE,
-            TeamMembership.state == ResourceState.ACTIVE,
-            TeamMembership.subject_id == auth.subject.id,
+            col(ModelAlias.state) == ResourceState.ACTIVE,
+            col(ModelTeamGrant.state) == ResourceState.ACTIVE,
+            col(Team.state) == ResourceState.ACTIVE,
+            col(TeamMembership.state) == ResourceState.ACTIVE,
+            col(TeamMembership.subject_id) == auth.subject.id,
         )
     )
     aliases = set((await session.execute(legacy_stmt)).scalars().all())
@@ -138,27 +149,31 @@ async def list_accessible_model_aliases(session: AsyncSession, *, auth: AuthCont
     return sorted(aliases)
 
 
-async def list_accessible_model_aliases_for_subject(session: AsyncSession, *, subject_id) -> list[str]:
+async def list_accessible_model_aliases_for_subject(
+    session: AsyncSession, *, subject_id
+) -> list[str]:
     direct_stmt = (
-        select(distinct(ModelAlias.alias))
-        .join(ModelEntitlement, ModelEntitlement.model_alias_id == ModelAlias.id)
+        select(distinct(col(ModelAlias.alias)))
+        .join(
+            ModelEntitlement, col(ModelEntitlement.model_alias_id) == col(ModelAlias.id)
+        )
         .where(
-            ModelAlias.state == ResourceState.ACTIVE,
-            ModelEntitlement.state == ResourceState.ACTIVE,
-            ModelEntitlement.subject_id == subject_id,
+            col(ModelAlias.state) == ResourceState.ACTIVE,
+            col(ModelEntitlement.state) == ResourceState.ACTIVE,
+            col(ModelEntitlement.subject_id) == subject_id,
         )
     )
     team_stmt = (
-        select(distinct(ModelAlias.alias))
-        .join(ModelTeamGrant, ModelTeamGrant.model_alias_id == ModelAlias.id)
-        .join(Team, Team.id == ModelTeamGrant.team_id)
-        .join(TeamMembership, TeamMembership.team_id == Team.id)
+        select(distinct(col(ModelAlias.alias)))
+        .join(ModelTeamGrant, col(ModelTeamGrant.model_alias_id) == col(ModelAlias.id))
+        .join(Team, col(Team.id) == col(ModelTeamGrant.team_id))
+        .join(TeamMembership, col(TeamMembership.team_id) == col(Team.id))
         .where(
-            ModelAlias.state == ResourceState.ACTIVE,
-            ModelTeamGrant.state == ResourceState.ACTIVE,
-            Team.state == ResourceState.ACTIVE,
-            TeamMembership.state == ResourceState.ACTIVE,
-            TeamMembership.subject_id == subject_id,
+            col(ModelAlias.state) == ResourceState.ACTIVE,
+            col(ModelTeamGrant.state) == ResourceState.ACTIVE,
+            col(Team.state) == ResourceState.ACTIVE,
+            col(TeamMembership.state) == ResourceState.ACTIVE,
+            col(TeamMembership.subject_id) == subject_id,
         )
     )
     aliases = set((await session.execute(direct_stmt)).scalars().all())
@@ -168,13 +183,13 @@ async def list_accessible_model_aliases_for_subject(session: AsyncSession, *, su
 
 async def list_subject_team_names(session: AsyncSession, *, subject_id) -> list[str]:
     stmt = (
-        select(Team.name)
-        .join(TeamMembership, TeamMembership.team_id == Team.id)
+        select(col(Team.name))
+        .join(TeamMembership, col(TeamMembership.team_id) == col(Team.id))
         .where(
-            Team.state == ResourceState.ACTIVE,
-            TeamMembership.state == ResourceState.ACTIVE,
-            TeamMembership.subject_id == subject_id,
+            col(Team.state) == ResourceState.ACTIVE,
+            col(TeamMembership.state) == ResourceState.ACTIVE,
+            col(TeamMembership.subject_id) == subject_id,
         )
-        .order_by(Team.name)
+        .order_by(col(Team.name))
     )
     return list((await session.execute(stmt)).scalars().all())

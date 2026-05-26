@@ -5,15 +5,26 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 
 from llm_gateway.api.deps import session_dep, settings_dep, user_session_dep
 from llm_gateway.core.config import Settings
-from llm_gateway.db.models import GatewayKey, Project, RequestFact, RequestOutcome, ResourceState, Subject, utcnow
+from llm_gateway.db.models import (
+    GatewayKey,
+    Project,
+    RequestFact,
+    RequestOutcome,
+    ResourceState,
+    Subject,
+    utcnow,
+)
 from llm_gateway.services.facts import record_audit_event
-from llm_gateway.services.policy import list_accessible_model_aliases_for_subject, list_subject_team_names
+from llm_gateway.services.policy import (
+    list_accessible_model_aliases_for_subject,
+    list_subject_team_names,
+)
 from llm_gateway.services.security import (
     UserSessionContext,
-    authenticate_user_session,
     create_gateway_key,
     create_registered_user,
     create_user_session,
@@ -102,12 +113,22 @@ async def login(
     settings: Settings = Depends(settings_dep),
 ):
     username = normalize_username(payload.username)
-    result = await session.execute(select(Subject).where(Subject.login_username == username))
+    result = await session.execute(
+        select(Subject).where(col(Subject.login_username) == username)
+    )
     subject = result.scalar_one_or_none()
-    if not subject or not subject.password_hash or subject.state != ResourceState.ACTIVE:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_login")
+    if (
+        not subject
+        or not subject.password_hash
+        or subject.state != ResourceState.ACTIVE
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_login"
+        )
     if not verify_password(payload.password, subject.password_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_login")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_login"
+        )
     user_session, raw_session = await create_user_session(
         session,
         subject_id=subject.id,
@@ -137,7 +158,9 @@ async def logout(
     raw_token = request.headers.get("x-session-token")
     if not raw_token:
         auth = request.headers.get("authorization", "")
-        raw_token = auth[7:].strip() if auth.lower().startswith("bearer sess-") else None
+        raw_token = (
+            auth[7:].strip() if auth.lower().startswith("bearer sess-") else None
+        )
     if raw_token:
         await revoke_user_session(session, raw_token)
         await session.commit()
@@ -159,30 +182,39 @@ async def own_usage_summary(
     context: UserSessionContext = Depends(user_session_dep),
     session: AsyncSession = Depends(session_dep),
 ):
-    filters = [RequestFact.subject_id == context.subject.id]
+    filters = [col(RequestFact.subject_id) == context.subject.id]
     if start:
-        filters.append(RequestFact.started_at >= start)
+        filters.append(col(RequestFact.started_at) >= start)
     if end:
-        filters.append(RequestFact.started_at < end)
+        filters.append(col(RequestFact.started_at) < end)
 
     effective_total_tokens = func.coalesce(
-        RequestFact.total_tokens,
-        func.coalesce(RequestFact.prompt_tokens, 0) + func.coalesce(RequestFact.completion_tokens, 0),
+        col(RequestFact.total_tokens),
+        func.coalesce(col(RequestFact.prompt_tokens), 0)
+        + func.coalesce(col(RequestFact.completion_tokens), 0),
         0,
     )
     success_count = func.coalesce(
-        func.sum(case((RequestFact.outcome == RequestOutcome.SUCCESS, 1), else_=0)),
+        func.sum(
+            case((col(RequestFact.outcome) == RequestOutcome.SUCCESS, 1), else_=0)
+        ),
         0,
     ).label("success_count")
     failure_count = func.coalesce(
-        func.sum(case((RequestFact.outcome != RequestOutcome.SUCCESS, 1), else_=0)),
+        func.sum(
+            case((col(RequestFact.outcome) != RequestOutcome.SUCCESS, 1), else_=0)
+        ),
         0,
     ).label("failure_count")
 
     stmt = select(
-        func.count(RequestFact.id).label("request_count"),
-        func.coalesce(func.sum(RequestFact.prompt_tokens), 0).label("prompt_tokens"),
-        func.coalesce(func.sum(RequestFact.completion_tokens), 0).label("completion_tokens"),
+        func.count(col(RequestFact.id)).label("request_count"),
+        func.coalesce(func.sum(col(RequestFact.prompt_tokens)), 0).label(
+            "prompt_tokens"
+        ),
+        func.coalesce(func.sum(col(RequestFact.completion_tokens)), 0).label(
+            "completion_tokens"
+        ),
         func.coalesce(func.sum(effective_total_tokens), 0).label("total_tokens"),
         success_count,
         failure_count,
@@ -206,8 +238,12 @@ async def change_password(
     context: UserSessionContext = Depends(user_session_dep),
     session: AsyncSession = Depends(session_dep),
 ):
-    if not context.subject.password_hash or not verify_password(payload.current_password, context.subject.password_hash):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="invalid_current_password")
+    if not context.subject.password_hash or not verify_password(
+        payload.current_password, context.subject.password_hash
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="invalid_current_password"
+        )
     context.subject.password_hash = hash_password(payload.new_password)
     context.subject.updated_at = utcnow()
     await record_audit_event(
@@ -230,7 +266,9 @@ async def update_profile(
 ):
     full_name = payload.full_name.strip()
     if not full_name:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="full_name_required")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="full_name_required"
+        )
     context.subject.name = full_name
     context.subject.updated_at = utcnow()
     await record_audit_event(
@@ -274,24 +312,40 @@ async def issue_own_key(
 
 async def _profile_payload(session: AsyncSession, subject: Subject) -> dict[str, Any]:
     keys = (
-        await session.execute(
-            select(GatewayKey).where(GatewayKey.subject_id == subject.id).order_by(GatewayKey.created_at.desc())
+        (
+            await session.execute(
+                select(GatewayKey)
+                .where(col(GatewayKey.subject_id) == subject.id)
+                .order_by(col(GatewayKey.created_at).desc())
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return {
         "subject": _public_subject(subject),
         "teams": await list_subject_team_names(session, subject_id=subject.id),
-        "models": await list_accessible_model_aliases_for_subject(session, subject_id=subject.id),
+        "models": await list_accessible_model_aliases_for_subject(
+            session, subject_id=subject.id
+        ),
         "keys": [_redact_gateway_key(key) for key in keys],
     }
 
 
 async def _personal_project(session: AsyncSession, subject: Subject) -> Project:
-    result = await session.execute(select(Project).where(Project.owner_subject_id == subject.id).order_by(Project.created_at))
+    result = await session.execute(
+        select(Project)
+        .where(col(Project.owner_subject_id) == subject.id)
+        .order_by(col(Project.created_at))
+    )
     project = result.scalars().first()
     if project:
         return project
-    project = Project(name=f"user-{subject.login_username or subject.id}", owner_subject_id=subject.id, notes="Self-service personal project.")
+    project = Project(
+        name=f"user-{subject.login_username or subject.id}",
+        owner_subject_id=subject.id,
+        notes="Self-service personal project.",
+    )
     session.add(project)
     await session.flush()
     return project

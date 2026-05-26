@@ -8,6 +8,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 
 from llm_gateway.core.config import Settings
 from llm_gateway.db.models import (
@@ -73,7 +74,9 @@ def is_employee_username(username: str) -> bool:
 def hash_password(password: str) -> str:
     salt = secrets.token_hex(16)
     iterations = 210_000
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("ascii"), iterations)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt.encode("ascii"), iterations
+    )
     return f"pbkdf2_sha256${iterations}${salt}${digest.hex()}"
 
 
@@ -85,13 +88,19 @@ def verify_password(password: str, stored_hash: str) -> bool:
         return False
     if algorithm != "pbkdf2_sha256":
         return False
-    candidate = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("ascii"), iterations).hex()
+    candidate = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt.encode("ascii"), iterations
+    ).hex()
     return hmac.compare_digest(candidate, digest)
 
 
-async def authenticate_gateway_key(session: AsyncSession, raw_key: str) -> AuthContext | None:
+async def authenticate_gateway_key(
+    session: AsyncSession, raw_key: str
+) -> AuthContext | None:
     prefix = key_prefix(raw_key)
-    result = await session.execute(select(GatewayKey).where(GatewayKey.key_prefix == prefix))
+    result = await session.execute(
+        select(GatewayKey).where(col(GatewayKey.key_prefix) == prefix)
+    )
     candidates = result.scalars().all()
     now = utcnow()
     for candidate in candidates:
@@ -105,15 +114,22 @@ async def authenticate_gateway_key(session: AsyncSession, raw_key: str) -> AuthC
         project = await session.get(Project, candidate.project_id)
         if not subject or not project:
             return None
-        if subject.state != ResourceState.ACTIVE or project.state != ResourceState.ACTIVE:
+        if (
+            subject.state != ResourceState.ACTIVE
+            or project.state != ResourceState.ACTIVE
+        ):
             return None
         return AuthContext(key=candidate, subject=subject, project=project)
     return None
 
 
-async def authenticate_user_session(session: AsyncSession, raw_token: str) -> UserSessionContext | None:
+async def authenticate_user_session(
+    session: AsyncSession, raw_token: str
+) -> UserSessionContext | None:
     prefix = key_prefix(raw_token)
-    result = await session.execute(select(UserSession).where(UserSession.token_prefix == prefix))
+    result = await session.execute(
+        select(UserSession).where(col(UserSession.token_prefix) == prefix)
+    )
     candidates = result.scalars().all()
     now = utcnow()
     for candidate in candidates:
@@ -183,7 +199,7 @@ async def get_or_create_team(
     notes: str | None = None,
     is_builtin: bool = False,
 ) -> Team:
-    result = await session.execute(select(Team).where(Team.name == name))
+    result = await session.execute(select(Team).where(col(Team.name) == name))
     team = result.scalar_one_or_none()
     if team:
         if team.state != ResourceState.ACTIVE:
@@ -206,8 +222,8 @@ async def ensure_team_membership(
 ) -> TeamMembership:
     result = await session.execute(
         select(TeamMembership).where(
-            TeamMembership.team_id == team_id,
-            TeamMembership.subject_id == subject_id,
+            col(TeamMembership.team_id) == team_id,
+            col(TeamMembership.subject_id) == subject_id,
         )
     )
     membership = result.scalar_one_or_none()
@@ -230,8 +246,8 @@ async def ensure_model_team_grant(
 ) -> ModelTeamGrant:
     result = await session.execute(
         select(ModelTeamGrant).where(
-            ModelTeamGrant.model_alias_id == model_alias_id,
-            ModelTeamGrant.team_id == team_id,
+            col(ModelTeamGrant.model_alias_id) == model_alias_id,
+            col(ModelTeamGrant.team_id) == team_id,
         )
     )
     grant = result.scalar_one_or_none()
@@ -260,7 +276,9 @@ async def ensure_builtin_identity(session: AsyncSession, settings: Settings) -> 
         is_builtin=True,
     )
     username = normalize_username(settings.bootstrap_admin_username)
-    result = await session.execute(select(Subject).where(Subject.login_username == username))
+    result = await session.execute(
+        select(Subject).where(col(Subject.login_username) == username)
+    )
     admin = result.scalar_one_or_none()
     if not admin:
         admin = Subject(
@@ -279,12 +297,18 @@ async def ensure_builtin_identity(session: AsyncSession, settings: Settings) -> 
             admin.password_hash = hash_password(settings.bootstrap_admin_password)
         if admin.state != ResourceState.ACTIVE:
             admin.state = ResourceState.ACTIVE
-    await ensure_team_membership(session, team_id=admin_team.id, subject_id=admin.id, role="admin")
-    await ensure_team_membership(session, team_id=guest_team.id, subject_id=admin.id, role="member")
+    await ensure_team_membership(
+        session, team_id=admin_team.id, subject_id=admin.id, role="admin"
+    )
+    await ensure_team_membership(
+        session, team_id=guest_team.id, subject_id=admin.id, role="member"
+    )
 
     models = (await session.execute(select(ModelAlias))).scalars().all()
     for model_alias in models:
-        await ensure_model_team_grant(session, model_alias_id=model_alias.id, team_id=admin_team.id)
+        await ensure_model_team_grant(
+            session, model_alias_id=model_alias.id, team_id=admin_team.id
+        )
 
     return admin
 
@@ -304,7 +328,11 @@ async def create_registered_user(
     full_name = full_name.strip()
     if not full_name:
         raise ValueError("full_name_required")
-    existing = (await session.execute(select(Subject).where(Subject.login_username == normalized))).scalar_one_or_none()
+    existing = (
+        await session.execute(
+            select(Subject).where(col(Subject.login_username) == normalized)
+        )
+    ).scalar_one_or_none()
     if existing:
         raise ValueError("username_already_registered")
 
@@ -323,10 +351,16 @@ async def create_registered_user(
     session.add(subject)
     await session.flush()
 
-    project = Project(name=f"user-{normalized}", owner_subject_id=subject.id, notes="Self-service personal project.")
+    project = Project(
+        name=f"user-{normalized}",
+        owner_subject_id=subject.id,
+        notes="Self-service personal project.",
+    )
     session.add(project)
     await session.flush()
-    await ensure_team_membership(session, team_id=guest_team.id, subject_id=subject.id, role="member")
+    await ensure_team_membership(
+        session, team_id=guest_team.id, subject_id=subject.id, role="member"
+    )
     key, raw_key = await create_gateway_key(
         session,
         subject_id=subject.id,

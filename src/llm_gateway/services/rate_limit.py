@@ -5,6 +5,7 @@ from uuid import UUID
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 
 from llm_gateway.core.config import Settings, get_settings
 from llm_gateway.db.models import RatePolicy, ResourceState
@@ -38,20 +39,28 @@ async def resolve_effective_rate_policy(
 ) -> EffectiveRatePolicy:
     requests_per_minute = defaults.default_request_limit_per_minute
     concurrency_limit = defaults.default_concurrency_limit
-    for scope, scope_id in (("key", key_id), ("subject", subject_id), ("project", project_id)):
+    for scope, scope_id in (
+        ("key", key_id),
+        ("subject", subject_id),
+        ("project", project_id),
+    ):
         result = await session.execute(
             select(RatePolicy).where(
-                RatePolicy.scope == scope,
-                RatePolicy.scope_id == scope_id,
-                RatePolicy.state == ResourceState.ACTIVE,
+                col(RatePolicy.scope) == scope,
+                col(RatePolicy.scope_id) == scope_id,
+                col(RatePolicy.state) == ResourceState.ACTIVE,
             )
         )
         for policy in result.scalars().all():
             if policy.requests_per_minute is not None:
-                requests_per_minute = min(requests_per_minute, policy.requests_per_minute)
+                requests_per_minute = min(
+                    requests_per_minute, policy.requests_per_minute
+                )
             if policy.concurrency_limit is not None:
                 concurrency_limit = min(concurrency_limit, policy.concurrency_limit)
-    return EffectiveRatePolicy(requests_per_minute=requests_per_minute, concurrency_limit=concurrency_limit)
+    return EffectiveRatePolicy(
+        requests_per_minute=requests_per_minute, concurrency_limit=concurrency_limit
+    )
 
 
 async def check_request_rate(

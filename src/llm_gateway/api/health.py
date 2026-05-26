@@ -1,4 +1,5 @@
 import importlib.metadata
+import inspect
 
 from fastapi import APIRouter, Depends
 from redis.asyncio import Redis
@@ -29,7 +30,8 @@ async def ready(
     except Exception:
         checks["postgres"] = False
     try:
-        pong = await redis.ping()
+        pong_result = redis.ping()
+        pong = await pong_result if inspect.isawaitable(pong_result) else pong_result
         checks["redis"] = bool(pong)
     except Exception:
         checks["redis"] = False

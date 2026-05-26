@@ -9,6 +9,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 import sqlmodel
+import sqlmodel.sql.sqltypes
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
@@ -19,14 +20,27 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.add_column("subjects", sa.Column("login_username", sqlmodel.sql.sqltypes.AutoString(), nullable=True))
-    op.add_column("subjects", sa.Column("password_hash", sqlmodel.sql.sqltypes.AutoString(), nullable=True))
-    op.add_column("subjects", sa.Column("is_admin", sa.Boolean(), nullable=False, server_default=sa.false()))
-    op.create_index("ix_subjects_login_username", "subjects", ["login_username"], unique=True)
+    op.add_column(
+        "subjects",
+        sa.Column("login_username", sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    )
+    op.add_column(
+        "subjects",
+        sa.Column("password_hash", sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    )
+    op.add_column(
+        "subjects",
+        sa.Column("is_admin", sa.Boolean(), nullable=False, server_default=sa.false()),
+    )
+    op.create_index(
+        "ix_subjects_login_username", "subjects", ["login_username"], unique=True
+    )
     op.create_index("ix_subjects_is_admin", "subjects", ["is_admin"])
     op.alter_column("subjects", "is_admin", server_default=None)
 
-    resource_state = postgresql.ENUM("ACTIVE", "DISABLED", name="resourcestate", create_type=False)
+    resource_state = postgresql.ENUM(
+        "ACTIVE", "DISABLED", name="resourcestate", create_type=False
+    )
 
     op.create_table(
         "teams",
@@ -36,7 +50,9 @@ def upgrade() -> None:
         sa.Column("name", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column("state", resource_state, nullable=False),
         sa.Column("notes", sqlmodel.sql.sqltypes.AutoString(), nullable=True),
-        sa.Column("is_builtin", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column(
+            "is_builtin", sa.Boolean(), nullable=False, server_default=sa.false()
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("name"),
     )
@@ -57,10 +73,14 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["subject_id"], ["subjects.id"]),
         sa.ForeignKeyConstraint(["team_id"], ["teams.id"]),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("team_id", "subject_id", name="uq_team_membership_team_subject"),
+        sa.UniqueConstraint(
+            "team_id", "subject_id", name="uq_team_membership_team_subject"
+        ),
     )
     op.create_index("ix_team_memberships_team_id", "team_memberships", ["team_id"])
-    op.create_index("ix_team_memberships_subject_id", "team_memberships", ["subject_id"])
+    op.create_index(
+        "ix_team_memberships_subject_id", "team_memberships", ["subject_id"]
+    )
     op.create_index("ix_team_memberships_state", "team_memberships", ["state"])
 
     op.create_table(
@@ -74,9 +94,13 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["model_alias_id"], ["model_aliases.id"]),
         sa.ForeignKeyConstraint(["team_id"], ["teams.id"]),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("model_alias_id", "team_id", name="uq_model_team_grant_model_team"),
+        sa.UniqueConstraint(
+            "model_alias_id", "team_id", name="uq_model_team_grant_model_team"
+        ),
     )
-    op.create_index("ix_model_team_grants_model_alias_id", "model_team_grants", ["model_alias_id"])
+    op.create_index(
+        "ix_model_team_grants_model_alias_id", "model_team_grants", ["model_alias_id"]
+    )
     op.create_index("ix_model_team_grants_team_id", "model_team_grants", ["team_id"])
     op.create_index("ix_model_team_grants_state", "model_team_grants", ["state"])
 

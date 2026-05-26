@@ -8,10 +8,16 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from llm_gateway.api.deps import bearer_token, client_ip_dep, redis_dep, session_dep, settings_dep
+from llm_gateway.api.deps import (
+    bearer_token,
+    client_ip_dep,
+    redis_dep,
+    session_dep,
+    settings_dep,
+)
 from llm_gateway.core.config import Settings
 from llm_gateway.db.models import EndpointFamily, RequestOutcome, utcnow
-from llm_gateway.services.facts import extract_usage_dict, record_request_fact
+from llm_gateway.services.facts import record_request_fact
 from llm_gateway.services.litellm_client import (
     anthropic_messages_once,
     anthropic_messages_stream,
@@ -20,7 +26,11 @@ from llm_gateway.services.litellm_client import (
     responses_once,
     responses_stream,
 )
-from llm_gateway.services.policy import PolicyDenied, list_accessible_model_aliases, resolve_route_context
+from llm_gateway.services.policy import (
+    PolicyDenied,
+    list_accessible_model_aliases,
+    resolve_route_context,
+)
 from llm_gateway.services.rate_limit import (
     RateLimitExceeded,
     check_request_rate,
@@ -44,7 +54,9 @@ def _plain(value: Any) -> Any:
 def _requested_model(body: dict[str, Any]) -> str:
     model = body.get("model")
     if not isinstance(model, str) or not model:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_model")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="missing_model"
+        )
     return model
 
 
@@ -78,9 +90,13 @@ async def _prepare(
         )
         return route, rate_policy
     except PolicyDenied as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.reason) from exc
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=exc.reason
+        ) from exc
     except RateLimitExceeded as exc:
-        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
+        ) from exc
 
 
 @router.post("/v1/chat/completions")
@@ -103,12 +119,21 @@ async def openai_chat_completions(
             request_id=request_id,
             started_at=started_at,
             endpoint_family=EndpointFamily.OPENAI_CHAT,
-            model_alias=body.get("model") if isinstance(body.get("model"), str) else None,
+            model_alias=body.get("model")
+            if isinstance(body.get("model"), str)
+            else None,
             exc=exc,
         )
         raise
     try:
-        route, rate_policy = await _prepare(session=session, redis=redis, settings=settings, auth=auth, body=body, client_ip=client_ip)
+        route, rate_policy = await _prepare(
+            session=session,
+            redis=redis,
+            settings=settings,
+            auth=auth,
+            body=body,
+            client_ip=client_ip,
+        )
     except HTTPException as exc:
         await _record_rejected_request(
             session=session,
@@ -116,7 +141,9 @@ async def openai_chat_completions(
             started_at=started_at,
             endpoint_family=EndpointFamily.OPENAI_CHAT,
             auth=auth,
-            model_alias=body.get("model") if isinstance(body.get("model"), str) else None,
+            model_alias=body.get("model")
+            if isinstance(body.get("model"), str)
+            else None,
             outcome=_outcome_for_http_exception(exc),
             exc=exc,
         )
@@ -144,7 +171,9 @@ async def openai_chat_completions(
             key_id=auth.key.id,
             limit=rate_policy.concurrency_limit,
         ):
-            result = await completion_once(model_alias=route.model_alias, upstream=route.upstream, body=body)
+            result = await completion_once(
+                model_alias=route.model_alias, upstream=route.upstream, body=body
+            )
         await record_request_fact(
             session,
             request_id=request_id,
@@ -251,12 +280,21 @@ async def openai_responses(
             request_id=request_id,
             started_at=started_at,
             endpoint_family=EndpointFamily.OPENAI_RESPONSES,
-            model_alias=body.get("model") if isinstance(body.get("model"), str) else None,
+            model_alias=body.get("model")
+            if isinstance(body.get("model"), str)
+            else None,
             exc=exc,
         )
         raise
     try:
-        route, rate_policy = await _prepare(session=session, redis=redis, settings=settings, auth=auth, body=body, client_ip=client_ip)
+        route, rate_policy = await _prepare(
+            session=session,
+            redis=redis,
+            settings=settings,
+            auth=auth,
+            body=body,
+            client_ip=client_ip,
+        )
     except HTTPException as exc:
         await _record_rejected_request(
             session=session,
@@ -264,7 +302,9 @@ async def openai_responses(
             started_at=started_at,
             endpoint_family=EndpointFamily.OPENAI_RESPONSES,
             auth=auth,
-            model_alias=body.get("model") if isinstance(body.get("model"), str) else None,
+            model_alias=body.get("model")
+            if isinstance(body.get("model"), str)
+            else None,
             outcome=_outcome_for_http_exception(exc),
             exc=exc,
         )
@@ -292,7 +332,9 @@ async def openai_responses(
             key_id=auth.key.id,
             limit=rate_policy.concurrency_limit,
         ):
-            result = await responses_once(model_alias=route.model_alias, upstream=route.upstream, body=body)
+            result = await responses_once(
+                model_alias=route.model_alias, upstream=route.upstream, body=body
+            )
         await record_request_fact(
             session,
             request_id=request_id,
@@ -399,12 +441,21 @@ async def anthropic_messages(
             request_id=request_id,
             started_at=started_at,
             endpoint_family=EndpointFamily.ANTHROPIC_MESSAGES,
-            model_alias=body.get("model") if isinstance(body.get("model"), str) else None,
+            model_alias=body.get("model")
+            if isinstance(body.get("model"), str)
+            else None,
             exc=exc,
         )
         raise
     try:
-        route, rate_policy = await _prepare(session=session, redis=redis, settings=settings, auth=auth, body=body, client_ip=client_ip)
+        route, rate_policy = await _prepare(
+            session=session,
+            redis=redis,
+            settings=settings,
+            auth=auth,
+            body=body,
+            client_ip=client_ip,
+        )
     except HTTPException as exc:
         await _record_rejected_request(
             session=session,
@@ -412,7 +463,9 @@ async def anthropic_messages(
             started_at=started_at,
             endpoint_family=EndpointFamily.ANTHROPIC_MESSAGES,
             auth=auth,
-            model_alias=body.get("model") if isinstance(body.get("model"), str) else None,
+            model_alias=body.get("model")
+            if isinstance(body.get("model"), str)
+            else None,
             outcome=_outcome_for_http_exception(exc),
             exc=exc,
         )
@@ -435,8 +488,12 @@ async def anthropic_messages(
         )
 
     try:
-        async with concurrency_slot(redis, key_id=auth.key.id, limit=rate_policy.concurrency_limit):
-            result = await anthropic_messages_once(model_alias=route.model_alias, upstream=route.upstream, body=body)
+        async with concurrency_slot(
+            redis, key_id=auth.key.id, limit=rate_policy.concurrency_limit
+        ):
+            result = await anthropic_messages_once(
+                model_alias=route.model_alias, upstream=route.upstream, body=body
+            )
         await record_request_fact(
             session,
             request_id=request_id,
@@ -527,7 +584,9 @@ async def list_models(
     raw_key = bearer_token(request)
     auth = await authenticate_gateway_key(session, raw_key)
     if not auth:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_gateway_key")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_gateway_key"
+        )
 
     rows = await list_accessible_model_aliases(session, auth=auth)
     now = int(utcnow().timestamp())
@@ -591,11 +650,15 @@ def _error_response(status_code: int, error_class: str, exc: Exception) -> JSONR
     )
 
 
-async def _authenticate_proxy_request(request: Request, session: AsyncSession) -> AuthContext:
+async def _authenticate_proxy_request(
+    request: Request, session: AsyncSession
+) -> AuthContext:
     raw_key = bearer_token(request)
     context = await authenticate_gateway_key(session, raw_key)
     if not context:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_gateway_key")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_gateway_key"
+        )
     return context
 
 

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 
 from llm_gateway.api.deps import admin_dep, session_dep
 from llm_gateway.db.models import (
@@ -200,7 +201,9 @@ class StatePatch(BaseModel):
 
 
 @router.post("/subjects")
-async def create_subject(payload: SubjectCreate, session: AsyncSession = Depends(session_dep)):
+async def create_subject(
+    payload: SubjectCreate, session: AsyncSession = Depends(session_dep)
+):
     data = payload.model_dump(exclude={"password"})
     if data.get("login_username"):
         data["login_username"] = _validate_login_username(data["login_username"])
@@ -208,7 +211,10 @@ async def create_subject(payload: SubjectCreate, session: AsyncSession = Depends
     subject = Subject(**data)
     if payload.password:
         if not subject.login_username:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="login_username_required_for_password")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="login_username_required_for_password",
+            )
         subject.password_hash = hash_password(payload.password)
     session.add(subject)
     await session.flush()
@@ -232,18 +238,29 @@ async def list_subjects(
     stmt = select(Subject)
     if q and q.strip():
         needle = f"%{q.strip()}%"
-        stmt = stmt.where(or_(Subject.name.ilike(needle), Subject.login_username.ilike(needle)))
-    result = await session.execute(stmt.order_by(Subject.created_at.desc()))
+        stmt = stmt.where(
+            or_(
+                col(Subject.name).ilike(needle),
+                col(Subject.login_username).ilike(needle),
+            )
+        )
+    result = await session.execute(stmt.order_by(col(Subject.created_at).desc()))
     return result.scalars().all()
 
 
 @router.patch("/subjects/{subject_id}")
-async def update_subject(subject_id: UUID, payload: SubjectUpdate, session: AsyncSession = Depends(session_dep)):
+async def update_subject(
+    subject_id: UUID,
+    payload: SubjectUpdate,
+    session: AsyncSession = Depends(session_dep),
+):
     subject = await _get_or_404(session, Subject, subject_id)
     if payload.login_username is not None:
         payload.login_username = _validate_login_username(payload.login_username)
         if payload.login_username:
-            await _ensure_login_username_available(session, payload.login_username, subject_id=subject.id)
+            await _ensure_login_username_available(
+                session, payload.login_username, subject_id=subject.id
+            )
     _apply_patch(subject, payload)
     await _audit_update(session, "subject.update", "subject", subject.id, payload)
     await session.commit()
@@ -259,7 +276,10 @@ async def reset_subject_password(
 ):
     subject = await _get_or_404(session, Subject, subject_id)
     if not subject.login_username:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="subject_has_no_login_username")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="subject_has_no_login_username",
+        )
     subject.password_hash = hash_password(payload.new_password)
     subject.updated_at = utcnow()
     await record_audit_event(
@@ -274,7 +294,9 @@ async def reset_subject_password(
 
 
 @router.patch("/subjects/{subject_id}/state")
-async def set_subject_state(subject_id: UUID, payload: StatePatch, session: AsyncSession = Depends(session_dep)):
+async def set_subject_state(
+    subject_id: UUID, payload: StatePatch, session: AsyncSession = Depends(session_dep)
+):
     subject = await _get_or_404(session, Subject, subject_id)
     subject.state = payload.state
     subject.updated_at = utcnow()
@@ -291,25 +313,46 @@ async def set_subject_state(subject_id: UUID, payload: StatePatch, session: Asyn
 
 
 @router.delete("/subjects/{subject_id}")
-async def delete_subject(subject_id: UUID, session: AsyncSession = Depends(session_dep)):
+async def delete_subject(
+    subject_id: UUID, session: AsyncSession = Depends(session_dep)
+):
     subject = await _get_or_404(session, Subject, subject_id)
     if subject.is_admin:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="cannot_delete_admin_subject")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="cannot_delete_admin_subject",
+        )
 
-    request_count = await _count_rows(session, select(func.count(RequestFact.id)).where(RequestFact.subject_id == subject.id))
+    request_count = await _count_rows(
+        session,
+        select(func.count(col(RequestFact.id))).where(
+            col(RequestFact.subject_id) == subject.id
+        ),
+    )
     if request_count:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "subject_has_usage_history", "request_count": request_count},
+            detail={
+                "code": "subject_has_usage_history",
+                "request_count": request_count,
+            },
         )
 
     owned_projects = (
-        await session.execute(select(Project).where(Project.owner_subject_id == subject.id))
-    ).scalars().all()
+        (
+            await session.execute(
+                select(Project).where(col(Project.owner_subject_id) == subject.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     for project in owned_projects:
         project_usage_count = await _count_rows(
             session,
-            select(func.count(RequestFact.id)).where(RequestFact.project_id == project.id),
+            select(func.count(col(RequestFact.id))).where(
+                col(RequestFact.project_id) == project.id
+            ),
         )
         if project_usage_count:
             raise HTTPException(
@@ -329,22 +372,42 @@ async def delete_subject(subject_id: UUID, session: AsyncSession = Depends(sessi
         outcome="success",
         detail={"login_username": subject.login_username, "name": subject.name},
     )
-    await session.execute(delete(UserSession).where(UserSession.subject_id == subject.id))
-    await session.execute(delete(TeamMembership).where(TeamMembership.subject_id == subject.id))
-    await session.execute(delete(ProjectMembership).where(ProjectMembership.subject_id == subject.id))
-    await session.execute(delete(ModelEntitlement).where(ModelEntitlement.subject_id == subject.id))
-    await session.execute(delete(RatePolicy).where(RatePolicy.scope == "subject", RatePolicy.scope_id == subject.id))
+    await session.execute(
+        delete(UserSession).where(col(UserSession.subject_id) == subject.id)
+    )
+    await session.execute(
+        delete(TeamMembership).where(col(TeamMembership.subject_id) == subject.id)
+    )
+    await session.execute(
+        delete(ProjectMembership).where(col(ProjectMembership.subject_id) == subject.id)
+    )
+    await session.execute(
+        delete(ModelEntitlement).where(col(ModelEntitlement.subject_id) == subject.id)
+    )
+    await session.execute(
+        delete(RatePolicy).where(
+            col(RatePolicy.scope) == "subject", col(RatePolicy.scope_id) == subject.id
+        )
+    )
     for project in owned_projects:
         await _delete_project_without_usage(session, project)
-    await session.execute(delete(GatewayKey).where(GatewayKey.subject_id == subject.id))
-    await session.execute(update(AuditEvent).where(AuditEvent.actor_subject_id == subject.id).values(actor_subject_id=None))
+    await session.execute(
+        delete(GatewayKey).where(col(GatewayKey.subject_id) == subject.id)
+    )
+    await session.execute(
+        update(AuditEvent)
+        .where(col(AuditEvent.actor_subject_id) == subject.id)
+        .values(actor_subject_id=None)
+    )
     await session.delete(subject)
     await session.commit()
     return {"ok": True}
 
 
 @router.post("/projects")
-async def create_project(payload: ProjectCreate, session: AsyncSession = Depends(session_dep)):
+async def create_project(
+    payload: ProjectCreate, session: AsyncSession = Depends(session_dep)
+):
     project = Project(**payload.model_dump())
     session.add(project)
     await session.flush()
@@ -362,12 +425,18 @@ async def create_project(payload: ProjectCreate, session: AsyncSession = Depends
 
 @router.get("/projects")
 async def list_projects(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(select(Project).order_by(Project.created_at.desc()))
+    result = await session.execute(
+        select(Project).order_by(col(Project.created_at).desc())
+    )
     return result.scalars().all()
 
 
 @router.patch("/projects/{project_id}")
-async def update_project(project_id: UUID, payload: ProjectUpdate, session: AsyncSession = Depends(session_dep)):
+async def update_project(
+    project_id: UUID,
+    payload: ProjectUpdate,
+    session: AsyncSession = Depends(session_dep),
+):
     project = await _get_or_404(session, Project, project_id)
     if payload.owner_subject_id:
         await _get_or_404(session, Subject, payload.owner_subject_id)
@@ -379,7 +448,9 @@ async def update_project(project_id: UUID, payload: ProjectUpdate, session: Asyn
 
 
 @router.post("/project-memberships")
-async def create_project_membership(payload: ProjectMembershipCreate, session: AsyncSession = Depends(session_dep)):
+async def create_project_membership(
+    payload: ProjectMembershipCreate, session: AsyncSession = Depends(session_dep)
+):
     await _get_or_404(session, Project, payload.project_id)
     await _get_or_404(session, Subject, payload.subject_id)
     membership = ProjectMembership(**payload.model_dump())
@@ -399,12 +470,16 @@ async def create_project_membership(payload: ProjectMembershipCreate, session: A
 
 @router.get("/project-memberships")
 async def list_project_memberships(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(select(ProjectMembership).order_by(ProjectMembership.created_at.desc()))
+    result = await session.execute(
+        select(ProjectMembership).order_by(col(ProjectMembership.created_at).desc())
+    )
     return result.scalars().all()
 
 
 @router.post("/gateway-keys")
-async def issue_gateway_key(payload: GatewayKeyCreate, session: AsyncSession = Depends(session_dep)):
+async def issue_gateway_key(
+    payload: GatewayKeyCreate, session: AsyncSession = Depends(session_dep)
+):
     await _get_or_404(session, Subject, payload.subject_id)
     await _get_or_404(session, Project, payload.project_id)
     key, raw_key = await create_gateway_key(
@@ -428,12 +503,18 @@ async def issue_gateway_key(payload: GatewayKeyCreate, session: AsyncSession = D
 
 @router.get("/gateway-keys")
 async def list_gateway_keys(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(select(GatewayKey).order_by(GatewayKey.created_at.desc()))
+    result = await session.execute(
+        select(GatewayKey).order_by(col(GatewayKey.created_at).desc())
+    )
     return [_redact_gateway_key(item) for item in result.scalars().all()]
 
 
 @router.patch("/gateway-keys/{gateway_key_id}/state")
-async def set_gateway_key_state(gateway_key_id: UUID, payload: StatePatch, session: AsyncSession = Depends(session_dep)):
+async def set_gateway_key_state(
+    gateway_key_id: UUID,
+    payload: StatePatch,
+    session: AsyncSession = Depends(session_dep),
+):
     key = await _get_or_404(session, GatewayKey, gateway_key_id)
     key.state = payload.state
     key.updated_at = utcnow()
@@ -450,7 +531,9 @@ async def set_gateway_key_state(gateway_key_id: UUID, payload: StatePatch, sessi
 
 
 @router.post("/model-aliases")
-async def create_model_alias(payload: ModelAliasCreate, session: AsyncSession = Depends(session_dep)):
+async def create_model_alias(
+    payload: ModelAliasCreate, session: AsyncSession = Depends(session_dep)
+):
     model_alias = ModelAlias(**payload.model_dump())
     session.add(model_alias)
     await session.flush()
@@ -460,7 +543,9 @@ async def create_model_alias(payload: ModelAliasCreate, session: AsyncSession = 
         notes="Built-in administrators with access to all models.",
         is_builtin=True,
     )
-    await ensure_model_team_grant(session, model_alias_id=model_alias.id, team_id=admin_team.id)
+    await ensure_model_team_grant(
+        session, model_alias_id=model_alias.id, team_id=admin_team.id
+    )
     await record_audit_event(
         session,
         action="model_alias.create",
@@ -476,7 +561,9 @@ async def create_model_alias(payload: ModelAliasCreate, session: AsyncSession = 
 
 @router.get("/model-aliases")
 async def list_model_aliases(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(select(ModelAlias).order_by(ModelAlias.created_at.desc()))
+    result = await session.execute(
+        select(ModelAlias).order_by(col(ModelAlias.created_at).desc())
+    )
     return result.scalars().all()
 
 
@@ -488,7 +575,9 @@ async def update_model_alias(
 ):
     model_alias = await _get_or_404(session, ModelAlias, model_alias_id)
     _apply_patch(model_alias, payload)
-    await _audit_update(session, "model_alias.update", "model_alias", model_alias.id, payload)
+    await _audit_update(
+        session, "model_alias.update", "model_alias", model_alias.id, payload
+    )
     await session.commit()
     await session.refresh(model_alias)
     return model_alias
@@ -502,15 +591,25 @@ async def delete_model_alias(
 ):
     model_alias = await _get_or_404(session, ModelAlias, model_alias_id)
     upstreams = (
-        await session.execute(select(UpstreamTarget).where(UpstreamTarget.model_alias_id == model_alias.id))
-    ).scalars().all()
+        (
+            await session.execute(
+                select(UpstreamTarget).where(
+                    col(UpstreamTarget.model_alias_id) == model_alias.id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     if upstreams and not cascade_upstreams:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
                 "code": "model_alias_has_upstreams",
                 "upstream_count": len(upstreams),
-                "upstreams": [{"id": str(item.id), "name": item.name} for item in upstreams],
+                "upstreams": [
+                    {"id": str(item.id), "name": item.name} for item in upstreams
+                ],
             },
         )
     for upstream in upstreams:
@@ -528,19 +627,39 @@ async def delete_model_alias(
             "upstream_count": len(upstreams),
         },
     )
-    await session.execute(delete(ModelEntitlement).where(ModelEntitlement.model_alias_id == model_alias.id))
-    await session.execute(delete(ModelTeamGrant).where(ModelTeamGrant.model_alias_id == model_alias.id))
-    await session.execute(delete(RouterCommandConfig).where(RouterCommandConfig.model_alias_id == model_alias.id))
-    await session.execute(delete(UpstreamTarget).where(UpstreamTarget.model_alias_id == model_alias.id))
+    await session.execute(
+        delete(ModelEntitlement).where(
+            col(ModelEntitlement.model_alias_id) == model_alias.id
+        )
+    )
+    await session.execute(
+        delete(ModelTeamGrant).where(
+            col(ModelTeamGrant.model_alias_id) == model_alias.id
+        )
+    )
+    await session.execute(
+        delete(RouterCommandConfig).where(
+            col(RouterCommandConfig.model_alias_id) == model_alias.id
+        )
+    )
+    await session.execute(
+        delete(UpstreamTarget).where(
+            col(UpstreamTarget.model_alias_id) == model_alias.id
+        )
+    )
     await session.delete(model_alias)
     await session.commit()
     return {"ok": True, "deleted_upstreams": len(upstreams)}
 
 
 @router.post("/model-entitlements")
-async def create_model_entitlement(payload: ModelEntitlementCreate, session: AsyncSession = Depends(session_dep)):
+async def create_model_entitlement(
+    payload: ModelEntitlementCreate, session: AsyncSession = Depends(session_dep)
+):
     if not any([payload.subject_id, payload.project_id, payload.gateway_key_id]):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="entitlement_scope_required")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="entitlement_scope_required"
+        )
     entitlement = ModelEntitlement(**payload.model_dump())
     session.add(entitlement)
     await session.flush()
@@ -558,12 +677,16 @@ async def create_model_entitlement(payload: ModelEntitlementCreate, session: Asy
 
 @router.get("/model-entitlements")
 async def list_model_entitlements(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(select(ModelEntitlement).order_by(ModelEntitlement.created_at.desc()))
+    result = await session.execute(
+        select(ModelEntitlement).order_by(col(ModelEntitlement.created_at).desc())
+    )
     return result.scalars().all()
 
 
 @router.post("/teams")
-async def create_team(payload: TeamCreate, session: AsyncSession = Depends(session_dep)):
+async def create_team(
+    payload: TeamCreate, session: AsyncSession = Depends(session_dep)
+):
     team = Team(**payload.model_dump())
     session.add(team)
     await session.flush()
@@ -582,12 +705,14 @@ async def create_team(payload: TeamCreate, session: AsyncSession = Depends(sessi
 
 @router.get("/teams")
 async def list_teams(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(select(Team).order_by(Team.name))
+    result = await session.execute(select(Team).order_by(col(Team.name)))
     return result.scalars().all()
 
 
 @router.patch("/teams/{team_id}")
-async def update_team(team_id: UUID, payload: TeamUpdate, session: AsyncSession = Depends(session_dep)):
+async def update_team(
+    team_id: UUID, payload: TeamUpdate, session: AsyncSession = Depends(session_dep)
+):
     team = await _get_or_404(session, Team, team_id)
     _apply_patch(team, payload)
     await _audit_update(session, "team.update", "team", team.id, payload)
@@ -597,7 +722,9 @@ async def update_team(team_id: UUID, payload: TeamUpdate, session: AsyncSession 
 
 
 @router.post("/team-memberships")
-async def create_team_membership(payload: TeamMembershipCreate, session: AsyncSession = Depends(session_dep)):
+async def create_team_membership(
+    payload: TeamMembershipCreate, session: AsyncSession = Depends(session_dep)
+):
     await _get_or_404(session, Team, payload.team_id)
     await _get_or_404(session, Subject, payload.subject_id)
     membership = await ensure_team_membership(
@@ -620,7 +747,9 @@ async def create_team_membership(payload: TeamMembershipCreate, session: AsyncSe
 
 @router.get("/team-memberships")
 async def list_team_memberships(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(select(TeamMembership).order_by(TeamMembership.created_at.desc()))
+    result = await session.execute(
+        select(TeamMembership).order_by(col(TeamMembership.created_at).desc())
+    )
     return result.scalars().all()
 
 
@@ -646,7 +775,9 @@ async def set_team_membership_state(
 
 
 @router.post("/model-team-grants")
-async def create_model_team_grant(payload: ModelTeamGrantCreate, session: AsyncSession = Depends(session_dep)):
+async def create_model_team_grant(
+    payload: ModelTeamGrantCreate, session: AsyncSession = Depends(session_dep)
+):
     await _get_or_404(session, ModelAlias, payload.model_alias_id)
     await _get_or_404(session, Team, payload.team_id)
     grant = await ensure_model_team_grant(
@@ -668,7 +799,9 @@ async def create_model_team_grant(payload: ModelTeamGrantCreate, session: AsyncS
 
 @router.get("/model-team-grants")
 async def list_model_team_grants(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(select(ModelTeamGrant).order_by(ModelTeamGrant.created_at.desc()))
+    result = await session.execute(
+        select(ModelTeamGrant).order_by(col(ModelTeamGrant.created_at).desc())
+    )
     return result.scalars().all()
 
 
@@ -715,7 +848,9 @@ async def set_model_entitlement_state(
 
 
 @router.post("/upstreams")
-async def create_upstream(payload: UpstreamTargetCreate, session: AsyncSession = Depends(session_dep)):
+async def create_upstream(
+    payload: UpstreamTargetCreate, session: AsyncSession = Depends(session_dep)
+):
     await _get_or_404(session, ModelAlias, payload.model_alias_id)
     upstream = UpstreamTarget(**payload.model_dump())
     session.add(upstream)
@@ -735,12 +870,16 @@ async def create_upstream(payload: UpstreamTargetCreate, session: AsyncSession =
 
 @router.get("/upstreams")
 async def list_upstreams(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(select(UpstreamTarget).order_by(UpstreamTarget.created_at.desc()))
+    result = await session.execute(
+        select(UpstreamTarget).order_by(col(UpstreamTarget.created_at).desc())
+    )
     return [_redact_upstream(item) for item in result.scalars().all()]
 
 
 @router.get("/upstreams/{upstream_id}/health")
-async def upstream_health(upstream_id: UUID, session: AsyncSession = Depends(session_dep)):
+async def upstream_health(
+    upstream_id: UUID, session: AsyncSession = Depends(session_dep)
+):
     upstream = await _get_or_404(session, UpstreamTarget, upstream_id)
     result = await check_upstream_health(upstream)
     return {"upstream": _redact_upstream(upstream), "health": result}
@@ -754,14 +893,18 @@ async def update_upstream(
 ):
     upstream = await _get_or_404(session, UpstreamTarget, upstream_id)
     _apply_patch(upstream, payload)
-    await _audit_update(session, "upstream.update", "upstream_target", upstream.id, payload)
+    await _audit_update(
+        session, "upstream.update", "upstream_target", upstream.id, payload
+    )
     await session.commit()
     await session.refresh(upstream)
     return _redact_upstream(upstream)
 
 
 @router.delete("/upstreams/{upstream_id}")
-async def delete_upstream(upstream_id: UUID, session: AsyncSession = Depends(session_dep)):
+async def delete_upstream(
+    upstream_id: UUID, session: AsyncSession = Depends(session_dep)
+):
     upstream = await _get_or_404(session, UpstreamTarget, upstream_id)
     await _ensure_upstream_deletable(session, upstream)
     await record_audit_event(
@@ -778,7 +921,9 @@ async def delete_upstream(upstream_id: UUID, session: AsyncSession = Depends(ses
 
 
 @router.post("/router-command-configs")
-async def create_router_command_config(payload: RouterCommandConfigCreate, session: AsyncSession = Depends(session_dep)):
+async def create_router_command_config(
+    payload: RouterCommandConfigCreate, session: AsyncSession = Depends(session_dep)
+):
     await _get_or_404(session, ModelAlias, payload.model_alias_id)
     config = RouterCommandConfig(**payload.model_dump())
     session.add(config)
@@ -798,9 +943,14 @@ async def create_router_command_config(payload: RouterCommandConfigCreate, sessi
 
 @router.get("/router-command-configs")
 async def list_router_command_configs(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(select(RouterCommandConfig).order_by(RouterCommandConfig.created_at.desc()))
+    result = await session.execute(
+        select(RouterCommandConfig).order_by(col(RouterCommandConfig.created_at).desc())
+    )
     configs = result.scalars().all()
-    return [{"config": config, "command": render_router_command(config)} for config in configs]
+    return [
+        {"config": config, "command": render_router_command(config)}
+        for config in configs
+    ]
 
 
 @router.patch("/router-command-configs/{config_id}")
@@ -811,14 +961,22 @@ async def update_router_command_config(
 ):
     config = await _get_or_404(session, RouterCommandConfig, config_id)
     _apply_patch(config, payload)
-    await _audit_update(session, "router_command_config.update", "router_command_config", config.id, payload)
+    await _audit_update(
+        session,
+        "router_command_config.update",
+        "router_command_config",
+        config.id,
+        payload,
+    )
     await session.commit()
     await session.refresh(config)
     return {"config": config, "command": render_router_command(config)}
 
 
 @router.post("/rate-policies")
-async def create_rate_policy(payload: RatePolicyCreate, session: AsyncSession = Depends(session_dep)):
+async def create_rate_policy(
+    payload: RatePolicyCreate, session: AsyncSession = Depends(session_dep)
+):
     policy = RatePolicy(**payload.model_dump())
     session.add(policy)
     await session.flush()
@@ -837,7 +995,9 @@ async def create_rate_policy(payload: RatePolicyCreate, session: AsyncSession = 
 
 @router.get("/rate-policies")
 async def list_rate_policies(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(select(RatePolicy).order_by(RatePolicy.created_at.desc()))
+    result = await session.execute(
+        select(RatePolicy).order_by(col(RatePolicy.created_at).desc())
+    )
     return result.scalars().all()
 
 
@@ -849,7 +1009,9 @@ async def update_rate_policy(
 ):
     policy = await _get_or_404(session, RatePolicy, policy_id)
     _apply_patch(policy, payload)
-    await _audit_update(session, "rate_policy.update", "rate_policy", policy.id, payload)
+    await _audit_update(
+        session, "rate_policy.update", "rate_policy", policy.id, payload
+    )
     await session.commit()
     await session.refresh(policy)
     return policy
@@ -863,26 +1025,40 @@ async def usage_summary(
 ):
     filters = []
     if start:
-        filters.append(RequestFact.started_at >= start)
+        filters.append(col(RequestFact.started_at) >= start)
     if end:
-        filters.append(RequestFact.started_at < end)
+        filters.append(col(RequestFact.started_at) < end)
 
-    success_count = func.sum(case((RequestFact.outcome == RequestOutcome.SUCCESS, 1), else_=0)).label("success_count")
-    failure_count = func.sum(case((RequestFact.outcome != RequestOutcome.SUCCESS, 1), else_=0)).label("failure_count")
+    success_count = func.sum(
+        case((col(RequestFact.outcome) == RequestOutcome.SUCCESS, 1), else_=0)
+    ).label("success_count")
+    failure_count = func.sum(
+        case((col(RequestFact.outcome) != RequestOutcome.SUCCESS, 1), else_=0)
+    ).label("failure_count")
     stmt = (
         select(
-            RequestFact.model_alias,
-            RequestFact.subject_id,
-            RequestFact.project_id,
-            func.count(RequestFact.id).label("request_count"),
-            func.coalesce(func.sum(RequestFact.prompt_tokens), 0).label("prompt_tokens"),
-            func.coalesce(func.sum(RequestFact.completion_tokens), 0).label("completion_tokens"),
-            func.coalesce(func.sum(RequestFact.total_tokens), 0).label("total_tokens"),
+            col(RequestFact.model_alias),
+            col(RequestFact.subject_id),
+            col(RequestFact.project_id),
+            func.count(col(RequestFact.id)).label("request_count"),
+            func.coalesce(func.sum(col(RequestFact.prompt_tokens)), 0).label(
+                "prompt_tokens"
+            ),
+            func.coalesce(func.sum(col(RequestFact.completion_tokens)), 0).label(
+                "completion_tokens"
+            ),
+            func.coalesce(func.sum(col(RequestFact.total_tokens)), 0).label(
+                "total_tokens"
+            ),
             success_count,
             failure_count,
         )
         .where(*filters)
-        .group_by(RequestFact.model_alias, RequestFact.subject_id, RequestFact.project_id)
+        .group_by(
+            col(RequestFact.model_alias),
+            col(RequestFact.subject_id),
+            col(RequestFact.project_id),
+        )
     )
     rows = (await session.execute(stmt)).mappings().all()
     return [dict(row) for row in rows]
@@ -896,35 +1072,44 @@ async def usage_ranking(
     limit: int = Query(default=20, ge=1, le=100),
     session: AsyncSession = Depends(session_dep),
 ):
-    filters = [RequestFact.subject_id.isnot(None)]
+    filters = [col(RequestFact.subject_id).isnot(None)]
     if start:
-        filters.append(RequestFact.started_at >= start)
+        filters.append(col(RequestFact.started_at) >= start)
     if end:
-        filters.append(RequestFact.started_at < end)
+        filters.append(col(RequestFact.started_at) < end)
     if model:
-        filters.append(RequestFact.model_alias == model)
+        filters.append(col(RequestFact.model_alias) == model)
 
     effective_total_tokens = func.coalesce(
-        RequestFact.total_tokens,
-        func.coalesce(RequestFact.prompt_tokens, 0) + func.coalesce(RequestFact.completion_tokens, 0),
+        col(RequestFact.total_tokens),
+        func.coalesce(col(RequestFact.prompt_tokens), 0)
+        + func.coalesce(col(RequestFact.completion_tokens), 0),
         0,
     )
-    total_tokens = func.coalesce(func.sum(effective_total_tokens), 0).label("total_tokens")
+    total_tokens = func.coalesce(func.sum(effective_total_tokens), 0).label(
+        "total_tokens"
+    )
 
     stmt = (
         select(
-            RequestFact.subject_id,
-            Subject.login_username,
-            Subject.name.label("subject_name"),
-            func.count(RequestFact.id).label("request_count"),
-            func.coalesce(func.sum(RequestFact.prompt_tokens), 0).label("prompt_tokens"),
-            func.coalesce(func.sum(RequestFact.completion_tokens), 0).label("completion_tokens"),
+            col(RequestFact.subject_id),
+            col(Subject.login_username),
+            col(Subject.name).label("subject_name"),
+            func.count(col(RequestFact.id)).label("request_count"),
+            func.coalesce(func.sum(col(RequestFact.prompt_tokens)), 0).label(
+                "prompt_tokens"
+            ),
+            func.coalesce(func.sum(col(RequestFact.completion_tokens)), 0).label(
+                "completion_tokens"
+            ),
             total_tokens,
         )
-        .join(Subject, RequestFact.subject_id == Subject.id)
+        .join(Subject, col(RequestFact.subject_id) == col(Subject.id))
         .where(*filters)
-        .group_by(RequestFact.subject_id, Subject.login_username, Subject.name)
-        .order_by(total_tokens.desc(), func.count(RequestFact.id).desc())
+        .group_by(
+            col(RequestFact.subject_id), col(Subject.login_username), col(Subject.name)
+        )
+        .order_by(total_tokens.desc(), func.count(col(RequestFact.id)).desc())
         .limit(limit)
     )
     rows = (await session.execute(stmt)).mappings().all()
@@ -933,14 +1118,18 @@ async def usage_ranking(
 
 @router.get("/audit-events")
 async def list_audit_events(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(select(AuditEvent).order_by(AuditEvent.created_at.desc()).limit(200))
+    result = await session.execute(
+        select(AuditEvent).order_by(col(AuditEvent.created_at).desc()).limit(200)
+    )
     return result.scalars().all()
 
 
 async def _get_or_404(session: AsyncSession, model, item_id: UUID):
     item = await session.get(model, item_id)
     if not item:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{model.__name__}_not_found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"{model.__name__}_not_found"
+        )
     return item
 
 
@@ -951,7 +1140,10 @@ def _validate_login_username(value: str | None) -> str | None:
     if not normalized:
         return None
     if not is_employee_username(normalized):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="username_must_match_employee_id")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="username_must_match_employee_id",
+        )
     return normalized
 
 
@@ -961,20 +1153,28 @@ async def _ensure_login_username_available(
     *,
     subject_id: UUID | None = None,
 ) -> None:
-    result = await session.execute(select(Subject).where(Subject.login_username == login_username))
+    result = await session.execute(
+        select(Subject).where(col(Subject.login_username) == login_username)
+    )
     existing = result.scalar_one_or_none()
     if existing and existing.id != subject_id:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="username_already_registered")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="username_already_registered"
+        )
 
 
 async def _count_rows(session: AsyncSession, stmt) -> int:
     return int((await session.execute(stmt)).scalar_one() or 0)
 
 
-async def _ensure_upstream_deletable(session: AsyncSession, upstream: UpstreamTarget) -> None:
+async def _ensure_upstream_deletable(
+    session: AsyncSession, upstream: UpstreamTarget
+) -> None:
     request_count = await _count_rows(
         session,
-        select(func.count(RequestFact.id)).where(RequestFact.upstream_target_id == upstream.id),
+        select(func.count(col(RequestFact.id))).where(
+            col(RequestFact.upstream_target_id) == upstream.id
+        ),
     )
     if request_count:
         raise HTTPException(
@@ -988,11 +1188,23 @@ async def _ensure_upstream_deletable(session: AsyncSession, upstream: UpstreamTa
         )
 
 
-async def _delete_project_without_usage(session: AsyncSession, project: Project) -> None:
-    await session.execute(delete(ProjectMembership).where(ProjectMembership.project_id == project.id))
-    await session.execute(delete(ModelEntitlement).where(ModelEntitlement.project_id == project.id))
-    await session.execute(delete(RatePolicy).where(RatePolicy.scope == "project", RatePolicy.scope_id == project.id))
-    await session.execute(delete(GatewayKey).where(GatewayKey.project_id == project.id))
+async def _delete_project_without_usage(
+    session: AsyncSession, project: Project
+) -> None:
+    await session.execute(
+        delete(ProjectMembership).where(col(ProjectMembership.project_id) == project.id)
+    )
+    await session.execute(
+        delete(ModelEntitlement).where(col(ModelEntitlement.project_id) == project.id)
+    )
+    await session.execute(
+        delete(RatePolicy).where(
+            col(RatePolicy.scope) == "project", col(RatePolicy.scope_id) == project.id
+        )
+    )
+    await session.execute(
+        delete(GatewayKey).where(col(GatewayKey.project_id) == project.id)
+    )
     await session.delete(project)
 
 

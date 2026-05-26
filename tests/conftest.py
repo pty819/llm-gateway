@@ -11,6 +11,7 @@ import pytest
 import pytest_asyncio
 from dotenv import load_dotenv
 from sqlalchemy import select
+from sqlmodel import col
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,7 +35,9 @@ async def client():
     from llm_gateway.main import app
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver", timeout=90) as item:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver", timeout=90
+    ) as item:
         yield item
 
 
@@ -43,7 +46,9 @@ async def external_ip_client():
     from llm_gateway.main import app
 
     transport = httpx.ASGITransport(app=app, client=("198.51.100.10", 12345))
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver", timeout=90) as item:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver", timeout=90
+    ) as item:
         yield item
 
 
@@ -73,7 +78,9 @@ async def gateway_fixture() -> GatewayFixture:
 
     suffix = uuid4().hex
     upstream_model = os.environ["LLM_GATEWAY_UPSTREAM_MODEL"]
-    litellm_model = os.environ.get("LLM_GATEWAY_LITELLM_MODEL", f"openai/{upstream_model}")
+    litellm_model = os.environ.get(
+        "LLM_GATEWAY_LITELLM_MODEL", f"openai/{upstream_model}"
+    )
 
     async with AsyncSessionLocal() as session:
         subject = Subject(name=f"pytest-user-{suffix}", type=SubjectType.USER)
@@ -101,7 +108,9 @@ async def gateway_fixture() -> GatewayFixture:
         session.add(upstream)
         await session.flush()
 
-        entitlement = ModelEntitlement(project_id=project.id, model_alias_id=model_alias.id)
+        entitlement = ModelEntitlement(
+            project_id=project.id, model_alias_id=model_alias.id
+        )
         session.add(entitlement)
         key, raw_key = await create_gateway_key(
             session,
@@ -127,5 +136,7 @@ async def fetch_request_fact(request_id: str):
     from llm_gateway.db.session import AsyncSessionLocal
 
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(RequestFact).where(RequestFact.request_id == request_id))
+        result = await session.execute(
+            select(RequestFact).where(col(RequestFact.request_id) == request_id)
+        )
         return result.scalar_one()

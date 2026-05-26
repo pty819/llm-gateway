@@ -3,6 +3,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
+from sqlmodel import col
 
 from llm_gateway.db.models import EndpointFamily, RequestOutcome, UsageSource
 
@@ -55,7 +56,9 @@ async def test_health_and_admin_diagnostics(client):
     assert ready.status_code == 200
     assert ready.json()["ok"] is True
 
-    diagnostics = await client.get("/admin/diagnostics", headers={"x-admin-token": get_settings().admin_token})
+    diagnostics = await client.get(
+        "/admin/diagnostics", headers={"x-admin-token": get_settings().admin_token}
+    )
     assert diagnostics.status_code == 200
     assert diagnostics.json()["litellm_version"] != "unknown"
 
@@ -90,7 +93,9 @@ async def test_self_service_register_login_and_guest_team_model_access(client):
     model_id = model.json()["id"]
 
     async with AsyncSessionLocal() as session:
-        guest_team = (await session.execute(select(Team).where(Team.name == "guest"))).scalar_one()
+        guest_team = (
+            await session.execute(select(Team).where(col(Team.name) == "guest"))
+        ).scalar_one()
 
     grant = await client.post(
         "/admin/model-team-grants",
@@ -102,7 +107,11 @@ async def test_self_service_register_login_and_guest_team_model_access(client):
     username = _employee_username()
     registered = await client.post(
         "/auth/register",
-        json={"username": username, "full_name": "测试用户", "password": "correct-horse-battery"},
+        json={
+            "username": username,
+            "full_name": "测试用户",
+            "password": "correct-horse-battery",
+        },
     )
     assert registered.status_code == 200, registered.text
     payload = registered.json()
@@ -116,7 +125,9 @@ async def test_self_service_register_login_and_guest_team_model_access(client):
     ids = [item["id"] for item in models.json()["data"]]
     assert f"guest-model-{suffix}" in ids
 
-    logged_in = await client.post("/auth/login", json={"username": username, "password": "correct-horse-battery"})
+    logged_in = await client.post(
+        "/auth/login", json={"username": username, "password": "correct-horse-battery"}
+    )
     assert logged_in.status_code == 200, logged_in.text
     assert logged_in.json()["session_token"].startswith("sess-")
 
@@ -137,14 +148,26 @@ async def test_admin_session_can_manage_team_union_permissions(client):
 
     registered = await client.post(
         "/auth/register",
-        json={"username": _employee_username(), "full_name": "权限用户", "password": "correct-horse-battery"},
+        json={
+            "username": _employee_username(),
+            "full_name": "权限用户",
+            "password": "correct-horse-battery",
+        },
     )
     assert registered.status_code == 200, registered.text
     subject_id = registered.json()["profile"]["subject"]["id"]
     raw_key = registered.json()["gateway_key"]["plaintext_key"]
 
-    team1 = (await client.post("/admin/teams", headers=session_headers, json={"name": f"team1-{suffix}"})).json()
-    team3 = (await client.post("/admin/teams", headers=session_headers, json={"name": f"team3-{suffix}"})).json()
+    team1 = (
+        await client.post(
+            "/admin/teams", headers=session_headers, json={"name": f"team1-{suffix}"}
+        )
+    ).json()
+    team3 = (
+        await client.post(
+            "/admin/teams", headers=session_headers, json={"name": f"team3-{suffix}"}
+        )
+    ).json()
 
     for team in [team1, team3]:
         response = await client.post(
@@ -196,7 +219,9 @@ async def test_legacy_user_must_complete_real_name_after_login(client):
         session.add(subject)
         await session.commit()
 
-    logged_in = await client.post("/auth/login", json={"username": username, "password": "correct-horse-battery"})
+    logged_in = await client.post(
+        "/auth/login", json={"username": username, "password": "correct-horse-battery"}
+    )
     assert logged_in.status_code == 200, logged_in.text
     assert logged_in.json()["profile"]["subject"]["requires_real_name"] is True
 
@@ -213,7 +238,11 @@ async def test_legacy_user_must_complete_real_name_after_login(client):
 async def test_registration_rejects_non_employee_username(client):
     response = await client.post(
         "/auth/register",
-        json={"username": "alice", "full_name": "Alice", "password": "correct-horse-battery"},
+        json={
+            "username": "alice",
+            "full_name": "Alice",
+            "password": "correct-horse-battery",
+        },
     )
     assert response.status_code == 422
 
@@ -243,7 +272,9 @@ async def test_admin_can_reset_password_and_delete_unused_subject(client):
     )
     assert reset.status_code == 200, reset.text
 
-    login = await client.post("/auth/login", json={"username": username, "password": "new-correct-horse"})
+    login = await client.post(
+        "/auth/login", json={"username": username, "password": "new-correct-horse"}
+    )
     assert login.status_code == 200, login.text
 
     deleted = await client.delete(f"/admin/subjects/{subject_id}", headers=headers)
@@ -291,7 +322,9 @@ async def test_model_alias_delete_requires_cascade_for_upstreams(client):
     assert deleted.json()["deleted_upstreams"] == 1
 
 
-async def test_usage_ranking_falls_back_to_prompt_plus_completion_tokens_and_bounds_limit(client, gateway_fixture):
+async def test_usage_ranking_falls_back_to_prompt_plus_completion_tokens_and_bounds_limit(
+    client, gateway_fixture
+):
     from llm_gateway.core.config import get_settings
     from llm_gateway.db.models import RequestFact, utcnow
     from llm_gateway.db.session import AsyncSessionLocal
@@ -329,7 +362,9 @@ async def test_usage_ranking_falls_back_to_prompt_plus_completion_tokens_and_bou
     assert payload[0]["subject_id"] == str(gateway_fixture.subject_id)
     assert payload[0]["total_tokens"] >= 18
 
-    invalid_limit = await client.get("/admin/usage/ranking", headers=headers, params={"limit": 0})
+    invalid_limit = await client.get(
+        "/admin/usage/ranking", headers=headers, params={"limit": 0}
+    )
     assert invalid_limit.status_code == 422
 
 
@@ -342,7 +377,11 @@ async def test_self_service_usage_summary_is_scoped_to_current_user(client):
     username = _employee_username()
     registered = await client.post(
         "/auth/register",
-        json={"username": username, "full_name": "用量用户", "password": "correct-horse-battery"},
+        json={
+            "username": username,
+            "full_name": "用量用户",
+            "password": "correct-horse-battery",
+        },
     )
     assert registered.status_code == 200, registered.text
     payload = registered.json()
@@ -352,7 +391,11 @@ async def test_self_service_usage_summary_is_scoped_to_current_user(client):
 
     other = await client.post(
         "/auth/register",
-        json={"username": _employee_username(), "full_name": "其他用户", "password": "correct-horse-battery"},
+        json={
+            "username": _employee_username(),
+            "full_name": "其他用户",
+            "password": "correct-horse-battery",
+        },
     )
     assert other.status_code == 200, other.text
 
@@ -430,14 +473,18 @@ async def test_self_service_usage_summary_is_scoped_to_current_user(client):
     assert summary["failure_count"] == 1
 
 
-async def test_openai_chat_completion_uses_real_upstream_and_records_usage(client, gateway_fixture):
+async def test_openai_chat_completion_uses_real_upstream_and_records_usage(
+    client, gateway_fixture
+):
     request_id = f"pytest-openai-{uuid4()}"
     response = await client.post(
         "/v1/chat/completions",
         headers=_auth_headers(gateway_fixture.raw_key, request_id),
         json={
             "model": gateway_fixture.model_alias,
-            "messages": [{"role": "user", "content": "Reply with exactly one short sentence."}],
+            "messages": [
+                {"role": "user", "content": "Reply with exactly one short sentence."}
+            ],
             "max_tokens": 32,
             "temperature": 0,
         },
@@ -462,7 +509,9 @@ async def test_invalid_gateway_key_records_auth_failure(client, gateway_fixture)
         headers={"Authorization": "Bearer gw-invalid", "x-request-id": request_id},
         json={
             "model": gateway_fixture.model_alias,
-            "messages": [{"role": "user", "content": "This should not reach upstream."}],
+            "messages": [
+                {"role": "user", "content": "This should not reach upstream."}
+            ],
             "max_tokens": 16,
         },
     )
@@ -483,7 +532,9 @@ async def test_openai_stream_completion_records_success(client, gateway_fixture)
         headers=_auth_headers(gateway_fixture.raw_key, request_id),
         json={
             "model": gateway_fixture.model_alias,
-            "messages": [{"role": "user", "content": "Say stream-ok in a short sentence."}],
+            "messages": [
+                {"role": "user", "content": "Say stream-ok in a short sentence."}
+            ],
             "max_tokens": 32,
             "temperature": 0,
             "stream": True,
@@ -501,7 +552,9 @@ async def test_openai_stream_completion_records_success(client, gateway_fixture)
     assert fact.streaming is True
 
 
-async def test_anthropic_messages_conversion_uses_litellm_and_records_usage(client, gateway_fixture):
+async def test_anthropic_messages_conversion_uses_litellm_and_records_usage(
+    client, gateway_fixture
+):
     request_id = f"pytest-anthropic-{uuid4()}"
     response = await client.post(
         "/v1/messages",
@@ -509,7 +562,9 @@ async def test_anthropic_messages_conversion_uses_litellm_and_records_usage(clie
         json={
             "model": gateway_fixture.model_alias,
             "max_tokens": 32,
-            "messages": [{"role": "user", "content": "Reply with exactly one short sentence."}],
+            "messages": [
+                {"role": "user", "content": "Reply with exactly one short sentence."}
+            ],
         },
     )
 
@@ -525,13 +580,16 @@ async def test_anthropic_messages_conversion_uses_litellm_and_records_usage(clie
     assert fact.prompt_tokens and fact.prompt_tokens > 0
 
 
-async def test_model_ip_allowlist_denies_disallowed_client(external_ip_client, gateway_fixture):
+async def test_model_ip_allowlist_denies_disallowed_client(
+    external_ip_client, gateway_fixture
+):
     from llm_gateway.db.models import IPPolicyMode, ModelAlias
     from llm_gateway.db.session import AsyncSessionLocal
 
     request_id = f"pytest-ip-deny-{uuid4()}"
     async with AsyncSessionLocal() as session:
         model_alias = await session.get(ModelAlias, gateway_fixture.model_alias_id)
+        assert model_alias is not None
         model_alias.ip_policy_mode = IPPolicyMode.ALLOWLIST
         model_alias.ip_allowlist_cidrs = ["203.0.113.1/32"]
         await session.commit()
@@ -541,7 +599,9 @@ async def test_model_ip_allowlist_denies_disallowed_client(external_ip_client, g
         headers=_auth_headers(gateway_fixture.raw_key, request_id),
         json={
             "model": gateway_fixture.model_alias,
-            "messages": [{"role": "user", "content": "This should be denied before upstream."}],
+            "messages": [
+                {"role": "user", "content": "This should be denied before upstream."}
+            ],
             "max_tokens": 16,
         },
     )
@@ -575,7 +635,12 @@ async def test_key_scoped_rate_policy_blocks_before_upstream(client, gateway_fix
         headers=_auth_headers(gateway_fixture.raw_key, request_id),
         json={
             "model": gateway_fixture.model_alias,
-            "messages": [{"role": "user", "content": "This should be rate limited before upstream."}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "This should be rate limited before upstream.",
+                }
+            ],
             "max_tokens": 16,
         },
     )
@@ -587,12 +652,16 @@ async def test_key_scoped_rate_policy_blocks_before_upstream(client, gateway_fix
     assert fact.outcome == RequestOutcome.RATE_LIMITED
 
 
-async def test_admin_updates_router_command_rate_policy_and_upstream_health(client, gateway_fixture):
+async def test_admin_updates_router_command_rate_policy_and_upstream_health(
+    client, gateway_fixture
+):
     from llm_gateway.core.config import get_settings
 
     headers = {"x-admin-token": get_settings().admin_token}
 
-    health = await client.get(f"/admin/upstreams/{gateway_fixture.upstream_id}/health", headers=headers)
+    health = await client.get(
+        f"/admin/upstreams/{gateway_fixture.upstream_id}/health", headers=headers
+    )
     assert health.status_code == 200, health.text
     health_payload = health.json()
     assert health_payload["upstream"]["api_key_value"] is None

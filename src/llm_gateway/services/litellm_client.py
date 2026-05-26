@@ -23,7 +23,9 @@ def _api_key(upstream: UpstreamTarget) -> str | None:
     return upstream.api_key_value or upstream.api_key_ref
 
 
-async def check_upstream_health(upstream: UpstreamTarget, timeout_seconds: float = 10.0) -> dict[str, Any]:
+async def check_upstream_health(
+    upstream: UpstreamTarget, timeout_seconds: float = 10.0
+) -> dict[str, Any]:
     url = upstream.base_url.rstrip("/") + "/" + upstream.health_path.lstrip("/")
     headers = dict(upstream.extra_headers or {})
     api_key = _api_key(upstream)
@@ -117,7 +119,10 @@ async def anthropic_messages_stream(
     )
     async for chunk in stream:
         usage = _usage_from_response(chunk)
-        yield f"event: content_block_delta\ndata: {_json_dumps(_to_plain(chunk))}\n\n", usage
+        yield (
+            f"event: content_block_delta\ndata: {_json_dumps(_to_plain(chunk))}\n\n",
+            usage,
+        )
         await asyncio.sleep(0)
 
 

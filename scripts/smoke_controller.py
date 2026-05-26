@@ -13,13 +13,18 @@ if str(SRC) not in sys.path:
 
 async def main() -> None:
     from sqlalchemy import select
+    from sqlmodel import col
 
     from llm_gateway.db.models import GatewayKey
     from llm_gateway.db.session import AsyncSessionLocal
     from llm_gateway.services.security import create_gateway_key
 
     async with AsyncSessionLocal() as session:
-        dev_key = (await session.execute(select(GatewayKey).where(GatewayKey.name == "dev-key"))).scalar_one()
+        dev_key = (
+            await session.execute(
+                select(GatewayKey).where(col(GatewayKey.name) == "dev-key")
+            )
+        ).scalar_one()
         _, raw_key = await create_gateway_key(
             session,
             subject_id=dev_key.subject_id,
@@ -33,13 +38,17 @@ async def main() -> None:
     from llm_gateway.main import app
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver", timeout=60) as client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver", timeout=60
+    ) as client:
         response = await client.post(
             "/v1/chat/completions",
             headers={"Authorization": f"Bearer {raw_key}"},
             json={
                 "model": "dev-model",
-                "messages": [{"role": "user", "content": "Reply with one short sentence."}],
+                "messages": [
+                    {"role": "user", "content": "Reply with one short sentence."}
+                ],
                 "max_tokens": 64,
                 "temperature": 0,
             },
@@ -50,7 +59,9 @@ async def main() -> None:
             json.dumps(
                 {
                     "model": payload.get("model"),
-                    "finish_reason": (payload.get("choices") or [{}])[0].get("finish_reason"),
+                    "finish_reason": (payload.get("choices") or [{}])[0].get(
+                        "finish_reason"
+                    ),
                     "usage": payload.get("usage"),
                 },
                 ensure_ascii=False,

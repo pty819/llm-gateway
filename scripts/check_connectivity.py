@@ -1,5 +1,7 @@
 """Isolated connectivity check for PostgreSQL and Redis."""
+
 import asyncio
+import inspect
 import os
 import socket
 import sys
@@ -60,7 +62,8 @@ async def check_redis() -> bool:
         return False
     try:
         r = aioredis.from_url(f"redis://{REDIS_HOST}:{REDIS_PORT}/0")
-        pong = await r.ping()
+        pong_result = r.ping()
+        pong = await pong_result if inspect.isawaitable(pong_result) else pong_result
         info = await r.info("server")
         await r.aclose()
         ver = info.get("redis_version", "unknown")

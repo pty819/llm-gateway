@@ -150,7 +150,7 @@
 	const api = $derived(new AdminApiClient('', sessionToken));
 	const isAdmin = $derived(Boolean(profile?.subject.is_admin));
 	const mustProvideRealName = $derived(Boolean(profile?.subject.requires_real_name));
-	const gatewayOrigin = $derived((gatewayBaseUrl || 'http://127.0.0.1:18080').replace(/\/+$/, ''));
+	const gatewayOrigin = $derived((gatewayBaseUrl || '').replace(/\/+$/, ''));
 	const gatewayV1Base = $derived(`${gatewayOrigin}/v1`);
 	const responsesEndpoint = $derived(`${gatewayV1Base}/responses`);
 	const messagesEndpoint = $derived(`${gatewayV1Base}/messages`);
@@ -799,8 +799,7 @@
 	}
 
 	function inferGatewayBaseUrl(): string {
-		if (typeof window === 'undefined') return 'http://127.0.0.1:18080';
-		if (window.location.port === '5173') return `${window.location.protocol}//${window.location.hostname}:18080`;
+		if (typeof window === 'undefined') return '';
 		return window.location.origin;
 	}
 
@@ -1072,7 +1071,7 @@
 					<section class="panel">
 						<h2>工具接入</h2>
 						<div class="form-grid">
-							<label>网关 Host<input bind:value={gatewayBaseUrl} /></label>
+							<label>网关入口<input bind:value={gatewayBaseUrl} /></label>
 							<label>首选模型<input value={preferredModel} readonly /></label>
 							<label>当前密钥前缀<input value={visibleKeyHint} readonly /></label>
 						</div>
@@ -1085,13 +1084,13 @@
 						<div class="doc-grid">
 							<section class="doc-panel">
 								<h3>Codex</h3>
-								<p>Codex 走 OpenAI Responses 协议，Base URL 使用 <code>/v1</code>，实际请求会落到 <code>/v1/responses</code>。</p>
+								<p>Codex 走 OpenAI Responses 协议，Base URL 使用前端入口的 <code>/v1</code>，实际请求会落到 <code>/v1/responses</code>。</p>
 								<CommandBlock command={codexEnvCommand} />
 								<CommandBlock command={codexConfigCommand} />
 							</section>
 							<section class="doc-panel">
 								<h3>Claude Code</h3>
-								<p>Claude Code 走 Anthropic Messages 协议，Base URL 不带 <code>/v1/messages</code>；客户端会自己拼接 <code>/v1/messages</code>。如果模型别名不是 <code>claude</code> 或 <code>anthropic</code> 开头，用自定义模型变量把它放进选择器。</p>
+								<p>Claude Code 走 Anthropic Messages 协议，Base URL 填前端入口，不带 <code>/v1/messages</code>；客户端会自己拼接 <code>/v1/messages</code>。如果模型别名不是 <code>claude</code> 或 <code>anthropic</code> 开头，用自定义模型变量把它放进选择器。</p>
 								<CommandBlock command={claudeEnvCommand} />
 							</section>
 						</div>

@@ -34,4 +34,3 @@ def _shell_quote(value: str) -> str:
     if value and all(ch.isalnum() or ch in "-_./:=," for ch in value):
         return value
     return "'" + value.replace("'", "'\"'\"'") + "'"
-
