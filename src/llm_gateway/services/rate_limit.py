@@ -78,6 +78,26 @@ async def check_request_rate(
         raise RateLimitExceeded("request_rate_exceeded")
 
 
+async def acquire_concurrency_slot(
+    redis: Redis,
+    *,
+    key_id: UUID,
+    limit: int,
+    ttl_seconds: int = 900,
+) -> str:
+    counter_key = f"concurrency:key:{key_id}"
+    current = await redis.incr(counter_key)
+    await redis.expire(counter_key, ttl_seconds)
+    if current > limit:
+        await redis.decr(counter_key)
+        raise RateLimitExceeded("concurrency_exceeded")
+    return counter_key
+
+
+async def release_concurrency_slot(redis: Redis, counter_key: str) -> None:
+    await redis.decr(counter_key)
+
+
 @asynccontextmanager
 async def concurrency_slot(
     redis: Redis,
@@ -86,13 +106,10 @@ async def concurrency_slot(
     limit: int,
     ttl_seconds: int = 900,
 ) -> AsyncGenerator[None, None]:
-    counter_key = f"concurrency:key:{key_id}"
-    current = await redis.incr(counter_key)
-    await redis.expire(counter_key, ttl_seconds)
-    if current > limit:
-        await redis.decr(counter_key)
-        raise RateLimitExceeded("concurrency_exceeded")
+    counter_key = await acquire_concurrency_slot(
+        redis, key_id=key_id, limit=limit, ttl_seconds=ttl_seconds
+    )
     try:
         yield
     finally:
-        await redis.decr(counter_key)
+        await release_concurrency_slot(redis, counter_key)

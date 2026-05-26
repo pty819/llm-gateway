@@ -303,6 +303,9 @@
 		sessionToken = '';
 		profile = null;
 		connected = false;
+		plaintextKey = '';
+		copiedItem = '';
+		pageError = '';
 		clearStoredSessionToken();
 		inventory = emptyInventory();
 	}

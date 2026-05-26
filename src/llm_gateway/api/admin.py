@@ -656,10 +656,19 @@ async def delete_model_alias(
 async def create_model_entitlement(
     payload: ModelEntitlementCreate, session: AsyncSession = Depends(session_dep)
 ):
-    if not any([payload.subject_id, payload.project_id, payload.gateway_key_id]):
+    await _get_or_404(session, ModelAlias, payload.model_alias_id)
+    scope_values = [payload.subject_id, payload.project_id, payload.gateway_key_id]
+    if sum(value is not None for value in scope_values) != 1:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="entitlement_scope_required"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="exactly_one_entitlement_scope_required",
         )
+    if payload.subject_id:
+        await _get_or_404(session, Subject, payload.subject_id)
+    if payload.project_id:
+        await _get_or_404(session, Project, payload.project_id)
+    if payload.gateway_key_id:
+        await _get_or_404(session, GatewayKey, payload.gateway_key_id)
     entitlement = ModelEntitlement(**payload.model_dump())
     session.add(entitlement)
     await session.flush()

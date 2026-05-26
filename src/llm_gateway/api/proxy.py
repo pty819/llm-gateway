@@ -1,6 +1,7 @@
 import asyncio
+from contextlib import suppress
 from datetime import datetime
-from typing import Any
+from typing import Any, NoReturn
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -34,8 +35,10 @@ from llm_gateway.services.policy import (
 )
 from llm_gateway.services.rate_limit import (
     RateLimitExceeded,
+    acquire_concurrency_slot,
     check_request_rate,
     concurrency_slot,
+    release_concurrency_slot,
     resolve_effective_rate_policy,
 )
 from llm_gateway.services.security import AuthContext, authenticate_gateway_key
@@ -151,14 +154,23 @@ async def openai_chat_completions(
         raise
 
     if streaming:
+        concurrency_key = await _acquire_streaming_concurrency(
+            session=session,
+            redis=redis,
+            auth=auth,
+            route=route,
+            rate_policy=rate_policy,
+            request_id=request_id,
+            started_at=started_at,
+            endpoint_family=EndpointFamily.OPENAI_CHAT,
+        )
         return StreamingResponse(
             _stream_openai_response(
                 session=session,
                 redis=redis,
-                settings=settings,
                 auth=auth,
                 route=route,
-                concurrency_limit=rate_policy.concurrency_limit,
+                concurrency_key=concurrency_key,
                 body=body,
                 started_at=started_at,
                 request_id=request_id,
@@ -192,6 +204,17 @@ async def openai_chat_completions(
         )
         await session.commit()
         return JSONResponse(jsonable_encoder(_plain(result.response)))
+    except RateLimitExceeded as exc:
+        await _raise_rate_limited_after_route(
+            session=session,
+            request_id=request_id,
+            started_at=started_at,
+            endpoint_family=EndpointFamily.OPENAI_CHAT,
+            auth=auth,
+            streaming=False,
+            route=route,
+            exc=exc,
+        )
     except Exception as exc:
         await _record_failure(
             session=session,
@@ -212,10 +235,9 @@ async def _stream_openai_response(
     *,
     session: AsyncSession,
     redis: Redis,
-    settings: Settings,
     auth: AuthContext,
     route,
-    concurrency_limit: int,
+    concurrency_key: str,
     body: dict[str, Any],
     started_at: datetime,
     request_id: str,
@@ -225,20 +247,15 @@ async def _stream_openai_response(
     outcome = RequestOutcome.SUCCESS
     error: BaseException | None = None
     try:
-        async with concurrency_slot(
-            redis,
-            key_id=auth.key.id,
-            limit=concurrency_limit,
+        async for event, event_usage in completion_stream(
+            model_alias=route.model_alias,
+            upstream=route.upstream,
+            body=body,
         ):
-            async for event, event_usage in completion_stream(
-                model_alias=route.model_alias,
-                upstream=route.upstream,
-                body=body,
-            ):
-                if first_token_at is None:
-                    first_token_at = utcnow()
-                usage = event_usage or usage
-                yield event
+            if first_token_at is None:
+                first_token_at = utcnow()
+            usage = event_usage or usage
+            yield event
     except asyncio.CancelledError as exc:
         outcome = RequestOutcome.CLIENT_CANCELLED
         error = exc
@@ -248,6 +265,8 @@ async def _stream_openai_response(
         error = exc
         yield f"event: error\ndata: {str(exc)}\n\n"
     finally:
+        with suppress(Exception):
+            await release_concurrency_slot(redis, concurrency_key)
         await record_request_fact(
             session,
             request_id=request_id,
@@ -320,14 +339,23 @@ async def openai_responses(
         raise
 
     if streaming:
+        concurrency_key = await _acquire_streaming_concurrency(
+            session=session,
+            redis=redis,
+            auth=auth,
+            route=route,
+            rate_policy=rate_policy,
+            request_id=request_id,
+            started_at=started_at,
+            endpoint_family=EndpointFamily.OPENAI_RESPONSES,
+        )
         return StreamingResponse(
             _stream_responses(
                 session=session,
                 redis=redis,
-                settings=settings,
                 auth=auth,
                 route=route,
-                concurrency_limit=rate_policy.concurrency_limit,
+                concurrency_key=concurrency_key,
                 body=body,
                 started_at=started_at,
                 request_id=request_id,
@@ -361,6 +389,17 @@ async def openai_responses(
         )
         await session.commit()
         return JSONResponse(jsonable_encoder(_plain(result.response)))
+    except RateLimitExceeded as exc:
+        await _raise_rate_limited_after_route(
+            session=session,
+            request_id=request_id,
+            started_at=started_at,
+            endpoint_family=EndpointFamily.OPENAI_RESPONSES,
+            auth=auth,
+            streaming=False,
+            route=route,
+            exc=exc,
+        )
     except Exception as exc:
         await _record_failure(
             session=session,
@@ -381,10 +420,9 @@ async def _stream_responses(
     *,
     session: AsyncSession,
     redis: Redis,
-    settings: Settings,
     auth: AuthContext,
     route,
-    concurrency_limit: int,
+    concurrency_key: str,
     body: dict[str, Any],
     started_at: datetime,
     request_id: str,
@@ -394,20 +432,15 @@ async def _stream_responses(
     outcome = RequestOutcome.SUCCESS
     error: BaseException | None = None
     try:
-        async with concurrency_slot(
-            redis,
-            key_id=auth.key.id,
-            limit=concurrency_limit,
+        async for event, event_usage in responses_stream(
+            model_alias=route.model_alias,
+            upstream=route.upstream,
+            body=body,
         ):
-            async for event, event_usage in responses_stream(
-                model_alias=route.model_alias,
-                upstream=route.upstream,
-                body=body,
-            ):
-                if first_token_at is None:
-                    first_token_at = utcnow()
-                usage = event_usage or usage
-                yield event
+            if first_token_at is None:
+                first_token_at = utcnow()
+            usage = event_usage or usage
+            yield event
     except asyncio.CancelledError as exc:
         outcome = RequestOutcome.CLIENT_CANCELLED
         error = exc
@@ -417,6 +450,8 @@ async def _stream_responses(
         error = exc
         yield f"event: error\ndata: {str(exc)}\n\n"
     finally:
+        with suppress(Exception):
+            await release_concurrency_slot(redis, concurrency_key)
         await record_request_fact(
             session,
             request_id=request_id,
@@ -489,14 +524,23 @@ async def anthropic_messages(
         raise
 
     if streaming:
+        concurrency_key = await _acquire_streaming_concurrency(
+            session=session,
+            redis=redis,
+            auth=auth,
+            route=route,
+            rate_policy=rate_policy,
+            request_id=request_id,
+            started_at=started_at,
+            endpoint_family=EndpointFamily.ANTHROPIC_MESSAGES,
+        )
         return StreamingResponse(
             _stream_anthropic_response(
                 session=session,
                 redis=redis,
-                settings=settings,
                 auth=auth,
                 route=route,
-                concurrency_limit=rate_policy.concurrency_limit,
+                concurrency_key=concurrency_key,
                 body=body,
                 started_at=started_at,
                 request_id=request_id,
@@ -528,6 +572,17 @@ async def anthropic_messages(
         )
         await session.commit()
         return JSONResponse(jsonable_encoder(_plain(result.response)))
+    except RateLimitExceeded as exc:
+        await _raise_rate_limited_after_route(
+            session=session,
+            request_id=request_id,
+            started_at=started_at,
+            endpoint_family=EndpointFamily.ANTHROPIC_MESSAGES,
+            auth=auth,
+            streaming=False,
+            route=route,
+            exc=exc,
+        )
     except Exception as exc:
         await _record_failure(
             session=session,
@@ -548,10 +603,9 @@ async def _stream_anthropic_response(
     *,
     session: AsyncSession,
     redis: Redis,
-    settings: Settings,
     auth: AuthContext,
     route,
-    concurrency_limit: int,
+    concurrency_key: str,
     body: dict[str, Any],
     started_at: datetime,
     request_id: str,
@@ -561,16 +615,15 @@ async def _stream_anthropic_response(
     outcome = RequestOutcome.SUCCESS
     error: BaseException | None = None
     try:
-        async with concurrency_slot(redis, key_id=auth.key.id, limit=concurrency_limit):
-            async for event, event_usage in anthropic_messages_stream(
-                model_alias=route.model_alias,
-                upstream=route.upstream,
-                body=body,
-            ):
-                if first_token_at is None:
-                    first_token_at = utcnow()
-                usage = event_usage or usage
-                yield event
+        async for event, event_usage in anthropic_messages_stream(
+            model_alias=route.model_alias,
+            upstream=route.upstream,
+            body=body,
+        ):
+            if first_token_at is None:
+                first_token_at = utcnow()
+            usage = event_usage or usage
+            yield event
     except asyncio.CancelledError as exc:
         outcome = RequestOutcome.CLIENT_CANCELLED
         error = exc
@@ -580,6 +633,8 @@ async def _stream_anthropic_response(
         error = exc
         yield f"event: error\ndata: {str(exc)}\n\n"
     finally:
+        with suppress(Exception):
+            await release_concurrency_slot(redis, concurrency_key)
         await record_request_fact(
             session,
             request_id=request_id,
@@ -622,6 +677,64 @@ async def list_models(
             for alias in rows
         ],
     }
+
+
+async def _acquire_streaming_concurrency(
+    *,
+    session: AsyncSession,
+    redis: Redis,
+    auth: AuthContext,
+    route,
+    rate_policy,
+    request_id: str,
+    started_at: datetime,
+    endpoint_family: EndpointFamily,
+) -> str:
+    try:
+        return await acquire_concurrency_slot(
+            redis,
+            key_id=auth.key.id,
+            limit=rate_policy.concurrency_limit,
+        )
+    except RateLimitExceeded as exc:
+        await _raise_rate_limited_after_route(
+            session=session,
+            request_id=request_id,
+            started_at=started_at,
+            endpoint_family=endpoint_family,
+            auth=auth,
+            streaming=True,
+            route=route,
+            exc=exc,
+        )
+
+
+async def _raise_rate_limited_after_route(
+    *,
+    session: AsyncSession,
+    request_id: str,
+    started_at: datetime,
+    endpoint_family: EndpointFamily,
+    auth: AuthContext,
+    streaming: bool,
+    route,
+    exc: RateLimitExceeded,
+) -> NoReturn:
+    await _record_failure(
+        session=session,
+        request_id=request_id,
+        started_at=started_at,
+        endpoint_family=endpoint_family,
+        auth=auth,
+        model_alias=route.model_alias.alias,
+        upstream_target_id=route.upstream.id,
+        streaming=streaming,
+        outcome=RequestOutcome.RATE_LIMITED,
+        exc=exc,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
+    ) from exc
 
 
 async def _record_failure(
