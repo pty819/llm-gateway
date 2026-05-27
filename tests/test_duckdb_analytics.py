@@ -132,9 +132,15 @@ async def test_admin_duckdb_analytics_refresh_and_query(
     summary = await client.get(
         "/admin/usage/duckdb/summary",
         headers=headers,
-        params={"start": params["start"], "end": params["end"]},
+        params={
+            "start": params["start"],
+            "end": params["end"],
+            "model": gateway_fixture.model_alias,
+            "limit": 1,
+        },
     )
     assert summary.status_code == 200, summary.text
+    assert len(summary.json()) <= 1
     summary_row = next(
         item
         for item in summary.json()
@@ -143,6 +149,23 @@ async def test_admin_duckdb_analytics_refresh_and_query(
     )
     assert summary_row["request_count"] >= 2
     assert summary_row["total_tokens"] >= 190
+
+    totals = await client.get(
+        "/admin/usage/duckdb/totals",
+        headers=headers,
+        params={
+            "start": params["start"],
+            "end": params["end"],
+            "model": gateway_fixture.model_alias,
+            "subject_id": str(gateway_fixture.subject_id),
+        },
+    )
+    assert totals.status_code == 200, totals.text
+    totals_payload = totals.json()
+    assert totals_payload["request_count"] >= 2
+    assert totals_payload["total_tokens"] >= 190
+    assert totals_payload["retry_count"] >= 1
+    assert totals_payload["fallback_count"] >= 1
 
     ranking = await client.get(
         "/admin/usage/duckdb/ranking",

@@ -226,18 +226,14 @@
 	const employeeIdPattern = /^[A-Za-z]\d{8}$/;
 
 	const totals = $derived(
-		usageRows.reduce(
-			(acc, row) => {
-				acc.requests += Number(row.request_count ?? 0);
-				acc.prompt += Number(row.prompt_tokens ?? 0);
-				acc.completion += Number(row.completion_tokens ?? 0);
-				acc.total += Number(row.total_tokens ?? 0);
-				acc.success += Number(row.success_count ?? 0);
-				acc.failure += Number(row.failure_count ?? 0);
-				return acc;
-			},
-			{ requests: 0, prompt: 0, completion: 0, total: 0, success: 0, failure: 0 }
-		)
+		{
+			requests: Number(inventory.usageTotals?.request_count ?? 0),
+			prompt: Number(inventory.usageTotals?.prompt_tokens ?? 0),
+			completion: Number(inventory.usageTotals?.completion_tokens ?? 0),
+			total: Number(inventory.usageTotals?.total_tokens ?? 0),
+			success: Number(inventory.usageTotals?.success_count ?? 0),
+			failure: Number(inventory.usageTotals?.failure_count ?? 0)
+		}
 	);
 	const visibleUsageRows = $derived(
 		usageRows.toSorted((a, b) => Number(b.total_tokens ?? 0) - Number(a.total_tokens ?? 0)).slice(0, PAGE_SIZE.usagePreview)
@@ -283,24 +279,16 @@
 	const rankingPageRows = $derived(pageRows(rankingRows, rankingPage, PAGE_SIZE.ranking));
 	const auditPageRows = $derived(pageRows(auditRows, auditPage, PAGE_SIZE.audit));
 	const analyticsPerformance = $derived(
-		visibleAnalyticsBuckets.reduce(
-			(acc, row) => {
-				acc.requests += Number(row.request_count ?? 0);
-				acc.retry += Number(row.retry_count ?? 0);
-				acc.fallback += Number(row.fallback_count ?? 0);
-				acc.vllmObserved += Number(row.vllm_metrics_count ?? 0);
-				if (row.avg_latency_ms !== null) {
-					acc.latencyTotal += row.avg_latency_ms * Number(row.request_count ?? 0);
-					acc.latencyWeight += Number(row.request_count ?? 0);
-				}
-				if (row.avg_ttft_ms !== null) {
-					acc.ttftTotal += row.avg_ttft_ms * Number(row.request_count ?? 0);
-					acc.ttftWeight += Number(row.request_count ?? 0);
-				}
-				return acc;
-			},
-			{ requests: 0, retry: 0, fallback: 0, vllmObserved: 0, latencyTotal: 0, latencyWeight: 0, ttftTotal: 0, ttftWeight: 0 }
-		)
+		{
+			requests: Number(inventory.usageTotals?.request_count ?? 0),
+			retry: Number(inventory.usageTotals?.retry_count ?? 0),
+			fallback: Number(inventory.usageTotals?.fallback_count ?? 0),
+			vllmObserved: Number(inventory.usageTotals?.vllm_metrics_count ?? 0),
+			latencyTotal: Number(inventory.usageTotals?.avg_latency_ms ?? 0),
+			latencyWeight: inventory.usageTotals?.avg_latency_ms == null ? 0 : 1,
+			ttftTotal: Number(inventory.usageTotals?.avg_ttft_ms ?? 0),
+			ttftWeight: inventory.usageTotals?.avg_ttft_ms == null ? 0 : 1
+		}
 	);
 
 	onMount(() => {
@@ -441,6 +429,7 @@
 				routerConfigs: [],
 				ratePolicies,
 				usage: inventory.usage,
+				usageTotals: inventory.usageTotals,
 				ranking: inventory.ranking,
 				analyticsBuckets: inventory.analyticsBuckets,
 				analyticsDrilldown: inventory.analyticsDrilldown,
@@ -468,31 +457,31 @@
 					limit: duckdbRefreshLimit === '' ? null : Number(duckdbRefreshLimit)
 				})
 			);
-			const [usage, buckets, drilldown] = await Promise.all([
+			const analyticsParams = {
+				start: usageStart,
+				end: usageEnd,
+				model: modelFilter,
+				subject_id: subjectFilter,
+				project_id: projectFilter
+			};
+			const [usageTotals, usage, buckets, drilldown] = await Promise.all([
+				api.get<Inventory['usageTotals']>('/admin/usage/duckdb/totals', analyticsParams),
 				api.get<Inventory['usage']>('/admin/usage/duckdb/summary', {
-					start: usageStart,
-					end: usageEnd
+					...analyticsParams,
+					limit: PAGE_SIZE.usagePreview
 				}),
 				api.get<Inventory['analyticsBuckets']>('/admin/analytics/duckdb/time-buckets', {
-					start: usageStart,
-					end: usageEnd,
+					...analyticsParams,
 					bucket: analyticsBucket,
-					model: modelFilter,
-					subject_id: subjectFilter,
-					project_id: projectFilter,
 					limit: PAGE_SIZE.usagePreview
 				}),
 				api.get<Inventory['analyticsDrilldown']>('/admin/analytics/duckdb/drilldown', {
-					start: usageStart,
-					end: usageEnd,
+					...analyticsParams,
 					dimension: analyticsDimension,
-					model: modelFilter,
-					subject_id: subjectFilter,
-					project_id: projectFilter,
 					limit: PAGE_SIZE.usagePreview
 				})
 			]);
-			inventory = { ...inventory, usage, analyticsBuckets: buckets, analyticsDrilldown: drilldown };
+			inventory = { ...inventory, usageTotals, usage, analyticsBuckets: buckets, analyticsDrilldown: drilldown };
 		});
 	}
 
@@ -1033,6 +1022,7 @@
 			routerConfigs: [],
 			ratePolicies: [],
 			usage: [],
+			usageTotals: null,
 			ranking: [],
 			analyticsBuckets: [],
 			analyticsDrilldown: [],

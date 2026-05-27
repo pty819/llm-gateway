@@ -1049,6 +1049,10 @@ async def update_rate_policy(
 async def usage_summary(
     start: datetime | None = None,
     end: datetime | None = None,
+    model: str | None = None,
+    subject_id: UUID | None = None,
+    project_id: UUID | None = None,
+    limit: int | None = Query(default=None, ge=1, le=500),
     session: AsyncSession = Depends(session_dep),
 ):
     filters = []
@@ -1056,7 +1060,22 @@ async def usage_summary(
         filters.append(col(RequestFact.started_at) >= start)
     if end:
         filters.append(col(RequestFact.started_at) < end)
+    if model:
+        filters.append(col(RequestFact.model_alias) == model)
+    if subject_id:
+        filters.append(col(RequestFact.subject_id) == subject_id)
+    if project_id:
+        filters.append(col(RequestFact.project_id) == project_id)
 
+    effective_total_tokens = func.coalesce(
+        col(RequestFact.total_tokens),
+        func.coalesce(col(RequestFact.prompt_tokens), 0)
+        + func.coalesce(col(RequestFact.completion_tokens), 0),
+        0,
+    )
+    total_tokens = func.coalesce(func.sum(effective_total_tokens), 0).label(
+        "total_tokens"
+    )
     success_count = func.sum(
         case((col(RequestFact.outcome) == RequestOutcome.SUCCESS, 1), else_=0)
     ).label("success_count")
@@ -1075,9 +1094,7 @@ async def usage_summary(
             func.coalesce(func.sum(col(RequestFact.completion_tokens)), 0).label(
                 "completion_tokens"
             ),
-            func.coalesce(func.sum(col(RequestFact.total_tokens)), 0).label(
-                "total_tokens"
-            ),
+            total_tokens,
             success_count,
             failure_count,
         )
@@ -1087,7 +1104,10 @@ async def usage_summary(
             col(RequestFact.subject_id),
             col(RequestFact.project_id),
         )
+        .order_by(total_tokens.desc(), func.count(col(RequestFact.id)).desc())
     )
+    if limit is not None:
+        stmt = stmt.limit(limit)
     rows = (await session.execute(stmt)).mappings().all()
     return [dict(row) for row in rows]
 
@@ -1148,10 +1168,44 @@ async def usage_ranking(
 async def duckdb_usage_summary(
     start: datetime | None = None,
     end: datetime | None = None,
+    model: str | None = None,
+    subject_id: UUID | None = None,
+    project_id: UUID | None = None,
+    limit: int | None = Query(default=None, ge=1, le=500),
     settings: Settings = Depends(settings_dep),
 ):
     try:
-        return await DuckDBAnalyticsStore(settings).usage_summary(start=start, end=end)
+        return await DuckDBAnalyticsStore(settings).usage_summary(
+            start=start,
+            end=end,
+            model=model,
+            subject_id=subject_id,
+            project_id=project_id,
+            limit=limit,
+        )
+    except DuckDBAnalyticsUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+
+
+@router.get("/usage/duckdb/totals")
+async def duckdb_usage_totals(
+    start: datetime | None = None,
+    end: datetime | None = None,
+    model: str | None = None,
+    subject_id: UUID | None = None,
+    project_id: UUID | None = None,
+    settings: Settings = Depends(settings_dep),
+):
+    try:
+        return await DuckDBAnalyticsStore(settings).usage_totals(
+            start=start,
+            end=end,
+            model=model,
+            subject_id=subject_id,
+            project_id=project_id,
+        )
     except DuckDBAnalyticsUnavailable as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)

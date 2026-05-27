@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
@@ -62,7 +62,8 @@ class DuckDBAnalyticsStore:
     ) -> DuckDBRefreshResult:
         self._require_enabled()
         copied = 0
-        offset = 0
+        last_started_at: datetime | None = None
+        last_request_id: str | None = None
         remaining = limit
         while True:
             batch_limit = min(5_000, remaining) if remaining else 5_000
@@ -71,12 +72,15 @@ class DuckDBAnalyticsStore:
                 start=start,
                 end=end,
                 limit=batch_limit,
-                offset=offset,
+                after_started_at=last_started_at,
+                after_request_id=last_request_id,
             )
             if not rows:
                 break
             copied += await asyncio.to_thread(self._replace_rows, rows)
-            offset += len(rows)
+            last_row = rows[-1]
+            last_started_at = last_row["started_at"]
+            last_request_id = last_row["request_id"]
             if remaining is not None:
                 remaining -= len(rows)
                 if remaining <= 0:
@@ -168,10 +172,18 @@ class DuckDBAnalyticsStore:
         *,
         start: datetime | None = None,
         end: datetime | None = None,
+        model: str | None = None,
+        subject_id: UUID | None = None,
+        project_id: UUID | None = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         self._require_enabled()
         where_sql, params = _where_sql(
-            start=start, end=end, model=None, subject_id=None, project_id=None
+            start=start,
+            end=end,
+            model=model,
+            subject_id=subject_id,
+            project_id=project_id,
         )
         sql = f"""
             select
@@ -195,8 +207,38 @@ class DuckDBAnalyticsStore:
             from request_facts
             {where_sql}
             group by model_alias, subject_id, project_id
+            order by total_tokens desc, request_count desc
         """
+        if limit is not None:
+            sql += "\nlimit ?"
+            params.append(limit)
         return await asyncio.to_thread(self._query_rows, sql, params)
+
+    async def usage_totals(
+        self,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        model: str | None = None,
+        subject_id: UUID | None = None,
+        project_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        self._require_enabled()
+        where_sql, params = _where_sql(
+            start=start,
+            end=end,
+            model=model,
+            subject_id=subject_id,
+            project_id=project_id,
+        )
+        sql = f"""
+            select
+                {_metric_sql()}
+            from request_facts
+            {where_sql}
+        """
+        rows = await asyncio.to_thread(self._query_rows, sql, params)
+        return rows[0] if rows else _empty_metric_row()
 
     async def usage_ranking(
         self,
@@ -243,7 +285,8 @@ class DuckDBAnalyticsStore:
         start: datetime | None,
         end: datetime | None,
         limit: int | None,
-        offset: int,
+        after_started_at: datetime | None,
+        after_request_id: str | None,
     ) -> list[dict[str, Any]]:
         stmt = (
             select(
@@ -260,10 +303,18 @@ class DuckDBAnalyticsStore:
             stmt = stmt.where(col(RequestFact.started_at) >= start)
         if end:
             stmt = stmt.where(col(RequestFact.started_at) < end)
+        if after_started_at is not None and after_request_id is not None:
+            stmt = stmt.where(
+                or_(
+                    col(RequestFact.started_at) > after_started_at,
+                    and_(
+                        col(RequestFact.started_at) == after_started_at,
+                        col(RequestFact.request_id) > after_request_id,
+                    ),
+                )
+            )
         if limit:
             stmt = stmt.limit(limit)
-        if offset:
-            stmt = stmt.offset(offset)
 
         result = await session.execute(stmt)
         rows = []
@@ -438,6 +489,30 @@ def _ensure_schema(connection: Any) -> None:
         )
         """
     )
+    connection.execute(
+        """
+        create index if not exists idx_request_facts_started_request
+        on request_facts(started_at, request_id)
+        """
+    )
+    connection.execute(
+        """
+        create index if not exists idx_request_facts_model_started
+        on request_facts(model_alias, started_at)
+        """
+    )
+    connection.execute(
+        """
+        create index if not exists idx_request_facts_subject_started
+        on request_facts(subject_id, started_at)
+        """
+    )
+    connection.execute(
+        """
+        create index if not exists idx_request_facts_project_started
+        on request_facts(project_id, started_at)
+        """
+    )
 
 
 def _insert_sql() -> str:
@@ -547,6 +622,29 @@ def _metric_sql() -> str:
             then 1 else 0 end
         ), 0)::BIGINT as vllm_metrics_count
     """
+
+
+def _empty_metric_row() -> dict[str, Any]:
+    return {
+        "request_count": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "cached_tokens": 0,
+        "success_count": 0,
+        "failure_count": 0,
+        "avg_latency_ms": None,
+        "avg_ttft_ms": None,
+        "avg_stream_duration_ms": None,
+        "retry_count": 0,
+        "fallback_count": 0,
+        "fallback_tokens": 0,
+        "avg_queue_ms": None,
+        "avg_prefill_ms": None,
+        "avg_decode_ms": None,
+        "avg_kv_cache_usage": None,
+        "vllm_metrics_count": 0,
+    }
 
 
 def _dimension_sql(dimension: AnalyticsDimension) -> tuple[str, str]:
