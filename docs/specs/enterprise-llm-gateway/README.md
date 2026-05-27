@@ -38,6 +38,7 @@ This directory is the broad product blueprint for the enterprise LLM gateway. It
 | [verification-audit.md](verification-audit.md) | Requirement-by-requirement blueprint evidence audit |
 | [tdrs/gateway-language-options.md](tdrs/gateway-language-options.md) | Go, C#, Rust decision framing |
 | [tdrs/storage-and-analytics-posture.md](tdrs/storage-and-analytics-posture.md) | PostgreSQL, Redis, analytics escalation framing |
+| [tdrs/analytics-query-engine-posture.md](tdrs/analytics-query-engine-posture.md) | PostgreSQL rollups, DuckDB mirror, and ORM boundary framing |
 | [tdrs/operator-ui-framework-options.md](tdrs/operator-ui-framework-options.md) | SolidJS and Svelte decision framing |
 | [tdrs/open-decisions.md](tdrs/open-decisions.md) | Deferred architecture and product decisions |
 

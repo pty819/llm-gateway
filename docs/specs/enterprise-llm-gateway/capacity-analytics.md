@@ -133,10 +133,20 @@ Exact retention values remain an operations decision.
 
 ## Storage Posture
 
-- PostgreSQL is the starting durable fact and rollup store.
+- PostgreSQL is the starting durable fact and rollup store, not a promise that all
+  future dashboards must scan raw facts from the primary.
 - Redis can hold online counters or short-lived coordination state.
-- Rollups and retention should control write volume before a heavier analytical datastore is introduced.
-- A later storage TDR defines escalation triggers if query or retention pressure exceeds the starting posture.
+- Rollups, retention, BRIN/composite indexes, and partitioning should control query
+  and maintenance cost before a heavier analytical datastore is introduced.
+- Analytics query logic should be isolated from ORM-owned business CRUD so that
+  dashboards can move from raw PostgreSQL facts to PostgreSQL rollups, a read
+  replica, or a DuckDB mirror without changing the API contract.
+- DuckDB is the preferred lightweight OLAP escalation only as a copied/mirrored
+  analytical store or Parquet-facing engine. Repeated live scans through the
+  DuckDB Postgres extension still put read pressure on PostgreSQL and should be
+  limited to bootstrap, backfill, or exploration.
+- A storage/query-engine TDR defines escalation triggers if query or retention
+  pressure exceeds the starting posture.
 
 ## Privacy And Redaction
 

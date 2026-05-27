@@ -2,7 +2,8 @@
 
 ## Status
 
-Open for review. Current bias: PostgreSQL plus Redis first.
+Open for review. Current bias: PostgreSQL plus Redis first, with analytics
+queries separated behind an engine-swappable repository boundary.
 
 ## Decision
 
@@ -27,6 +28,7 @@ The user explicitly prefers PostgreSQL extensions plus Redis and does not want a
 | --- | --- | --- |
 | PostgreSQL plus Redis | Lean, durable, familiar, enough for bounded facts and rollups | Needs discipline on rollups, partitions, and request-path writes |
 | PostgreSQL plus Redis plus separate OLAP store | Scales analytical scans and retention | More infra, more pipelines, more failure modes |
+| PostgreSQL plus Redis plus embedded DuckDB mirror | Keeps OLAP light while removing long scans from the primary | Requires refresh jobs, freshness semantics, and single-writer discipline |
 | Telemetry backend as analytics authority | Reuses observability estate | Weak durable business attribution and audit fit |
 
 ## Starting Recommendation
@@ -37,6 +39,9 @@ Start with:
 - Redis for online counters, concurrency/rate state, and short-lived snapshots.
 - Time-bounded fact retention plus longer rollups.
 - Explicit request-path decoupling for fact emission where correctness permits.
+- Analytics SQL in a dedicated repository/service layer rather than API route code.
+- DuckDB as a later mirrored OLAP accelerator when raw fact scans remain too slow
+  after PostgreSQL indexes, partitioning, and rollups.
 
 ## What This Does Not Mean
 
@@ -44,6 +49,7 @@ Start with:
 - Redis may act as audit authority.
 - Every raw telemetry event belongs in PostgreSQL.
 - Prompt/response content must be retained for capacity analysis.
+- DuckDB should be used to live-scan the PostgreSQL primary for every dashboard.
 
 ## Escalation Triggers
 
@@ -53,18 +59,26 @@ Escalate to a heavier analytics decision only when measured evidence shows one o
 - Drilldown queries stay too slow after indexes, partitioning, and rollups.
 - Analytics write/aggregation work endangers request-path performance.
 - Required high-concurrency analytics use cases exceed the lean posture.
+- Dashboard users need frequent long-range ad hoc analysis over tens of millions of
+  request facts.
 
 ## Rejected For Now
 
 | Alternative | Reason |
 | --- | --- |
 | Heavy OLAP store on day one | Adds operational weight before load evidence |
+| DuckDB live Postgres scans as the default dashboard path | Still repeatedly reads the source table from PostgreSQL and can keep pressure on the OLTP primary |
 | Redis-only facts | Not durable enough for audit and capacity history |
 | Metrics-only analytics | Loses project/person attribution contract |
 
 ## Evidence Needed Before Closure
 
 - Expected fact volume and retention assumptions.
-- Initial dashboard query shapes.
+- Initial dashboard query shapes and default time windows.
 - Rate/concurrency algorithm requirements.
 - PostgreSQL operational baseline and backup posture.
+- Query plan evidence for raw facts, rollups, and any DuckDB mirror prototype.
+
+## Related TDRs
+
+- [Analytics Query Engine Posture](analytics-query-engine-posture.md)

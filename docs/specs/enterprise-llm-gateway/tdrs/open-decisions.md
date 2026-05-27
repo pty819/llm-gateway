@@ -14,6 +14,7 @@ This register keeps unresolved decisions visible so domain specs do not quietly 
 | IdP integration timing | Identity model and enterprise operations | Internal auth needs and org standard |
 | Trusted ingress/IP extraction | IP allowlist correctness | Deployment topology and proxy chain |
 | Retention defaults | Privacy, analytics, compliance cost | Capacity questions and security posture |
+| Analytics query engine escalation | Keeps dashboards fast without overbuilding infrastructure | Query plans, retained fact volume, rollup latency, and DuckDB mirror benchmark |
 | Prompt/response sampling | Debug value versus sensitivity | Explicit security and product decision |
 | PostgreSQL HA and Redis topology | Recovery and availability | Production environment needs |
 | External commercialization threshold | Tenant and billing work timing | Product commitment and customer path |
