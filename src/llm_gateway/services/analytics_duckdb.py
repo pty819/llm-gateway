@@ -161,6 +161,79 @@ class DuckDBAnalyticsStore:
         """
         return await asyncio.to_thread(self._query_rows, sql, params)
 
+    async def usage_summary(
+        self,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        self._require_enabled()
+        where_sql, params = _where_sql(
+            start=start, end=end, model=None, subject_id=None, project_id=None
+        )
+        sql = f"""
+            select
+                model_alias,
+                subject_id,
+                project_id,
+                count(*)::BIGINT as request_count,
+                coalesce(sum(prompt_tokens), 0)::BIGINT as prompt_tokens,
+                coalesce(sum(completion_tokens), 0)::BIGINT as completion_tokens,
+                coalesce(sum(
+                    coalesce(
+                        total_tokens,
+                        coalesce(prompt_tokens, 0) + coalesce(completion_tokens, 0),
+                        0
+                    )
+                ), 0)::BIGINT as total_tokens,
+                coalesce(sum(case when outcome = 'success' then 1 else 0 end), 0)::BIGINT
+                    as success_count,
+                coalesce(sum(case when outcome <> 'success' then 1 else 0 end), 0)::BIGINT
+                    as failure_count
+            from request_facts
+            {where_sql}
+            group by model_alias, subject_id, project_id
+        """
+        return await asyncio.to_thread(self._query_rows, sql, params)
+
+    async def usage_ranking(
+        self,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        model: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        self._require_enabled()
+        where_sql, params = _where_sql(
+            start=start, end=end, model=model, subject_id=None, project_id=None
+        )
+        clauses = [where_sql.removeprefix("where ").strip()] if where_sql else []
+        clauses.append("subject_id is not null")
+        params.append(limit)
+        sql = f"""
+            select
+                subject_id,
+                subject_login_username as login_username,
+                coalesce(subject_name, subject_login_username, subject_id) as subject_name,
+                count(*)::BIGINT as request_count,
+                coalesce(sum(prompt_tokens), 0)::BIGINT as prompt_tokens,
+                coalesce(sum(completion_tokens), 0)::BIGINT as completion_tokens,
+                coalesce(sum(
+                    coalesce(
+                        total_tokens,
+                        coalesce(prompt_tokens, 0) + coalesce(completion_tokens, 0),
+                        0
+                    )
+                ), 0)::BIGINT as total_tokens
+            from request_facts
+            where {" and ".join(clauses)}
+            group by subject_id, subject_login_username, subject_name
+            order by total_tokens desc, request_count desc
+            limit ?
+        """
+        return await asyncio.to_thread(self._query_rows, sql, params)
+
     async def _load_rows(
         self,
         session: AsyncSession,

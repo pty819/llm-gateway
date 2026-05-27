@@ -120,6 +120,36 @@ async def test_admin_duckdb_analytics_refresh_and_query(
     assert model_row["dimension_label"] == gateway_fixture.model_alias
     assert model_row["request_count"] >= 2
 
+    summary = await client.get(
+        "/admin/usage/duckdb/summary",
+        headers=headers,
+        params={"start": params["start"], "end": params["end"]},
+    )
+    assert summary.status_code == 200, summary.text
+    summary_row = next(
+        item
+        for item in summary.json()
+        if item["model_alias"] == gateway_fixture.model_alias
+        and item["subject_id"] == str(gateway_fixture.subject_id)
+    )
+    assert summary_row["request_count"] >= 2
+    assert summary_row["total_tokens"] >= 190
+
+    ranking = await client.get(
+        "/admin/usage/duckdb/ranking",
+        headers=headers,
+        params={
+            "start": params["start"],
+            "end": params["end"],
+            "model": gateway_fixture.model_alias,
+            "limit": 1,
+        },
+    )
+    assert ranking.status_code == 200, ranking.text
+    ranking_payload = ranking.json()
+    assert ranking_payload[0]["subject_id"] == str(gateway_fixture.subject_id)
+    assert ranking_payload[0]["total_tokens"] >= 190
+
 
 async def test_user_usage_stays_postgres_scoped(client, gateway_fixture):
     from llm_gateway.core.config import get_settings

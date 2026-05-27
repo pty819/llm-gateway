@@ -1144,6 +1144,38 @@ async def usage_ranking(
     return [dict(row) for row in rows]
 
 
+@router.get("/usage/duckdb/summary")
+async def duckdb_usage_summary(
+    start: datetime | None = None,
+    end: datetime | None = None,
+    settings: Settings = Depends(settings_dep),
+):
+    try:
+        return await DuckDBAnalyticsStore(settings).usage_summary(start=start, end=end)
+    except DuckDBAnalyticsUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+
+
+@router.get("/usage/duckdb/ranking")
+async def duckdb_usage_ranking(
+    start: datetime | None = None,
+    end: datetime | None = None,
+    model: str | None = None,
+    limit: int = Query(default=20, ge=1, le=100),
+    settings: Settings = Depends(settings_dep),
+):
+    try:
+        return await DuckDBAnalyticsStore(settings).usage_ranking(
+            start=start, end=end, model=model, limit=limit
+        )
+    except DuckDBAnalyticsUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+
+
 AnalyticsBucket = Literal["minute", "hour", "day"]
 AnalyticsDimension = Literal[
     "model", "subject", "project", "endpoint", "outcome", "streaming"

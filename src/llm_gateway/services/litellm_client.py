@@ -17,6 +17,7 @@ class LiteLLMCallResult:
 
 
 litellm.use_chat_completions_url_for_anthropic_messages = True
+ANTHROPIC_DROP_PARAMS = True
 
 
 def _api_key(upstream: UpstreamTarget) -> str | None:
@@ -95,6 +96,7 @@ async def anthropic_messages_once(
 ) -> LiteLLMCallResult:
     payload = dict(body)
     payload["model"] = model_alias.litellm_model
+    payload["drop_params"] = ANTHROPIC_DROP_PARAMS
     response = await anthropic_messages(
         api_base=upstream.base_url,
         api_key=_api_key(upstream),
@@ -112,6 +114,7 @@ async def anthropic_messages_stream(
     payload = dict(body)
     payload["model"] = model_alias.litellm_model
     payload["stream"] = True
+    payload["drop_params"] = ANTHROPIC_DROP_PARAMS
     stream = await anthropic_messages(
         api_base=upstream.base_url,
         api_key=_api_key(upstream),
