@@ -711,6 +711,13 @@
 		});
 	}
 
+	async function patchUpstream(id: string, patch: Record<string, unknown>) {
+		await run(async () => {
+			await api.patch(`/admin/upstreams/${id}`, clean(patch));
+			await refreshAll();
+		});
+	}
+
 	async function checkUpstream(id: string) {
 		healthResults[id] = '检查中';
 		try {
@@ -1309,7 +1316,7 @@
 							<button type="button" onclick={createUpstream}>创建上游</button>
 						</div>
 					</section>
-						{@render UpstreamTable(inventory.upstreams, healthResults, modelLabel, checkUpstream, setUpstreamState, deleteUpstream)}
+						{@render UpstreamTable(inventory.upstreams, healthResults, modelLabel, checkUpstream, setUpstreamState, patchUpstream, deleteUpstream)}
 				{:else if active === 'subjects'}
 					{@render PageTitle('用户', '由网关管理的人类用户和服务账号。')}
 						<section class="panel">
@@ -1425,7 +1432,7 @@
 				{:else if active === 'diagnostics'}
 					{@render PageTitle('诊断', '运行时依赖和上游健康检查。')}
 					<div class="grid"><div class="metric"><span>Postgres</span><strong>{ready?.checks.postgres ? '正常' : '异常'}</strong></div><div class="metric"><span>Redis</span><strong>{ready?.checks.redis ? '正常' : '异常'}</strong></div><div class="metric"><span>环境</span><strong>{diagnostics?.environment}</strong></div><div class="metric"><span>LiteLLM</span><strong>{diagnostics?.litellm_version}</strong></div></div>
-					{@render UpstreamTable(inventory.upstreams, healthResults, modelLabel, checkUpstream, setUpstreamState, deleteUpstream)}
+					{@render UpstreamTable(inventory.upstreams, healthResults, modelLabel, checkUpstream, setUpstreamState, patchUpstream, deleteUpstream)}
 				{/if}
 			</section>
 		</main>
@@ -1589,6 +1596,7 @@
 	modelLabel: (id: string | null | undefined) => string,
 	onCheck: (id: string) => void,
 	onState: (id: string, state: ResourceState) => void,
+	onPatch: (id: string, patch: Record<string, unknown>) => void,
 	onDelete: (upstream: Inventory['upstreams'][number]) => void
 )}
 	<section class="panel">
@@ -1613,7 +1621,41 @@
 									<span class="muted">未检查</span>
 								{/if}
 							</td>
-							<td class="actions"><button class="secondary" type="button" onclick={() => onCheck(upstream.id)}>检查</button><button class="secondary" type="button" onclick={() => onState(upstream.id, upstream.state === 'active' ? 'disabled' : 'active')}>{upstream.state === 'active' ? '禁用' : '启用'}</button><button class="danger" type="button" onclick={() => onDelete(upstream)}>删除</button></td>
+							<td class="actions">
+								<button class="secondary" type="button" onclick={() => onCheck(upstream.id)}>检查</button>
+								<button class="secondary" type="button" onclick={() => {
+									const next = prompt('新的 Base URL', upstream.base_url);
+									if (next !== null) onPatch(upstream.id, { base_url: next });
+								}}>改地址</button>
+								<button class="secondary" type="button" onclick={() => {
+									const next = prompt('健康检查路径', upstream.health_path);
+									if (next !== null) onPatch(upstream.id, { health_path: next });
+								}}>改健康路径</button>
+								<button class="secondary" type="button" onclick={() => {
+									const next = prompt('上游名称', upstream.name);
+									if (next !== null) onPatch(upstream.id, { name: next });
+								}}>改名称</button>
+								<button class="secondary" type="button" onclick={() => {
+									const next = prompt('API key 引用', upstream.api_key_ref ?? '');
+									if (next !== null) onPatch(upstream.id, { api_key_ref: next });
+								}}>改 key 引用</button>
+								<button class="secondary" type="button" onclick={() => {
+									const next = prompt('新的 API key 明文，留空则不修改', '');
+									if (next) onPatch(upstream.id, { api_key_value: next });
+								}}>换 key</button>
+								<button class="secondary" type="button" onclick={() => {
+									const next = prompt('额外请求头 JSON', JSON.stringify(upstream.extra_headers, null, 2));
+									if (next !== null) {
+										try {
+											onPatch(upstream.id, { extra_headers: parseJsonObject(next, '额外请求头') });
+										} catch (error) {
+											pageError = errorMessage(error);
+										}
+									}
+								}}>改请求头</button>
+								<button class="secondary" type="button" onclick={() => onState(upstream.id, upstream.state === 'active' ? 'disabled' : 'active')}>{upstream.state === 'active' ? '禁用' : '启用'}</button>
+								<button class="danger" type="button" onclick={() => onDelete(upstream)}>删除</button>
+							</td>
 						</tr>
 					{:else}
 						<tr><td colspan="7" class="empty">还没有配置上游端点。</td></tr>

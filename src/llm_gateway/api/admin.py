@@ -623,9 +623,6 @@ async def delete_model_alias(
                 ],
             },
         )
-    for upstream in upstreams:
-        await _ensure_upstream_deletable(session, upstream)
-
     await record_audit_event(
         session,
         action="model_alias.delete",
@@ -638,6 +635,9 @@ async def delete_model_alias(
             "upstream_count": len(upstreams),
         },
     )
+    detached_usage_count = 0
+    for upstream in upstreams:
+        detached_usage_count += await _detach_upstream_usage(session, upstream)
     await session.execute(
         delete(ModelEntitlement).where(
             col(ModelEntitlement.model_alias_id) == model_alias.id
@@ -660,7 +660,11 @@ async def delete_model_alias(
     )
     await session.delete(model_alias)
     await session.commit()
-    return {"ok": True, "deleted_upstreams": len(upstreams)}
+    return {
+        "ok": True,
+        "deleted_upstreams": len(upstreams),
+        "detached_usage_facts": detached_usage_count,
+    }
 
 
 @router.post("/model-entitlements")
@@ -926,18 +930,22 @@ async def delete_upstream(
     upstream_id: UUID, session: AsyncSession = Depends(session_dep)
 ):
     upstream = await _get_or_404(session, UpstreamTarget, upstream_id)
-    await _ensure_upstream_deletable(session, upstream)
+    detached_usage_count = await _detach_upstream_usage(session, upstream)
     await record_audit_event(
         session,
         action="upstream.delete",
         resource_type="upstream_target",
         resource_id=upstream.id,
         outcome="success",
-        detail={"name": upstream.name, "base_url": upstream.base_url},
+        detail={
+            "name": upstream.name,
+            "base_url": upstream.base_url,
+            "detached_usage_facts": detached_usage_count,
+        },
     )
     await session.delete(upstream)
     await session.commit()
-    return {"ok": True}
+    return {"ok": True, "detached_usage_facts": detached_usage_count}
 
 
 @router.post("/router-command-configs")
@@ -1510,25 +1518,23 @@ async def _count_rows(session: AsyncSession, stmt) -> int:
     return int((await session.execute(stmt)).scalar_one() or 0)
 
 
-async def _ensure_upstream_deletable(
+async def _detach_upstream_usage(
     session: AsyncSession, upstream: UpstreamTarget
-) -> None:
+) -> int:
     request_count = await _count_rows(
         session,
         select(func.count(col(RequestFact.id))).where(
             col(RequestFact.upstream_target_id) == upstream.id
         ),
     )
-    if request_count:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "code": "upstream_has_usage_history",
-                "upstream_id": str(upstream.id),
-                "name": upstream.name,
-                "request_count": request_count,
-            },
-        )
+    if not request_count:
+        return 0
+    await session.execute(
+        update(RequestFact)
+        .where(col(RequestFact.upstream_target_id) == upstream.id)
+        .values(upstream_target_id=None)
+    )
+    return request_count
 
 
 async def _delete_project_without_usage(

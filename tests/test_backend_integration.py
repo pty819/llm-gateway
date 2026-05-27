@@ -5,7 +5,12 @@ from uuid import uuid4
 import pytest
 from sqlmodel import col
 
-from llm_gateway.db.models import EndpointFamily, RequestOutcome, UsageSource
+from llm_gateway.db.models import (
+    EndpointFamily,
+    RequestFact,
+    RequestOutcome,
+    UsageSource,
+)
 
 from conftest import fetch_request_fact
 
@@ -714,3 +719,188 @@ async def test_admin_updates_router_command_rate_policy_and_upstream_health(
     )
     assert patched_policy.status_code == 200, patched_policy.text
     assert patched_policy.json()["requests_per_minute"] == 55
+
+
+async def test_admin_can_edit_upstream_endpoint_after_launch(client, gateway_fixture):
+    from llm_gateway.core.config import get_settings
+
+    headers = {"x-admin-token": get_settings().admin_token}
+    new_base_url = "https://example.internal/v1"
+    patched = await client.patch(
+        f"/admin/upstreams/{gateway_fixture.upstream_id}",
+        headers=headers,
+        json={
+            "name": "patched-upstream",
+            "base_url": new_base_url,
+            "health_path": "/healthz",
+            "api_key_ref": "patched-key-ref",
+            "extra_headers": {"x-test": "patched"},
+        },
+    )
+
+    assert patched.status_code == 200, patched.text
+    payload = patched.json()
+    assert payload["name"] == "patched-upstream"
+    assert payload["base_url"] == new_base_url
+    assert payload["health_path"] == "/healthz"
+    assert payload["api_key_ref"] == "patched-key-ref"
+    assert payload["extra_headers"] == {"x-test": "patched"}
+    assert payload["api_key_value"] is None
+
+
+async def test_admin_can_delete_used_upstream_without_deleting_request_facts(
+    client,
+):
+    from llm_gateway.core.config import get_settings
+    from llm_gateway.db.models import (
+        ModelAlias,
+        Project,
+        Subject,
+        SubjectType,
+        UpstreamTarget,
+    )
+    from llm_gateway.db.session import AsyncSessionLocal
+
+    suffix = uuid4().hex
+    request_id = f"pytest-used-upstream-delete-{uuid4()}"
+    async with AsyncSessionLocal() as session:
+        subject = Subject(
+            name=f"delete-upstream-subject-{suffix}", type=SubjectType.USER
+        )
+        session.add(subject)
+        await session.flush()
+        project = Project(
+            name=f"delete-upstream-project-{suffix}", owner_subject_id=subject.id
+        )
+        session.add(project)
+        await session.flush()
+        model = ModelAlias(
+            alias=f"delete-upstream-model-{suffix}",
+            upstream_model_name=f"delete-upstream-model-{suffix}",
+            litellm_model=f"openai/delete-upstream-model-{suffix}",
+        )
+        session.add(model)
+        await session.flush()
+        upstream = UpstreamTarget(
+            model_alias_id=model.id,
+            name=f"delete-upstream-{suffix}",
+            base_url="https://example.internal/v1",
+            api_key_value="test-key",
+        )
+        session.add(upstream)
+        await session.flush()
+        fact = RequestFact(
+            request_id=request_id,
+            started_at=fetch_now(),
+            ended_at=fetch_now(),
+            endpoint_family=EndpointFamily.OPENAI_CHAT,
+            subject_id=subject.id,
+            project_id=project.id,
+            model_alias=model.alias,
+            upstream_target_id=upstream.id,
+            streaming=False,
+            outcome=RequestOutcome.SUCCESS,
+            prompt_tokens=3,
+            completion_tokens=4,
+            total_tokens=7,
+        )
+        session.add(fact)
+        await session.commit()
+        upstream_id = upstream.id
+        model_alias = model.alias
+
+    headers = {"x-admin-token": get_settings().admin_token}
+    deleted = await client.delete(f"/admin/upstreams/{upstream_id}", headers=headers)
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["detached_usage_facts"] >= 1
+
+    fact = await fetch_request_fact(request_id)
+    assert fact.model_alias == model_alias
+    assert fact.upstream_target_id is None
+
+
+async def test_admin_can_cascade_delete_used_model_alias_preserving_usage(
+    client,
+):
+    from llm_gateway.core.config import get_settings
+    from llm_gateway.db.models import (
+        ModelAlias,
+        Project,
+        Subject,
+        SubjectType,
+        UpstreamTarget,
+    )
+    from llm_gateway.db.session import AsyncSessionLocal
+
+    suffix = uuid4().hex
+    request_id = f"pytest-used-alias-delete-{uuid4()}"
+    async with AsyncSessionLocal() as session:
+        subject = Subject(name=f"delete-alias-subject-{suffix}", type=SubjectType.USER)
+        session.add(subject)
+        await session.flush()
+        project = Project(
+            name=f"delete-alias-project-{suffix}", owner_subject_id=subject.id
+        )
+        session.add(project)
+        await session.flush()
+        model = ModelAlias(
+            alias=f"delete-alias-model-{suffix}",
+            upstream_model_name=f"delete-alias-model-{suffix}",
+            litellm_model=f"openai/delete-alias-model-{suffix}",
+        )
+        session.add(model)
+        await session.flush()
+        upstream = UpstreamTarget(
+            model_alias_id=model.id,
+            name=f"delete-alias-upstream-{suffix}",
+            base_url="https://example.internal/v1",
+            api_key_value="test-key",
+        )
+        session.add(upstream)
+        await session.flush()
+        session.add(
+            RequestFact(
+                request_id=request_id,
+                started_at=fetch_now(),
+                ended_at=fetch_now(),
+                endpoint_family=EndpointFamily.OPENAI_RESPONSES,
+                subject_id=subject.id,
+                project_id=project.id,
+                model_alias=model.alias,
+                upstream_target_id=upstream.id,
+                streaming=False,
+                outcome=RequestOutcome.SUCCESS,
+                prompt_tokens=5,
+                completion_tokens=6,
+                total_tokens=11,
+            )
+        )
+        await session.commit()
+        model_alias_id = model.id
+        model_alias = model.alias
+
+    headers = {"x-admin-token": get_settings().admin_token}
+    blocked = await client.delete(
+        f"/admin/model-aliases/{model_alias_id}", headers=headers
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["code"] == "model_alias_has_upstreams"
+
+    deleted = await client.delete(
+        f"/admin/model-aliases/{model_alias_id}",
+        headers=headers,
+        params={"cascade_upstreams": True},
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["deleted_upstreams"] >= 1
+    assert deleted.json()["detached_usage_facts"] >= 1
+
+    fact = await fetch_request_fact(request_id)
+    assert fact.model_alias == model_alias
+    assert fact.upstream_target_id is None
+
+
+def fetch_now():
+    from llm_gateway.db.models import utcnow
+
+    return utcnow()
