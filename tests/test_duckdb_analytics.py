@@ -106,12 +106,21 @@ async def test_admin_duckdb_analytics_refresh_and_query(
     assert row["fallback_count"] >= 1
     assert row["vllm_metrics_count"] >= 1
 
+    limited_buckets = await client.get(
+        "/admin/analytics/duckdb/time-buckets",
+        headers=headers,
+        params={**params, "limit": 1},
+    )
+    assert limited_buckets.status_code == 200, limited_buckets.text
+    assert len(limited_buckets.json()) <= 1
+
     drilldown = await client.get(
         "/admin/analytics/duckdb/drilldown",
         headers=headers,
-        params={**params, "dimension": "model"},
+        params={**params, "dimension": "model", "limit": 1},
     )
     assert drilldown.status_code == 200, drilldown.text
+    assert len(drilldown.json()) <= 1
     model_row = next(
         item
         for item in drilldown.json()

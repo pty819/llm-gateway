@@ -51,8 +51,15 @@
 		icon: typeof Activity;
 	};
 
+	const PAGE_SIZE = {
+		defaultList: 30,
+		selectOptions: 20,
+		ranking: 50,
+		audit: 50,
+		usagePreview: 5
+	};
+
 	const sections: Section[] = [
-		{ id: 'overview', label: '总览', group: '运行', icon: Activity },
 		{ id: 'diagnostics', label: '诊断', group: '运行', icon: Database },
 		{ id: 'models', label: '模型', group: '配置', icon: BookOpen },
 		{ id: 'upstreams', label: '上游', group: '配置', icon: Network },
@@ -70,7 +77,7 @@
 
 	const navGroups = Array.from(new Set(sections.map((section) => section.group)));
 
-	let active = $state('overview');
+	let active = $state('usage');
 	let sessionToken = $state('');
 	let rememberSession = $state(true);
 	let connected = $state(false);
@@ -91,7 +98,7 @@
 	let ownUsageStart = $state('');
 	let ownUsageEnd = $state('');
 	let ownUsage = $state<OwnUsageSummary | null>(null);
-	let rankingLimit = $state(20);
+	let rankingLimit = $state(50);
 	let rankingModel = $state('');
 	let gatewayBaseUrl = $state('');
 	let copiedItem = $state('');
@@ -106,6 +113,20 @@
 	let entitlementSubjectSearch = $state('');
 	let rateSubjectSearch = $state('');
 	let usageSubjectSearch = $state('');
+	let subjectPage = $state(1);
+	let projectPage = $state(1);
+	let projectSearch = $state('');
+	let keyPage = $state(1);
+	let keyListSubjectSearch = $state('');
+	let keyProjectFilter = $state('');
+	let keyStateFilter = $state('');
+	let teamMembershipPage = $state(1);
+	let teamMembershipTeamFilter = $state('');
+	let teamMembershipSubjectSearch = $state('');
+	let teamMembershipRoleFilter = $state('');
+	let teamMembershipStateFilter = $state('');
+	let auditPage = $state(1);
+	let rankingPage = $state(1);
 	let cidrEditorModel = $state<Inventory['models'][number] | null>(null);
 	let cidrEditorValue = $state('');
 	let realNameForm = $state({ full_name: '' });
@@ -218,11 +239,51 @@
 			{ requests: 0, prompt: 0, completion: 0, total: 0, success: 0, failure: 0 }
 		)
 	);
-	const analyticsMaxTokens = $derived(
-		Math.max(1, ...inventory.analyticsBuckets.map((row) => Number(row.total_tokens ?? 0)))
+	const visibleUsageRows = $derived(
+		usageRows.toSorted((a, b) => Number(b.total_tokens ?? 0) - Number(a.total_tokens ?? 0)).slice(0, PAGE_SIZE.usagePreview)
 	);
+	const visibleAnalyticsBuckets = $derived(inventory.analyticsBuckets.slice(0, PAGE_SIZE.usagePreview));
+	const visibleAnalyticsDrilldown = $derived(inventory.analyticsDrilldown.slice(0, PAGE_SIZE.usagePreview));
+	const analyticsMaxTokens = $derived(
+		Math.max(1, ...visibleAnalyticsBuckets.map((row) => Number(row.total_tokens ?? 0)))
+	);
+	const subjectRows = $derived(filteredSubjects(subjectSearch).toSorted((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN')));
+	const projectRows = $derived(
+		inventory.projects
+			.filter((project) => matchNeedle(projectSearch, [project.name, project.notes ?? '', subjectLabel(project.owner_subject_id)]))
+			.toSorted((a, b) => b.created_at.localeCompare(a.created_at))
+	);
+	const keyRows = $derived(
+		inventory.keys
+			.filter((key) => {
+				if (keyProjectFilter && key.project_id !== keyProjectFilter) return false;
+				if (keyStateFilter && key.state !== keyStateFilter) return false;
+				if (!matchNeedle(keyListSubjectSearch, [subjectLabel(key.subject_id), key.name, key.key_prefix])) return false;
+				return true;
+			})
+			.toSorted((a, b) => b.created_at.localeCompare(a.created_at))
+	);
+	const teamMembershipRows = $derived(
+		inventory.teamMemberships
+			.filter((membership) => {
+				if (teamMembershipTeamFilter && membership.team_id !== teamMembershipTeamFilter) return false;
+				if (teamMembershipStateFilter && membership.state !== teamMembershipStateFilter) return false;
+				if (teamMembershipRoleFilter && !membership.role.toLowerCase().includes(teamMembershipRoleFilter.trim().toLowerCase())) return false;
+				if (!matchNeedle(teamMembershipSubjectSearch, [subjectLabel(membership.subject_id)])) return false;
+				return true;
+			})
+			.toSorted((a, b) => b.created_at.localeCompare(a.created_at))
+	);
+	const rankingRows = $derived(inventory.ranking.slice(0, PAGE_SIZE.ranking));
+	const auditRows = $derived(inventory.audit.toSorted((a, b) => b.created_at.localeCompare(a.created_at)));
+	const subjectPageRows = $derived(pageRows(subjectRows, subjectPage, PAGE_SIZE.defaultList));
+	const projectPageRows = $derived(pageRows(projectRows, projectPage, PAGE_SIZE.defaultList));
+	const keyPageRows = $derived(pageRows(keyRows, keyPage, PAGE_SIZE.defaultList));
+	const teamMembershipPageRows = $derived(pageRows(teamMembershipRows, teamMembershipPage, PAGE_SIZE.defaultList));
+	const rankingPageRows = $derived(pageRows(rankingRows, rankingPage, PAGE_SIZE.ranking));
+	const auditPageRows = $derived(pageRows(auditRows, auditPage, PAGE_SIZE.audit));
 	const analyticsPerformance = $derived(
-		inventory.analyticsBuckets.reduce(
+		visibleAnalyticsBuckets.reduce(
 			(acc, row) => {
 				acc.requests += Number(row.request_count ?? 0);
 				acc.retry += Number(row.retry_count ?? 0);
@@ -244,6 +305,8 @@
 
 	onMount(() => {
 		const range = defaultUsageRange();
+		usageStart = range.start;
+		usageEnd = range.end;
 		ownUsageStart = range.start;
 		ownUsageEnd = range.end;
 		gatewayBaseUrl = inferGatewayBaseUrl();
@@ -416,7 +479,8 @@
 					bucket: analyticsBucket,
 					model: modelFilter,
 					subject_id: subjectFilter,
-					project_id: projectFilter
+					project_id: projectFilter,
+					limit: PAGE_SIZE.usagePreview
 				}),
 				api.get<Inventory['analyticsDrilldown']>('/admin/analytics/duckdb/drilldown', {
 					start: usageStart,
@@ -424,7 +488,8 @@
 					dimension: analyticsDimension,
 					model: modelFilter,
 					subject_id: subjectFilter,
-					project_id: projectFilter
+					project_id: projectFilter,
+					limit: PAGE_SIZE.usagePreview
 				})
 			]);
 			inventory = { ...inventory, usage, analyticsBuckets: buckets, analyticsDrilldown: drilldown };
@@ -896,9 +961,19 @@
 	}
 
 	function defaultUsageRange() {
+		return usageRangeForDays(7);
+	}
+
+	function usageRangeForDays(days: number) {
 		const end = new Date();
-		const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+		const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000);
 		return { start: toDateTimeLocal(start), end: toDateTimeLocal(end) };
+	}
+
+	function setUsageRange(days: number) {
+		const range = usageRangeForDays(days);
+		usageStart = range.start;
+		usageEnd = range.end;
 	}
 
 	function toDateTimeLocal(date: Date): string {
@@ -1032,7 +1107,7 @@
 	}
 
 	function scopeOptions(scope: string, subjectQuery = '') {
-		if (scope === 'subject') return filteredSubjects(subjectQuery).map((item) => ({ id: item.id, label: subjectDisplay(item) }));
+		if (scope === 'subject') return subjectOptions(subjectQuery).map((item) => ({ id: item.id, label: subjectDisplay(item) }));
 		if (scope === 'project') return inventory.projects.map((item) => ({ id: item.id, label: item.name }));
 		return inventory.keys.map((item) => ({ id: item.id, label: `${item.name} (${item.key_prefix})` }));
 	}
@@ -1049,6 +1124,32 @@
 				value.toLowerCase().includes(needle)
 			)
 		);
+	}
+
+	function subjectOptions(query: string) {
+		return filteredSubjects(query)
+			.toSorted((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'))
+			.slice(0, PAGE_SIZE.selectOptions);
+	}
+
+	function matchNeedle(query: string, values: Array<string | null | undefined>): boolean {
+		const needle = query.trim().toLowerCase();
+		if (!needle) return true;
+		return values.some((value) => (value ?? '').toLowerCase().includes(needle));
+	}
+
+	function pageRows<T>(rows: T[], page: number, size: number): T[] {
+		const safePage = Math.min(Math.max(1, page), pageCount(rows, size));
+		const start = (safePage - 1) * size;
+		return rows.slice(start, start + size);
+	}
+
+	function pageCount(rows: unknown[], size: number): number {
+		return pageCountTotal(rows.length, size);
+	}
+
+	function pageCountTotal(total: number, size: number): number {
+		return Math.max(1, Math.ceil(total / size));
 	}
 
 	function isModelUpstreamConflict(error: unknown): error is { detail: { code: string; upstream_count?: number } } {
@@ -1224,35 +1325,6 @@
 							<button type="button" onclick={changeOwnPassword}>修改密码</button>
 						</div>
 					</section>
-				{:else if active === 'overview'}
-					<div class="page-header">
-						<div>
-							<h1>总览</h1>
-							<p>运行状态、近期推理压力和最新管理变更。</p>
-						</div>
-					</div>
-					<div class="grid">
-						<div class="metric"><span>请求数</span><strong>{totals.requests}</strong></div>
-						<div class="metric"><span>总 token</span><strong>{totals.total}</strong></div>
-						<div class="metric"><span>输入 token</span><strong>{totals.prompt}</strong></div>
-						<div class="metric"><span>输出 token</span><strong>{totals.completion}</strong></div>
-						<div class="metric"><span>成功 / 失败</span><strong>{totals.success} / {totals.failure}</strong></div>
-					</div>
-					<div class="split">
-						<section class="panel">
-							<h2>资源概览</h2>
-							<div class="grid">
-								<div class="metric"><span>用户</span><strong>{inventory.subjects.length}</strong></div>
-								<div class="metric"><span>项目</span><strong>{inventory.projects.length}</strong></div>
-								<div class="metric"><span>密钥</span><strong>{inventory.keys.length}</strong></div>
-								<div class="metric"><span>模型</span><strong>{inventory.models.length}</strong></div>
-							</div>
-						</section>
-						<section class="panel">
-							<h2>最近审计</h2>
-							{@render AuditTable(inventory.audit.slice(0, 6), (event) => (auditDetail = event))}
-						</section>
-					</div>
 				{:else if active === 'models'}
 					{@render PageTitle('模型别名', '配置下游模型名称、LiteLLM 映射、能力标记和模型级 IP 策略。')}
 					<section class="panel">
@@ -1327,15 +1399,16 @@
 							<h2>重置用户密码</h2>
 							<div class="form-grid">
 								<label>搜索用户<input bind:value={subjectPasswordSearch} placeholder="输入姓名或工号" /></label>
-								<label>用户<select bind:value={subjectPasswordForm.subject_id}><option value="">选择用户</option>{#each filteredSubjects(subjectPasswordSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label>
+								<label>用户<select bind:value={subjectPasswordForm.subject_id}><option value="">选择用户</option>{#each subjectOptions(subjectPasswordSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label>
 								<label>新密码<input type="password" bind:value={subjectPasswordForm.new_password} /></label>
 								<button type="button" onclick={resetSubjectPassword}>重置密码</button>
 							</div>
 						</section>
 						<section class="panel">
 							<h2>用户</h2>
-							<label>搜索用户<input bind:value={subjectSearch} placeholder="输入姓名、工号或备注" /></label>
-							<div class="table-wrap"><table><thead><tr><th>真实姓名</th><th>工号</th><th>类型</th><th>状态</th><th>备注</th><th>操作</th></tr></thead><tbody>{#each filteredSubjects(subjectSearch) as subject}<tr><td>{subject.name}<br /><span class="muted">{short(subject.id)}</span></td><td>{subject.login_username ?? '无'}</td><td>{subjectTypeLabel(subject.type)}</td><td><StateBadge value={subject.state} /></td><td>{subject.notes}</td><td class="actions"><button class="secondary" type="button" onclick={() => patchSubject(subject.id, { name: prompt('真实姓名', subject.name) ?? subject.name })}>编辑姓名</button><button class="secondary" type="button" onclick={() => patchSubject(subject.id, { notes: prompt('备注', subject.notes ?? '') ?? subject.notes })}>编辑备注</button><button class="secondary" type="button" onclick={() => setSubjectState(subject.id, subject.state === 'active' ? 'disabled' : 'active')}>{subject.state === 'active' ? '禁用' : '启用'}</button><button class="danger" type="button" onclick={() => deleteSubject(subject)}>删除</button></td></tr>{:else}<tr><td colspan="6" class="empty">没有匹配的用户。</td></tr>{/each}</tbody></table></div>
+							<div class="form-grid"><label>搜索用户<input bind:value={subjectSearch} placeholder="输入姓名、工号或备注" /></label></div>
+							<div class="table-wrap"><table><thead><tr><th>真实姓名</th><th>工号</th><th>类型</th><th>状态</th><th>备注</th><th>操作</th></tr></thead><tbody>{#each subjectPageRows as subject}<tr><td>{subject.name}<br /><span class="muted">{short(subject.id)}</span></td><td>{subject.login_username ?? '无'}</td><td>{subjectTypeLabel(subject.type)}</td><td><StateBadge value={subject.state} /></td><td>{subject.notes}</td><td class="actions"><button class="secondary" type="button" onclick={() => patchSubject(subject.id, { name: prompt('真实姓名', subject.name) ?? subject.name })}>编辑姓名</button><button class="secondary" type="button" onclick={() => patchSubject(subject.id, { notes: prompt('备注', subject.notes ?? '') ?? subject.notes })}>编辑备注</button><button class="secondary" type="button" onclick={() => setSubjectState(subject.id, subject.state === 'active' ? 'disabled' : 'active')}>{subject.state === 'active' ? '禁用' : '启用'}</button><button class="danger" type="button" onclick={() => deleteSubject(subject)}>删除</button></td></tr>{:else}<tr><td colspan="6" class="empty">没有匹配的用户。</td></tr>{/each}</tbody></table></div>
+							{@render Pagination(subjectRows.length, subjectPage, PAGE_SIZE.defaultList, (page) => (subjectPage = page))}
 						</section>
 				{:else if active === 'projects'}
 					{@render PageTitle('项目', '用量归因和项目成员关系。')}
@@ -1345,7 +1418,7 @@
 							<div class="form-grid">
 								<label>名称<input bind:value={projectForm.name} /></label>
 								<label>搜索负责人<input bind:value={projectOwnerSearch} placeholder="输入姓名或工号" /></label>
-								<label>负责人<select bind:value={projectForm.owner_subject_id}><option value="">无</option>{#each filteredSubjects(projectOwnerSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label>
+								<label>负责人<select bind:value={projectForm.owner_subject_id}><option value="">无</option>{#each subjectOptions(projectOwnerSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label>
 								<label>备注<input bind:value={projectForm.notes} /></label>
 								<button type="button" onclick={createProject}>创建项目</button>
 							</div>
@@ -1355,27 +1428,27 @@
 							<div class="form-grid">
 								<label>项目<select bind:value={membershipForm.project_id}><option value="">项目</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label>
 								<label>搜索用户<input bind:value={projectMemberSearch} placeholder="输入姓名或工号" /></label>
-								<label>用户<select bind:value={membershipForm.subject_id}><option value="">用户</option>{#each filteredSubjects(projectMemberSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label>
+								<label>用户<select bind:value={membershipForm.subject_id}><option value="">用户</option>{#each subjectOptions(projectMemberSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label>
 								<label>角色<input bind:value={membershipForm.role} /></label>
 								<button type="button" onclick={createMembership}>添加成员</button>
 							</div>
 						</section>
 					</div>
-					<section class="panel"><h2>项目</h2><div class="table-wrap"><table><thead><tr><th>名称</th><th>负责人</th><th>状态</th><th>备注</th><th>操作</th></tr></thead><tbody>{#each inventory.projects as project}<tr><td>{project.name}<br /><span class="muted">{short(project.id)}</span></td><td>{subjectLabel(project.owner_subject_id)}</td><td><StateBadge value={project.state} /></td><td>{project.notes}</td><td><button class="secondary" type="button" onclick={() => patchProject(project.id, { notes: prompt('备注', project.notes ?? '') ?? project.notes })}>编辑备注</button></td></tr>{/each}</tbody></table></div></section>
+					<section class="panel"><h2>项目</h2><div class="form-grid"><label>搜索项目<input bind:value={projectSearch} placeholder="项目名、负责人或备注" /></label></div><div class="table-wrap"><table><thead><tr><th>名称</th><th>负责人</th><th>状态</th><th>备注</th><th>操作</th></tr></thead><tbody>{#each projectPageRows as project}<tr><td>{project.name}<br /><span class="muted">{short(project.id)}</span></td><td>{subjectLabel(project.owner_subject_id)}</td><td><StateBadge value={project.state} /></td><td>{project.notes}</td><td><button class="secondary" type="button" onclick={() => patchProject(project.id, { notes: prompt('备注', project.notes ?? '') ?? project.notes })}>编辑备注</button></td></tr>{:else}<tr><td colspan="5" class="empty">没有匹配的项目。</td></tr>{/each}</tbody></table></div>{@render Pagination(projectRows.length, projectPage, PAGE_SIZE.defaultList, (page) => (projectPage = page))}</section>
 					<section class="panel"><h2>项目成员</h2><div class="table-wrap"><table><thead><tr><th>项目</th><th>用户</th><th>角色</th></tr></thead><tbody>{#each inventory.memberships as membership}<tr><td>{projectLabel(membership.project_id)}</td><td>{subjectLabel(membership.subject_id)}</td><td>{membership.role}</td></tr>{/each}</tbody></table></div></section>
 				{:else if active === 'keys'}
 					{@render PageTitle('网关密钥', '签发、轮换和停用网关管理的密钥。')}
-					<section class="panel"><h2>签发密钥</h2><div class="form-grid"><label>搜索用户<input bind:value={keySubjectSearch} placeholder="输入姓名或工号" /></label><label>用户<select bind:value={keyForm.subject_id}><option value="">用户</option>{#each filteredSubjects(keySubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>项目<select bind:value={keyForm.project_id}><option value="">项目</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><label>名称<input bind:value={keyForm.name} /></label><button type="button" onclick={issueKey}>签发密钥</button></div></section>
-					<section class="panel"><h2>密钥</h2><div class="table-wrap"><table><thead><tr><th>名称</th><th>前缀</th><th>用户</th><th>项目</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each inventory.keys as key}<tr><td>{key.name}</td><td><code>{key.key_prefix}</code></td><td>{subjectLabel(key.subject_id)}</td><td>{projectLabel(key.project_id)}</td><td><StateBadge value={key.state} /></td><td><button class="secondary" type="button" onclick={() => setKeyState(key.id, key.state === 'active' ? 'disabled' : 'active')}>{key.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
+					<section class="panel"><h2>签发密钥</h2><div class="form-grid"><label>搜索用户<input bind:value={keySubjectSearch} placeholder="输入姓名或工号" /></label><label>用户<select bind:value={keyForm.subject_id}><option value="">用户</option>{#each subjectOptions(keySubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>项目<select bind:value={keyForm.project_id}><option value="">项目</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><label>名称<input bind:value={keyForm.name} /></label><button type="button" onclick={issueKey}>签发密钥</button></div></section>
+					<section class="panel"><h2>密钥</h2><div class="form-grid"><label>搜索用户/密钥<input bind:value={keyListSubjectSearch} placeholder="姓名、工号、密钥名或前缀" /></label><label>项目<select bind:value={keyProjectFilter}><option value="">全部项目</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><label>状态<select bind:value={keyStateFilter}><option value="">全部状态</option><option value="active">启用</option><option value="disabled">停用</option></select></label></div><div class="table-wrap"><table><thead><tr><th>名称</th><th>前缀</th><th>用户</th><th>项目</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each keyPageRows as key}<tr><td>{key.name}</td><td><code>{key.key_prefix}</code></td><td>{subjectLabel(key.subject_id)}</td><td>{projectLabel(key.project_id)}</td><td><StateBadge value={key.state} /></td><td><button class="secondary" type="button" onclick={() => setKeyState(key.id, key.state === 'active' ? 'disabled' : 'active')}>{key.state === 'active' ? '禁用' : '启用'}</button></td></tr>{:else}<tr><td colspan="6" class="empty">没有匹配的密钥。</td></tr>{/each}</tbody></table></div>{@render Pagination(keyRows.length, keyPage, PAGE_SIZE.defaultList, (page) => (keyPage = page))}</section>
 				{:else if active === 'teams'}
 					{@render PageTitle('权限组', '自助注册用户会继承其所有启用权限组的模型访问权限。')}
 					<div class="split">
 						<section class="panel"><h2>创建权限组</h2><div class="form-grid"><label>名称<input bind:value={teamForm.name} /></label><label>备注<input bind:value={teamForm.notes} /></label><button type="button" onclick={createTeam}>创建权限组</button></div></section>
-						<section class="panel"><h2>把用户加入权限组</h2><div class="form-grid"><label>搜索用户<input bind:value={teamSubjectSearch} placeholder="输入姓名或工号" /></label><label>权限组<select bind:value={teamMembershipForm.team_id}><option value="">权限组</option>{#each inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><label>用户<select bind:value={teamMembershipForm.subject_id}><option value="">用户</option>{#each filteredSubjects(teamSubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>角色<input bind:value={teamMembershipForm.role} /></label><button type="button" onclick={createTeamMembership}>添加成员</button></div></section>
+						<section class="panel"><h2>把用户加入权限组</h2><div class="form-grid"><label>搜索用户<input bind:value={teamSubjectSearch} placeholder="输入姓名或工号" /></label><label>权限组<select bind:value={teamMembershipForm.team_id}><option value="">权限组</option>{#each inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><label>用户<select bind:value={teamMembershipForm.subject_id}><option value="">用户</option>{#each subjectOptions(teamSubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>角色<input bind:value={teamMembershipForm.role} /></label><button type="button" onclick={createTeamMembership}>添加成员</button></div></section>
 					</div>
 					<section class="panel"><h2>给权限组授权模型</h2><div class="form-grid"><label>模型<select bind:value={modelTeamGrantForm.model_alias_id}><option value="">模型</option>{#each inventory.models as model}<option value={model.id}>{model.alias}</option>{/each}</select></label><label>权限组<select bind:value={modelTeamGrantForm.team_id}><option value="">权限组</option>{#each inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><button type="button" onclick={createModelTeamGrant}>授权模型</button></div></section>
 					<section class="panel"><h2>权限组</h2><div class="table-wrap"><table><thead><tr><th>名称</th><th>状态</th><th>内置</th><th>备注</th><th>操作</th></tr></thead><tbody>{#each inventory.teams as team}<tr><td>{team.name}<br /><span class="muted">{short(team.id)}</span></td><td><StateBadge value={team.state} /></td><td><StateBadge value={team.is_builtin} tone="accent" /></td><td>{team.notes}</td><td><button class="secondary" type="button" onclick={() => patchTeam(team.id, { state: team.state === 'active' ? 'disabled' : 'active' })}>{team.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
-					<section class="panel"><h2>成员关系</h2><div class="table-wrap"><table><thead><tr><th>权限组</th><th>用户</th><th>角色</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each inventory.teamMemberships as membership}<tr><td>{teamLabel(membership.team_id)}</td><td>{subjectLabel(membership.subject_id)}</td><td>{membership.role}</td><td><StateBadge value={membership.state} /></td><td><button class="secondary" type="button" onclick={() => setTeamMembershipState(membership.id, membership.state === 'active' ? 'disabled' : 'active')}>{membership.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
+					<section class="panel"><h2>成员关系</h2><div class="form-grid"><label>权限组<select bind:value={teamMembershipTeamFilter}><option value="">全部权限组</option>{#each inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><label>搜索用户<input bind:value={teamMembershipSubjectSearch} placeholder="姓名或工号" /></label><label>角色<input bind:value={teamMembershipRoleFilter} placeholder="member" /></label><label>状态<select bind:value={teamMembershipStateFilter}><option value="">全部状态</option><option value="active">启用</option><option value="disabled">停用</option></select></label></div><div class="table-wrap"><table><thead><tr><th>权限组</th><th>用户</th><th>角色</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each teamMembershipPageRows as membership}<tr><td>{teamLabel(membership.team_id)}</td><td>{subjectLabel(membership.subject_id)}</td><td>{membership.role}</td><td><StateBadge value={membership.state} /></td><td><button class="secondary" type="button" onclick={() => setTeamMembershipState(membership.id, membership.state === 'active' ? 'disabled' : 'active')}>{membership.state === 'active' ? '禁用' : '启用'}</button></td></tr>{:else}<tr><td colspan="5" class="empty">没有匹配的成员关系。</td></tr>{/each}</tbody></table></div>{@render Pagination(teamMembershipRows.length, teamMembershipPage, PAGE_SIZE.defaultList, (page) => (teamMembershipPage = page))}</section>
 					<section class="panel"><h2>模型授权</h2><div class="table-wrap"><table><thead><tr><th>模型</th><th>权限组</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each inventory.modelTeamGrants as grant}<tr><td>{modelLabel(grant.model_alias_id)}</td><td>{teamLabel(grant.team_id)}</td><td><StateBadge value={grant.state} /></td><td><button class="secondary" type="button" onclick={() => setModelTeamGrantState(grant.id, grant.state === 'active' ? 'disabled' : 'active')}>{grant.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
 				{:else if active === 'entitlements'}
 					{@render PageTitle('旧授权', '给项目、用户或单个网关密钥授予模型访问权限。')}
@@ -1392,8 +1465,17 @@
 						<section class="panel"><h2>本次生成结果</h2><CommandBlock command={generatedRouterCommand} /></section>
 					{/if}
 				{:else if active === 'usage'}
-					{@render PageTitle('用量', '分时段、分模型、分项目和分用户观察推理压力。')}
-					<section class="panel"><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>时间粒度<select bind:value={analyticsBucket}><option value="minute">分钟</option><option value="hour">小时</option><option value="day">天</option></select></label><label>分析维度<select bind:value={analyticsDimension}><option value="model">模型</option><option value="subject">用户</option><option value="project">项目</option><option value="endpoint">协议</option><option value="outcome">结果</option><option value="streaming">流式</option></select></label><label>模型筛选<select bind:value={modelFilter}><option value="">全部</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>搜索用户<input bind:value={usageSubjectSearch} placeholder="输入姓名或工号" /></label><label>用户筛选<select bind:value={subjectFilter}><option value="">全部</option>{#each filteredSubjects(usageSubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>项目筛选<select bind:value={projectFilter}><option value="">全部</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><label>刷新行数上限<input type="number" min="1" placeholder="留空表示不限" bind:value={duckdbRefreshLimit} /></label><button type="button" onclick={refreshUsageAnalytics} disabled={loading}>{loading ? '查询中' : '查询'}</button></div></section>
+					{@render PageTitle('用量总览', '默认查看最近一周的推理压力；需要更细或更长窗口时直接调整时间范围。')}
+					<section class="panel">
+						<h2>资源概览</h2>
+						<div class="grid">
+							<div class="metric"><span>用户</span><strong>{inventory.subjects.length}</strong></div>
+							<div class="metric"><span>项目</span><strong>{inventory.projects.length}</strong></div>
+							<div class="metric"><span>密钥</span><strong>{inventory.keys.length}</strong></div>
+							<div class="metric"><span>模型</span><strong>{inventory.models.length}</strong></div>
+						</div>
+					</section>
+					<section class="panel"><div class="actions"><button class="secondary" type="button" onclick={() => setUsageRange(1 / 24)}>最近 1 小时</button><button class="secondary" type="button" onclick={() => setUsageRange(1)}>最近 1 天</button><button class="secondary" type="button" onclick={() => setUsageRange(7)}>最近 1 周</button><button class="secondary" type="button" onclick={() => setUsageRange(30)}>最近 1 月</button></div><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>时间粒度<select bind:value={analyticsBucket}><option value="minute">分钟</option><option value="hour">小时</option><option value="day">天</option></select></label><label>分析维度<select bind:value={analyticsDimension}><option value="model">模型</option><option value="subject">用户</option><option value="project">项目</option><option value="endpoint">协议</option><option value="outcome">结果</option><option value="streaming">流式</option></select></label><label>模型筛选<select bind:value={modelFilter}><option value="">全部</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>搜索用户<input bind:value={usageSubjectSearch} placeholder="输入姓名或工号" /></label><label>用户筛选<select bind:value={subjectFilter}><option value="">全部</option>{#each subjectOptions(usageSubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>项目筛选<select bind:value={projectFilter}><option value="">全部</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><label>刷新行数上限<input type="number" min="1" placeholder="留空表示不限" bind:value={duckdbRefreshLimit} /></label><button type="button" onclick={refreshUsageAnalytics} disabled={loading}>{loading ? '查询中' : '查询'}</button></div></section>
 					<section class="panel">
 						<h2>DuckDB 状态</h2>
 						<div class="grid">
@@ -1405,12 +1487,12 @@
 						<p class="muted">路径：{duckdbStatus?.path ?? '未初始化'}。查询会先按所选时间范围刷新 DuckDB 镜像，再更新本页汇总、趋势和 Drilldown。</p>
 					</section>
 					<div class="grid"><div class="metric"><span>请求数</span><strong>{totals.requests}</strong></div><div class="metric"><span>总 token</span><strong>{totals.total}</strong></div><div class="metric"><span>成功</span><strong>{totals.success}</strong></div><div class="metric"><span>失败</span><strong>{totals.failure}</strong></div><div class="metric"><span>平均延迟</span><strong>{msLabel(analyticsPerformance.latencyWeight ? analyticsPerformance.latencyTotal / analyticsPerformance.latencyWeight : null)}</strong></div><div class="metric"><span>平均 TTFT</span><strong>{msLabel(analyticsPerformance.ttftWeight ? analyticsPerformance.ttftTotal / analyticsPerformance.ttftWeight : null)}</strong></div><div class="metric"><span>Retry / Fallback</span><strong>{analyticsPerformance.retry} / {analyticsPerformance.fallback}</strong></div><div class="metric"><span>vLLM 指标覆盖</span><strong>{analyticsPerformance.vllmObserved} / {analyticsPerformance.requests}</strong></div></div>
-					<section class="panel"><h2>分时段趋势</h2>{@render AnalyticsBucketTable(inventory.analyticsBuckets, analyticsMaxTokens)}</section>
-					<section class="panel"><h2>多维 Drilldown</h2>{@render AnalyticsDrilldownTable(inventory.analyticsDrilldown)}</section>
-					<section class="panel"><h2>汇总明细</h2>{@render UsageTable(usageRows, subjectLabel, projectLabel)}</section>
+					<section class="panel"><h2>最近 5 个时间桶</h2>{@render AnalyticsBucketTable(visibleAnalyticsBuckets, analyticsMaxTokens)}</section>
+					<section class="panel"><h2>Top 5 Drilldown</h2>{@render AnalyticsDrilldownTable(visibleAnalyticsDrilldown)}</section>
+					<section class="panel"><h2>Top 5 汇总明细</h2>{@render UsageTable(visibleUsageRows, subjectLabel, projectLabel)}</section>
 				{:else if active === 'ranking'}
 					{@render PageTitle('排行榜', '按时间范围统计 token 用量最高的用户。')}
-					<section class="panel"><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>模型筛选<select bind:value={rankingModel}><option value="">全部</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>Top N<input type="number" bind:value={rankingLimit} min="1" max="100" /></label><label>刷新行数上限<input type="number" min="1" placeholder="留空表示不限" bind:value={duckdbRefreshLimit} /></label><button type="button" onclick={refreshUsageRanking} disabled={loading}>{loading ? '查询中' : '查询'}</button></div></section>
+					<section class="panel"><div class="actions"><button class="secondary" type="button" onclick={() => setUsageRange(1 / 24)}>最近 1 小时</button><button class="secondary" type="button" onclick={() => setUsageRange(1)}>最近 1 天</button><button class="secondary" type="button" onclick={() => setUsageRange(7)}>最近 1 周</button><button class="secondary" type="button" onclick={() => setUsageRange(30)}>最近 1 月</button></div><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>模型筛选<select bind:value={rankingModel}><option value="">全部</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>Top N<input type="number" bind:value={rankingLimit} min="1" max="100" /></label><label>刷新行数上限<input type="number" min="1" placeholder="留空表示不限" bind:value={duckdbRefreshLimit} /></label><button type="button" onclick={refreshUsageRanking} disabled={loading}>{loading ? '查询中' : '查询'}</button></div></section>
 					<section class="panel">
 						<h2>DuckDB 状态</h2>
 						<div class="grid">
@@ -1420,10 +1502,10 @@
 							<div class="metric"><span>数据范围</span><strong>{duckdbStatus?.min_started_at ? `${new Date(duckdbStatus.min_started_at).toLocaleString()} → ${duckdbStatus.max_started_at ? new Date(duckdbStatus.max_started_at).toLocaleString() : '未知'}` : '未刷新'}</strong></div>
 						</div>
 					</section>
-					<section class="panel"><div class="table-wrap"><table><thead><tr><th>#</th><th>用户 / Subject</th><th>请求数</th><th>输入 token</th><th>输出 token</th><th>总 token</th></tr></thead><tbody>{#each inventory.ranking as row, i}<tr><td>{i + 1}</td><td>{row.subject_name} / {row.login_username ?? row.subject_id}</td><td>{row.request_count}</td><td>{row.prompt_tokens}</td><td>{row.completion_tokens}</td><td>{row.total_tokens}</td></tr>{:else}<tr><td colspan="6" class="empty">暂无用量数据。</td></tr>{/each}</tbody></table></div></section>
+					<section class="panel"><div class="table-wrap"><table><thead><tr><th>#</th><th>用户 / Subject</th><th>请求数</th><th>输入 token</th><th>输出 token</th><th>总 token</th></tr></thead><tbody>{#each rankingPageRows as row, i}<tr><td>{(rankingPage - 1) * PAGE_SIZE.ranking + i + 1}</td><td>{row.subject_name} / {row.login_username ?? row.subject_id}</td><td>{row.request_count}</td><td>{row.prompt_tokens}</td><td>{row.completion_tokens}</td><td>{row.total_tokens}</td></tr>{:else}<tr><td colspan="6" class="empty">暂无用量数据。</td></tr>{/each}</tbody></table></div>{@render Pagination(rankingRows.length, rankingPage, PAGE_SIZE.ranking, (page) => (rankingPage = page))}</section>
 				{:else if active === 'audit'}
 					{@render PageTitle('审计', '最近的权限变更和安全相关事件。')}
-					<section class="panel">{@render AuditTable(inventory.audit, (event) => (auditDetail = event))}</section>
+					<section class="panel">{@render AuditTable(auditPageRows, (event) => (auditDetail = event))}{@render Pagination(auditRows.length, auditPage, PAGE_SIZE.audit, (page) => (auditPage = page))}</section>
 				{:else if active === 'diagnostics'}
 					{@render PageTitle('诊断', '运行时依赖和上游健康检查。')}
 					<div class="grid"><div class="metric"><span>Postgres</span><strong>{ready?.checks.postgres ? '正常' : '异常'}</strong></div><div class="metric"><span>Redis</span><strong>{ready?.checks.redis ? '正常' : '异常'}</strong></div><div class="metric"><span>环境</span><strong>{diagnostics?.environment}</strong></div><div class="metric"><span>LiteLLM</span><strong>{diagnostics?.litellm_version}</strong></div></div>
@@ -1484,6 +1566,15 @@
 			<h1>{title}</h1>
 			<p>{subtitle}</p>
 		</div>
+	</div>
+{/snippet}
+
+{#snippet Pagination(total: number, page: number, size: number, onPage: (page: number) => void)}
+	{@const pages = pageCountTotal(total, size)}
+	<div class="actions">
+		<span class="muted">共 {total} 条 · 第 {Math.min(page, pages)} / {pages} 页</span>
+		<button class="secondary" type="button" disabled={page <= 1} onclick={() => onPage(page - 1)}>上一页</button>
+		<button class="secondary" type="button" disabled={page >= pages} onclick={() => onPage(page + 1)}>下一页</button>
 	</div>
 {/snippet}
 

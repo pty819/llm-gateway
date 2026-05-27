@@ -115,6 +115,7 @@ class DuckDBAnalyticsStore:
         model: str | None = None,
         subject_id: UUID | None = None,
         project_id: UUID | None = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         self._require_enabled()
         sql, params = self._bucket_query(
@@ -124,6 +125,7 @@ class DuckDBAnalyticsStore:
             model=model,
             subject_id=subject_id,
             project_id=project_id,
+            limit=limit,
         )
         return await asyncio.to_thread(self._query_rows, sql, params)
 
@@ -359,6 +361,7 @@ class DuckDBAnalyticsStore:
         model: str | None,
         subject_id: UUID | None,
         project_id: UUID | None,
+        limit: int | None,
     ) -> tuple[str, list[Any]]:
         where_sql, params = _where_sql(
             start=start,
@@ -374,8 +377,11 @@ class DuckDBAnalyticsStore:
             from request_facts
             {where_sql}
             group by 1
-            order by 1
+            order by 1 desc
         """
+        if limit is not None:
+            sql += "\nlimit ?"
+            params.append(limit)
         return sql, params
 
     def _require_enabled(self) -> None:

@@ -1285,6 +1285,7 @@ async def duckdb_analytics_time_buckets(
     model: str | None = None,
     subject_id: UUID | None = None,
     project_id: UUID | None = None,
+    limit: int | None = Query(default=None, ge=1, le=500),
     settings: Settings = Depends(settings_dep),
 ):
     try:
@@ -1295,6 +1296,7 @@ async def duckdb_analytics_time_buckets(
             model=model,
             subject_id=subject_id,
             project_id=project_id,
+            limit=limit,
         )
     except DuckDBAnalyticsUnavailable as exc:
         raise HTTPException(
