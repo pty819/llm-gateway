@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     request_fact_timeout_seconds: int = Field(
         default=30, alias="LLM_GATEWAY_FACT_TIMEOUT_SECONDS"
     )
+    analytics_duckdb_enabled: bool = Field(
+        default=True, alias="LLM_GATEWAY_ANALYTICS_DUCKDB_ENABLED"
+    )
+    analytics_duckdb_path: str = Field(
+        default=".data/analytics.duckdb", alias="LLM_GATEWAY_ANALYTICS_DUCKDB_PATH"
+    )
     admin_token: str = Field(default="dev-admin-token", alias="LLM_GATEWAY_ADMIN_TOKEN")
     bootstrap_admin_username: str = Field(
         default="admin", alias="LLM_GATEWAY_BOOTSTRAP_ADMIN_USERNAME"

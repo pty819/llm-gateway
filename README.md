@@ -16,6 +16,7 @@ FastAPI + Svelte enterprise LLM gateway for internal model serving. It sits in f
 - Model-level IP allowlists.
 - Redis-backed RPM and concurrency limits.
 - PostgreSQL-backed audit and token/request usage facts.
+- Admin-only DuckDB mirror for manual heavy usage analytics.
 - vLLM Router command generation for same-model endpoint pools.
 
 ## Stack
@@ -60,6 +61,20 @@ uv run python scripts/init_db.py
 
 Run this command on every backend upgrade before starting the new server. The script is intentionally idempotent: it stamps a legacy schema that already has gateway tables but no Alembic version, then upgrades to the current migration head. This keeps PostgreSQL aligned with the backend without asking operators to hand-edit tables.
 
+For local upgrades that should also sync Python and frontend dependencies:
+
+```bash
+uv run python scripts/upgrade_local.py
+```
+
+Useful flags:
+
+```bash
+uv run python scripts/upgrade_local.py --skip-frontend-install
+uv run python scripts/upgrade_local.py --skip-python-sync
+uv run python scripts/upgrade_local.py --skip-db
+```
+
 For deployments, make the startup order explicit:
 
 ```bash
@@ -67,7 +82,20 @@ uv run python scripts/init_db.py
 uv run python main.py
 ```
 
-The current user-usage dashboard reads the existing `request_facts` table, so this release does not require a new migration file. Future schema changes should add an Alembic revision and continue using the same `scripts/init_db.py` upgrade step.
+For local development, one command can upgrade and start both backend and frontend:
+
+```bash
+uv run python scripts/start_local.py --host 127.0.0.1
+```
+
+On a LAN server, expose both services on the machine IP:
+
+```bash
+uv run python scripts/start_local.py --host 10.21.48.65
+```
+
+This release adds analytics indexes through Alembic, so run the upgrade step before starting the new backend.
+The admin heavy analytics panel can refresh a local DuckDB mirror from PostgreSQL and query the mirror for longer time windows. Normal user self-usage stays PostgreSQL-backed so it remains fresh and subject-scoped.
 
 Optionally seed a development upstream/model:
 

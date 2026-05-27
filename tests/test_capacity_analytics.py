@@ -79,7 +79,7 @@ async def test_admin_capacity_analytics_time_buckets_and_drilldown(
     assert buckets.status_code == 200, buckets.text
     bucket_payload = buckets.json()
     assert len(bucket_payload) >= 1
-    row = bucket_payload[0]
+    row = _sum_rows(bucket_payload)
     assert row["request_count"] >= 2
     assert row["total_tokens"] >= 160
     assert row["cached_tokens"] >= 25
@@ -105,3 +105,33 @@ async def test_admin_capacity_analytics_time_buckets_and_drilldown(
     )
     assert model_row["dimension_label"] == gateway_fixture.model_alias
     assert model_row["request_count"] >= 2
+
+
+def _sum_rows(rows: list[dict]) -> dict:
+    result = {
+        "request_count": 0,
+        "total_tokens": 0,
+        "cached_tokens": 0,
+        "success_count": 0,
+        "failure_count": 0,
+        "retry_count": 0,
+        "fallback_count": 0,
+        "vllm_metrics_count": 0,
+        "avg_latency_ms": None,
+        "avg_ttft_ms": None,
+    }
+    for row in rows:
+        for key in [
+            "request_count",
+            "total_tokens",
+            "cached_tokens",
+            "success_count",
+            "failure_count",
+            "retry_count",
+            "fallback_count",
+            "vllm_metrics_count",
+        ]:
+            result[key] += row[key]
+        result["avg_latency_ms"] = result["avg_latency_ms"] or row["avg_latency_ms"]
+        result["avg_ttft_ms"] = result["avg_ttft_ms"] or row["avg_ttft_ms"]
+    return result

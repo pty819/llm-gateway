@@ -212,6 +212,17 @@ export type AnalyticsDrilldownRow = Omit<AnalyticsBucketRow, 'bucket_start'> & {
 	dimension_label: string;
 };
 
+export type DuckDBAnalyticsStatus = {
+	enabled: boolean;
+	path: string;
+	exists?: boolean;
+	rows_copied?: number;
+	row_count: number;
+	min_started_at: string | null;
+	max_started_at: string | null;
+	file_size_bytes: number;
+};
+
 export type AuditEvent = {
 	id: string;
 	created_at: string;

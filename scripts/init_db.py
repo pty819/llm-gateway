@@ -11,6 +11,8 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+LEGACY_SCHEMA_REVISION = "20260526_0004"
+
 
 async def _schema_state() -> tuple[bool, bool]:
     from llm_gateway.core.config import get_settings
@@ -38,8 +40,7 @@ def main() -> None:
     config = Config(str(ROOT / "alembic.ini"))
     has_subjects, has_alembic_version = asyncio.run(_schema_state())
     if has_subjects and not has_alembic_version:
-        command.stamp(config, "head")
-        return
+        command.stamp(config, LEGACY_SCHEMA_REVISION)
     command.upgrade(config, "head")
 
 

@@ -20,6 +20,7 @@
 		AuditEvent,
 		AuthProfile,
 		Diagnostics,
+		DuckDBAnalyticsStatus,
 		GatewayKeyCreateResponse,
 		Inventory,
 		IPPolicyMode,
@@ -85,6 +86,10 @@
 	let usageEnd = $state('');
 	let analyticsBucket = $state<'minute' | 'hour' | 'day'>('hour');
 	let analyticsDimension = $state<'model' | 'subject' | 'project' | 'endpoint' | 'outcome' | 'streaming'>('model');
+	let duckdbStatus = $state<DuckDBAnalyticsStatus | null>(null);
+	let duckdbBuckets = $state<Inventory['analyticsBuckets']>([]);
+	let duckdbDrilldown = $state<Inventory['analyticsDrilldown']>([]);
+	let duckdbRefreshLimit = $state('');
 	let ownUsageStart = $state('');
 	let ownUsageEnd = $state('');
 	let ownUsage = $state<OwnUsageSummary | null>(null);
@@ -210,6 +215,9 @@
 	);
 	const analyticsMaxTokens = $derived(
 		Math.max(1, ...inventory.analyticsBuckets.map((row) => Number(row.total_tokens ?? 0)))
+	);
+	const duckdbMaxTokens = $derived(
+		Math.max(1, ...duckdbBuckets.map((row) => Number(row.total_tokens ?? 0)))
 	);
 	const analyticsPerformance = $derived(
 		inventory.analyticsBuckets.reduce(
@@ -395,6 +403,55 @@
 				analyticsDrilldown,
 				audit
 			};
+			void refreshDuckDBStatus();
+		});
+	}
+
+	async function refreshDuckDBStatus() {
+		try {
+			duckdbStatus = await api.get<DuckDBAnalyticsStatus>('/admin/analytics/duckdb/status');
+		} catch {
+			duckdbStatus = null;
+		}
+	}
+
+	async function refreshDuckDBMirror() {
+		await run(async () => {
+			duckdbStatus = await api.post<DuckDBAnalyticsStatus>(
+				'/admin/analytics/duckdb/refresh',
+				clean({
+					start: usageStart,
+					end: usageEnd,
+					limit: duckdbRefreshLimit === '' ? null : Number(duckdbRefreshLimit)
+				})
+			);
+			await queryDuckDBAnalytics();
+		});
+	}
+
+	async function queryDuckDBAnalytics() {
+		await run(async () => {
+			const [buckets, drilldown] = await Promise.all([
+				api.get<Inventory['analyticsBuckets']>('/admin/analytics/duckdb/time-buckets', {
+					start: usageStart,
+					end: usageEnd,
+					bucket: analyticsBucket,
+					model: modelFilter,
+					subject_id: subjectFilter,
+					project_id: projectFilter
+				}),
+				api.get<Inventory['analyticsDrilldown']>('/admin/analytics/duckdb/drilldown', {
+					start: usageStart,
+					end: usageEnd,
+					dimension: analyticsDimension,
+					model: modelFilter,
+					subject_id: subjectFilter,
+					project_id: projectFilter
+				})
+			]);
+			duckdbBuckets = buckets;
+			duckdbDrilldown = drilldown;
+			await refreshDuckDBStatus();
 		});
 	}
 
@@ -954,6 +1011,12 @@
 		return value === null || value === undefined ? '无数据' : `${Math.round(value * 100)}%`;
 	}
 
+	function bytesLabel(value: number): string {
+		if (value < 1024) return `${value} B`;
+		if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+		return `${(value / 1024 / 1024).toFixed(1)} MiB`;
+	}
+
 	function subjectTypeLabel(type: string): string {
 		return type === 'service' ? '服务账号' : '用户';
 	}
@@ -1333,6 +1396,25 @@
 					<section class="panel"><h2>分时段趋势</h2>{@render AnalyticsBucketTable(inventory.analyticsBuckets, analyticsMaxTokens)}</section>
 					<section class="panel"><h2>多维 Drilldown</h2>{@render AnalyticsDrilldownTable(inventory.analyticsDrilldown)}</section>
 					<section class="panel"><h2>汇总明细</h2>{@render UsageTable(usageRows, subjectLabel, projectLabel)}</section>
+					<section class="panel">
+						<h2>DuckDB 重型分析</h2>
+						<p>这里用于管理员手动长窗口分析。普通用户自己的近期用量仍直接读取 PostgreSQL，保证权限边界和最新数据。</p>
+						<div class="grid">
+							<div class="metric"><span>状态</span><strong>{duckdbStatus?.enabled ? '启用' : '未知'}</strong></div>
+							<div class="metric"><span>镜像行数</span><strong>{duckdbStatus?.row_count ?? 0}</strong></div>
+							<div class="metric"><span>文件大小</span><strong>{bytesLabel(duckdbStatus?.file_size_bytes ?? 0)}</strong></div>
+							<div class="metric"><span>数据范围</span><strong>{duckdbStatus?.min_started_at ? `${new Date(duckdbStatus.min_started_at).toLocaleString()} → ${duckdbStatus.max_started_at ? new Date(duckdbStatus.max_started_at).toLocaleString() : '未知'}` : '未刷新'}</strong></div>
+						</div>
+						<div class="form-grid">
+							<label>刷新行数上限<input type="number" min="1" placeholder="留空表示不限" bind:value={duckdbRefreshLimit} /></label>
+							<button type="button" onclick={refreshDuckDBMirror} disabled={loading}>{loading ? '处理中' : '刷新 DuckDB 镜像'}</button>
+							<button class="secondary" type="button" onclick={queryDuckDBAnalytics} disabled={loading}>查询 DuckDB</button>
+							<button class="secondary" type="button" onclick={refreshDuckDBStatus}>刷新状态</button>
+						</div>
+						<p class="muted">路径：{duckdbStatus?.path ?? '未初始化'}。DuckDB 查询使用上方同一组时间、粒度、维度、模型、用户和项目筛选。</p>
+					</section>
+					<section class="panel"><h2>DuckDB 分时段趋势</h2>{@render AnalyticsBucketTable(duckdbBuckets, duckdbMaxTokens)}</section>
+					<section class="panel"><h2>DuckDB 多维 Drilldown</h2>{@render AnalyticsDrilldownTable(duckdbDrilldown)}</section>
 				{:else if active === 'ranking'}
 					{@render PageTitle('排行榜', '按时间范围统计 token 用量最高的用户。')}
 					<section class="panel"><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>模型筛选<select bind:value={rankingModel}><option value="">全部</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>Top N<input type="number" bind:value={rankingLimit} min="1" max="100" /></label><button type="button" onclick={refreshAll}>查询</button></div></section>
