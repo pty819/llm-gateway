@@ -1,14 +1,10 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-AnalyticsBucket = Literal["minute", "hour", "day"]
-AnalyticsDimension = Literal[
-    "model", "subject", "project", "endpoint", "outcome", "streaming"
-]
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import case, delete, func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
@@ -24,7 +20,6 @@ from llm_gateway.db.models import (
     ProjectMembership,
     RatePolicy,
     RequestFact,
-    RequestOutcome,
     ResourceState,
     RouterCommandConfig,
     RouterPolicy,
@@ -37,6 +32,7 @@ from llm_gateway.db.models import (
     UserSession,
     utcnow,
 )
+from llm_gateway.services.duckdb_analytics import get_analytics
 from llm_gateway.services.facts import record_audit_event
 from llm_gateway.services.litellm_client import check_upstream_health
 from llm_gateway.services.router_command import render_router_command
@@ -1073,63 +1069,11 @@ async def usage_summary(
     subject_id: UUID | None = None,
     project_id: UUID | None = None,
     limit: int | None = Query(default=None, ge=1, le=500),
-    session: AsyncSession = Depends(session_dep),
 ):
-    filters = []
-    if start:
-        filters.append(col(RequestFact.started_at) >= start)
-    if end:
-        filters.append(col(RequestFact.started_at) < end)
-    if model:
-        filters.append(col(RequestFact.model_alias) == model)
-    if subject_id:
-        filters.append(col(RequestFact.subject_id) == subject_id)
-    if project_id:
-        filters.append(col(RequestFact.project_id) == project_id)
-
-    effective_total_tokens = func.coalesce(
-        col(RequestFact.total_tokens),
-        func.coalesce(col(RequestFact.prompt_tokens), 0)
-        + func.coalesce(col(RequestFact.completion_tokens), 0),
-        0,
+    return await get_analytics().usage_summary(
+        start=start, end=end, model=model,
+        subject_id=subject_id, project_id=project_id, limit=limit,
     )
-    total_tokens = func.coalesce(func.sum(effective_total_tokens), 0).label(
-        "total_tokens"
-    )
-    success_count = func.sum(
-        case((col(RequestFact.outcome) == RequestOutcome.SUCCESS, 1), else_=0)
-    ).label("success_count")
-    failure_count = func.sum(
-        case((col(RequestFact.outcome) != RequestOutcome.SUCCESS, 1), else_=0)
-    ).label("failure_count")
-    stmt = (
-        select(
-            col(RequestFact.model_alias),
-            col(RequestFact.subject_id),
-            col(RequestFact.project_id),
-            func.count(col(RequestFact.id)).label("request_count"),
-            func.coalesce(func.sum(col(RequestFact.prompt_tokens)), 0).label(
-                "prompt_tokens"
-            ),
-            func.coalesce(func.sum(col(RequestFact.completion_tokens)), 0).label(
-                "completion_tokens"
-            ),
-            total_tokens,
-            success_count,
-            failure_count,
-        )
-        .where(*filters)
-        .group_by(
-            col(RequestFact.model_alias),
-            col(RequestFact.subject_id),
-            col(RequestFact.project_id),
-        )
-        .order_by(total_tokens.desc(), func.count(col(RequestFact.id)).desc())
-    )
-    if limit is not None:
-        stmt = stmt.limit(limit)
-    rows = (await session.execute(stmt)).mappings().all()
-    return [dict(row) for row in rows]
 
 
 @router.get("/usage/totals")
@@ -1139,71 +1083,11 @@ async def usage_totals(
     model: str | None = None,
     subject_id: UUID | None = None,
     project_id: UUID | None = None,
-    session: AsyncSession = Depends(session_dep),
 ):
-    filters = _analytics_filters(
-        start=start, end=end, model=model, subject_id=subject_id, project_id=project_id
+    return await get_analytics().usage_totals(
+        start=start, end=end, model=model,
+        subject_id=subject_id, project_id=project_id,
     )
-    effective_total_tokens = func.coalesce(
-        col(RequestFact.total_tokens),
-        func.coalesce(col(RequestFact.prompt_tokens), 0)
-        + func.coalesce(col(RequestFact.completion_tokens), 0),
-        0,
-    )
-    stmt = select(
-        func.count(col(RequestFact.id)).label("request_count"),
-        func.coalesce(func.sum(col(RequestFact.prompt_tokens)), 0).label("prompt_tokens"),
-        func.coalesce(func.sum(col(RequestFact.completion_tokens)), 0).label("completion_tokens"),
-        func.coalesce(func.sum(effective_total_tokens), 0).label("total_tokens"),
-        func.coalesce(func.sum(col(RequestFact.cached_tokens)), 0).label("cached_tokens"),
-        func.coalesce(
-            func.sum(
-                case((col(RequestFact.outcome) == RequestOutcome.SUCCESS, 1), else_=0)
-            ),
-            0,
-        ).label("success_count"),
-        func.coalesce(
-            func.sum(
-                case((col(RequestFact.outcome) != RequestOutcome.SUCCESS, 1), else_=0)
-            ),
-            0,
-        ).label("failure_count"),
-        func.avg(col(RequestFact.latency_ms)).label("avg_latency_ms"),
-        func.avg(col(RequestFact.time_to_first_token_ms)).label("avg_ttft_ms"),
-        func.avg(col(RequestFact.stream_duration_ms)).label("avg_stream_duration_ms"),
-        func.coalesce(func.sum(col(RequestFact.retry_count)), 0).label("retry_count"),
-        func.coalesce(func.sum(col(RequestFact.fallback_count)), 0).label("fallback_count"),
-        func.coalesce(func.sum(col(RequestFact.fallback_tokens)), 0).label("fallback_tokens"),
-        func.avg(col(RequestFact.queue_ms)).label("avg_queue_ms"),
-        func.avg(col(RequestFact.prefill_ms)).label("avg_prefill_ms"),
-        func.avg(col(RequestFact.decode_ms)).label("avg_decode_ms"),
-        func.avg(col(RequestFact.kv_cache_usage)).label("avg_kv_cache_usage"),
-        func.coalesce(
-            func.sum(
-                case(
-                    (
-                        or_(
-                            col(RequestFact.queue_ms).isnot(None),
-                            col(RequestFact.prefill_ms).isnot(None),
-                            col(RequestFact.decode_ms).isnot(None),
-                            col(RequestFact.kv_cache_usage).isnot(None),
-                        ),
-                        1,
-                    ),
-                    else_=0,
-                )
-            ),
-            0,
-        ).label("vllm_metrics_count"),
-    ).where(*filters)
-    row = (await session.execute(stmt)).mapping()
-    if not row or row["request_count"] == 0:
-        return None
-    data = dict(row)
-    for key, value in list(data.items()):
-        if key.startswith("avg_") and value is not None:
-            data[key] = round(float(value), 2)
-    return data
 
 
 @router.get("/usage/ranking")
@@ -1212,53 +1096,16 @@ async def usage_ranking(
     end: datetime | None = None,
     model: str | None = None,
     limit: int = Query(default=20, ge=1, le=100),
-    session: AsyncSession = Depends(session_dep),
 ):
-    filters = [col(RequestFact.subject_id).isnot(None)]
-    if start:
-        filters.append(col(RequestFact.started_at) >= start)
-    if end:
-        filters.append(col(RequestFact.started_at) < end)
-    if model:
-        filters.append(col(RequestFact.model_alias) == model)
-
-    effective_total_tokens = func.coalesce(
-        col(RequestFact.total_tokens),
-        func.coalesce(col(RequestFact.prompt_tokens), 0)
-        + func.coalesce(col(RequestFact.completion_tokens), 0),
-        0,
-    )
-    total_tokens = func.coalesce(func.sum(effective_total_tokens), 0).label(
-        "total_tokens"
+    return await get_analytics().usage_ranking(
+        start=start, end=end, model=model, limit=limit,
     )
 
-    stmt = (
-        select(
-            col(RequestFact.subject_id),
-            col(Subject.login_username),
-            col(Subject.name).label("subject_name"),
-            func.count(col(RequestFact.id)).label("request_count"),
-            func.coalesce(func.sum(col(RequestFact.prompt_tokens)), 0).label(
-                "prompt_tokens"
-            ),
-            func.coalesce(func.sum(col(RequestFact.completion_tokens)), 0).label(
-                "completion_tokens"
-            ),
-            total_tokens,
-        )
-        .join(Subject, col(RequestFact.subject_id) == col(Subject.id))
-        .where(*filters)
-        .group_by(
-            col(RequestFact.subject_id), col(Subject.login_username), col(Subject.name)
-        )
-        .order_by(total_tokens.desc(), func.count(col(RequestFact.id)).desc())
-        .limit(limit)
-    )
-    rows = (await session.execute(stmt)).mappings().all()
-    return [dict(row) for row in rows]
 
-
-
+AnalyticsBucket = Literal["minute", "hour", "day"]
+AnalyticsDimension = Literal[
+    "model", "subject", "project", "endpoint", "outcome", "streaming"
+]
 
 
 @router.get("/analytics/time-buckets")
@@ -1269,27 +1116,11 @@ async def analytics_time_buckets(
     model: str | None = None,
     subject_id: UUID | None = None,
     project_id: UUID | None = None,
-    session: AsyncSession = Depends(session_dep),
 ):
-    bucket_start = func.date_trunc(bucket, col(RequestFact.started_at)).label(
-        "bucket_start"
+    return await get_analytics().time_buckets(
+        bucket=bucket, start=start, end=end, model=model,
+        subject_id=subject_id, project_id=project_id,
     )
-    stmt = (
-        select(bucket_start, *_analytics_metric_columns())
-        .where(
-            *_analytics_filters(
-                start=start,
-                end=end,
-                model=model,
-                subject_id=subject_id,
-                project_id=project_id,
-            )
-        )
-        .group_by(bucket_start)
-        .order_by(bucket_start.desc())
-    )
-    rows = (await session.execute(stmt)).mappings().all()
-    return [_analytics_row(row) for row in rows]
 
 
 @router.get("/analytics/drilldown")
@@ -1301,189 +1132,11 @@ async def analytics_drilldown(
     subject_id: UUID | None = None,
     project_id: UUID | None = None,
     limit: int = Query(default=100, ge=1, le=500),
-    session: AsyncSession = Depends(session_dep),
 ):
-    dimension_id, dimension_label, joins, groups = _analytics_dimension(dimension)
-    stmt = (
-        select(dimension_id, dimension_label, *_analytics_metric_columns())
-        .select_from(RequestFact)
-        .where(
-            *_analytics_filters(
-                start=start,
-                end=end,
-                model=model,
-                subject_id=subject_id,
-                project_id=project_id,
-            )
-        )
-        .group_by(*groups)
-        .order_by(func.count(col(RequestFact.id)).desc())
-        .limit(limit)
+    return await get_analytics().drilldown(
+        dimension=dimension, start=start, end=end, model=model,
+        subject_id=subject_id, project_id=project_id, limit=limit,
     )
-    for join_model, on_clause in joins:
-        stmt = stmt.outerjoin(join_model, on_clause)
-    rows = (await session.execute(stmt)).mappings().all()
-    return [_analytics_row(row) for row in rows]
-
-
-
-
-
-
-def _analytics_filters(
-    *,
-    start: datetime | None,
-    end: datetime | None,
-    model: str | None,
-    subject_id: UUID | None,
-    project_id: UUID | None,
-):
-    filters = []
-    if start:
-        filters.append(col(RequestFact.started_at) >= start)
-    if end:
-        filters.append(col(RequestFact.started_at) < end)
-    if model:
-        filters.append(col(RequestFact.model_alias) == model)
-    if subject_id:
-        filters.append(col(RequestFact.subject_id) == subject_id)
-    if project_id:
-        filters.append(col(RequestFact.project_id) == project_id)
-    return filters
-
-
-def _analytics_metric_columns():
-    effective_total_tokens = func.coalesce(
-        col(RequestFact.total_tokens),
-        func.coalesce(col(RequestFact.prompt_tokens), 0)
-        + func.coalesce(col(RequestFact.completion_tokens), 0),
-        0,
-    )
-    success_count = func.coalesce(
-        func.sum(
-            case((col(RequestFact.outcome) == RequestOutcome.SUCCESS, 1), else_=0)
-        ),
-        0,
-    ).label("success_count")
-    failure_count = func.coalesce(
-        func.sum(
-            case((col(RequestFact.outcome) != RequestOutcome.SUCCESS, 1), else_=0)
-        ),
-        0,
-    ).label("failure_count")
-    vllm_metrics_count = func.coalesce(
-        func.sum(
-            case(
-                (
-                    or_(
-                        col(RequestFact.queue_ms).isnot(None),
-                        col(RequestFact.prefill_ms).isnot(None),
-                        col(RequestFact.decode_ms).isnot(None),
-                        col(RequestFact.kv_cache_usage).isnot(None),
-                    ),
-                    1,
-                ),
-                else_=0,
-            )
-        ),
-        0,
-    ).label("vllm_metrics_count")
-    return [
-        func.count(col(RequestFact.id)).label("request_count"),
-        func.coalesce(func.sum(col(RequestFact.prompt_tokens)), 0).label(
-            "prompt_tokens"
-        ),
-        func.coalesce(func.sum(col(RequestFact.completion_tokens)), 0).label(
-            "completion_tokens"
-        ),
-        func.coalesce(func.sum(effective_total_tokens), 0).label("total_tokens"),
-        func.coalesce(func.sum(col(RequestFact.cached_tokens)), 0).label(
-            "cached_tokens"
-        ),
-        success_count,
-        failure_count,
-        func.avg(col(RequestFact.latency_ms)).label("avg_latency_ms"),
-        func.avg(col(RequestFact.time_to_first_token_ms)).label("avg_ttft_ms"),
-        func.avg(col(RequestFact.stream_duration_ms)).label("avg_stream_duration_ms"),
-        func.coalesce(func.sum(col(RequestFact.retry_count)), 0).label("retry_count"),
-        func.coalesce(func.sum(col(RequestFact.fallback_count)), 0).label(
-            "fallback_count"
-        ),
-        func.coalesce(func.sum(col(RequestFact.fallback_tokens)), 0).label(
-            "fallback_tokens"
-        ),
-        func.avg(col(RequestFact.queue_ms)).label("avg_queue_ms"),
-        func.avg(col(RequestFact.prefill_ms)).label("avg_prefill_ms"),
-        func.avg(col(RequestFact.decode_ms)).label("avg_decode_ms"),
-        func.avg(col(RequestFact.kv_cache_usage)).label("avg_kv_cache_usage"),
-        vllm_metrics_count,
-    ]
-
-
-def _analytics_dimension(dimension: AnalyticsDimension):
-    if dimension == "subject":
-        dimension_id = col(RequestFact.subject_id).label("dimension_id")
-        dimension_label = func.coalesce(
-            col(Subject.name), col(Subject.login_username), "无用户"
-        ).label("dimension_label")
-        return (
-            dimension_id,
-            dimension_label,
-            [(Subject, col(RequestFact.subject_id) == col(Subject.id))],
-            [
-                col(RequestFact.subject_id),
-                col(Subject.name),
-                col(Subject.login_username),
-            ],
-        )
-    if dimension == "project":
-        dimension_id = col(RequestFact.project_id).label("dimension_id")
-        dimension_label = func.coalesce(col(Project.name), "无项目").label(
-            "dimension_label"
-        )
-        return (
-            dimension_id,
-            dimension_label,
-            [(Project, col(RequestFact.project_id) == col(Project.id))],
-            [col(RequestFact.project_id), col(Project.name)],
-        )
-    if dimension == "endpoint":
-        dimension_id = col(RequestFact.endpoint_family).label("dimension_id")
-        dimension_label = col(RequestFact.endpoint_family).label("dimension_label")
-        return dimension_id, dimension_label, [], [col(RequestFact.endpoint_family)]
-    if dimension == "outcome":
-        dimension_id = col(RequestFact.outcome).label("dimension_id")
-        dimension_label = col(RequestFact.outcome).label("dimension_label")
-        return dimension_id, dimension_label, [], [col(RequestFact.outcome)]
-    if dimension == "streaming":
-        dimension_id = col(RequestFact.streaming).label("dimension_id")
-        dimension_label = case(
-            (col(RequestFact.streaming).is_(True), "流式"), else_="非流式"
-        ).label("dimension_label")
-        return dimension_id, dimension_label, [], [col(RequestFact.streaming)]
-    dimension_id = col(RequestFact.model_alias).label("dimension_id")
-    dimension_label = func.coalesce(col(RequestFact.model_alias), "无模型").label(
-        "dimension_label"
-    )
-    return dimension_id, dimension_label, [], [col(RequestFact.model_alias)]
-
-
-def _analytics_row(row) -> dict[str, Any]:
-    data = dict(row)
-    for key, value in list(data.items()):
-        if isinstance(value, UUID):
-            data[key] = str(value)
-        elif key.startswith("avg_") and value is not None:
-            data[key] = round(float(value), 2)
-    if "bucket_start" in data and data["bucket_start"] is not None:
-        bs = data["bucket_start"]
-        if isinstance(bs, datetime) and bs.tzinfo is None:
-            bs = bs.replace(tzinfo=timezone.utc)
-        data["bucket_start"] = bs.isoformat()
-    if "dimension_id" in data and data["dimension_id"] is not None:
-        data["dimension_id"] = str(data["dimension_id"])
-    return data
-
 
 
 @router.get("/audit-events")

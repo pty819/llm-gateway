@@ -1,9 +1,8 @@
 from datetime import datetime, timedelta
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import case, func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
@@ -12,12 +11,11 @@ from llm_gateway.core.config import Settings
 from llm_gateway.db.models import (
     GatewayKey,
     Project,
-    RequestFact,
-    RequestOutcome,
     ResourceState,
     Subject,
     utcnow,
 )
+from llm_gateway.services.duckdb_analytics import get_analytics
 from llm_gateway.services.facts import record_audit_event
 from llm_gateway.services.policy import (
     list_accessible_model_aliases_for_subject,
@@ -180,9 +178,7 @@ async def own_usage_summary(
     start: datetime | None = None,
     end: datetime | None = None,
     context: UserSessionContext = Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
 ):
-    filters = [col(RequestFact.subject_id) == context.subject.id]
     if start and end and (end - start).days > 90:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -191,52 +187,13 @@ async def own_usage_summary(
     if start is None and end is None:
         end = utcnow()
         start = end - timedelta(days=30)
-    if start:
-        filters.append(col(RequestFact.started_at) >= start)
-    if end:
-        filters.append(col(RequestFact.started_at) < end)
-
-    effective_total_tokens = func.coalesce(
-        col(RequestFact.total_tokens),
-        func.coalesce(col(RequestFact.prompt_tokens), 0)
-        + func.coalesce(col(RequestFact.completion_tokens), 0),
-        0,
+    row = await get_analytics().own_usage_summary(
+        subject_id=context.subject.id, start=start, end=end,
     )
-    success_count = func.coalesce(
-        func.sum(
-            case((col(RequestFact.outcome) == RequestOutcome.SUCCESS, 1), else_=0)
-        ),
-        0,
-    ).label("success_count")
-    failure_count = func.coalesce(
-        func.sum(
-            case((col(RequestFact.outcome) != RequestOutcome.SUCCESS, 1), else_=0)
-        ),
-        0,
-    ).label("failure_count")
-
-    stmt = select(
-        func.count(col(RequestFact.id)).label("request_count"),
-        func.coalesce(func.sum(col(RequestFact.prompt_tokens)), 0).label(
-            "prompt_tokens"
-        ),
-        func.coalesce(func.sum(col(RequestFact.completion_tokens)), 0).label(
-            "completion_tokens"
-        ),
-        func.coalesce(func.sum(effective_total_tokens), 0).label("total_tokens"),
-        success_count,
-        failure_count,
-    ).where(*filters)
-    row = (await session.execute(stmt)).mappings().one()
     return {
         "start": start,
         "end": end,
-        "request_count": row["request_count"],
-        "prompt_tokens": row["prompt_tokens"],
-        "completion_tokens": row["completion_tokens"],
-        "total_tokens": row["total_tokens"],
-        "success_count": row["success_count"],
-        "failure_count": row["failure_count"],
+        **row,
     }
 
 
