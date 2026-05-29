@@ -248,6 +248,7 @@
 		Math.max(1, ...visibleAnalyticsBuckets.map((row) => Number(row.total_tokens ?? 0)))
 	);
 	const subjectRows = $derived(filteredSubjects(subjectSearch).toSorted((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN')));
+	const dropdownProjects = $derived(inventory.projects.filter((p) => !p.name.startsWith('user-')));
 	const projectRows = $derived(
 		inventory.projects
 			.filter((project) => matchNeedle(projectSearch, [project.name, project.notes ?? '', subjectLabel(project.owner_subject_id)]))
@@ -1077,7 +1078,7 @@
 
 	function scopeOptions(scope: string, subjectQuery = '') {
 		if (scope === 'subject') return subjectOptions(subjectQuery).map((item) => ({ id: item.id, label: subjectDisplay(item) }));
-		if (scope === 'project') return inventory.projects.map((item) => ({ id: item.id, label: item.name }));
+		if (scope === 'project') return dropdownProjects.map((item) => ({ id: item.id, label: item.name }));
 		return inventory.keys.map((item) => ({ id: item.id, label: `${item.name} (${item.key_prefix})` }));
 	}
 
@@ -1395,7 +1396,7 @@
 						<section class="panel">
 							<h2>添加项目成员</h2>
 							<div class="form-grid">
-								<label>项目<select bind:value={membershipForm.project_id}><option value="">项目</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label>
+								<label>项目<select bind:value={membershipForm.project_id}><option value="">项目</option>{#each dropdownProjects as project}<option value={project.id}>{project.name}</option>{/each}</select></label>
 								<label>搜索用户<input bind:value={projectMemberSearch} placeholder="输入姓名或工号" /></label>
 								<label>用户<select bind:value={membershipForm.subject_id}><option value="">用户</option>{#each subjectOptions(projectMemberSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label>
 								<label>角色<input bind:value={membershipForm.role} /></label>
@@ -1407,7 +1408,7 @@
 					<section class="panel"><h2>项目成员</h2><div class="table-wrap"><table><thead><tr><th>项目</th><th>用户</th><th>角色</th></tr></thead><tbody>{#each inventory.memberships as membership}<tr><td>{projectLabel(membership.project_id)}</td><td>{subjectLabel(membership.subject_id)}</td><td>{membership.role}</td></tr>{/each}</tbody></table></div></section>
 				{:else if active === 'keys'}
 					{@render PageTitle('网关密钥', '签发、轮换和停用网关管理的密钥。')}
-					<section class="panel"><h2>签发密钥</h2><div class="form-grid"><label>搜索用户<input bind:value={keySubjectSearch} placeholder="输入姓名或工号" /></label><label>用户<select bind:value={keyForm.subject_id}><option value="">用户</option>{#each subjectOptions(keySubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>项目<select bind:value={keyForm.project_id}><option value="">项目</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><label>名称<input bind:value={keyForm.name} /></label><button type="button" onclick={issueKey}>签发密钥</button></div></section>
+					<section class="panel"><h2>签发密钥</h2><div class="form-grid"><label>搜索用户<input bind:value={keySubjectSearch} placeholder="输入姓名或工号" /></label><label>用户<select bind:value={keyForm.subject_id}><option value="">用户</option>{#each subjectOptions(keySubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>项目<select bind:value={keyForm.project_id}><option value="">项目</option>{#each dropdownProjects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><label>名称<input bind:value={keyForm.name} /></label><button type="button" onclick={issueKey}>签发密钥</button></div></section>
 					<section class="panel"><h2>密钥</h2><div class="form-grid"><label>搜索用户/密钥<input bind:value={keyListSubjectSearch} placeholder="姓名、工号、密钥名或前缀" /></label><label>项目<select bind:value={keyProjectFilter}><option value="">全部项目</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><label>状态<select bind:value={keyStateFilter}><option value="">全部状态</option><option value="active">启用</option><option value="disabled">停用</option></select></label></div><div class="table-wrap"><table><thead><tr><th>名称</th><th>前缀</th><th>用户</th><th>项目</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each keyPageRows as key}<tr><td>{key.name}</td><td><code>{key.key_prefix}</code></td><td>{subjectLabel(key.subject_id)}</td><td>{projectLabel(key.project_id)}</td><td><StateBadge value={key.state} /></td><td><button class="secondary" type="button" onclick={() => setKeyState(key.id, key.state === 'active' ? 'disabled' : 'active')}>{key.state === 'active' ? '禁用' : '启用'}</button></td></tr>{:else}<tr><td colspan="6" class="empty">没有匹配的密钥。</td></tr>{/each}</tbody></table></div>{@render Pagination(keyRows.length, keyPage, PAGE_SIZE.defaultList, (page) => (keyPage = page))}</section>
 				{:else if active === 'teams'}
 					{@render PageTitle('权限组', '自助注册用户会继承其所有启用权限组的模型访问权限。')}

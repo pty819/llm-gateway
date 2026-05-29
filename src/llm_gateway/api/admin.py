@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
 
@@ -239,6 +239,8 @@ async def create_subject(
 @router.get("/subjects")
 async def list_subjects(
     q: str | None = Query(default=None, max_length=120),
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(session_dep),
 ):
     stmt = select(Subject)
@@ -250,8 +252,9 @@ async def list_subjects(
                 col(Subject.login_username).ilike(needle),
             )
         )
-    result = await session.execute(stmt.order_by(col(Subject.created_at).desc()))
-    return result.scalars().all()
+    total = await _count_rows(session, select(func.count()).select_from(stmt.subquery()))
+    rows = (await session.execute(stmt.order_by(col(Subject.created_at).desc()).offset(offset).limit(limit))).scalars().all()
+    return _paginated(rows, total, limit, offset)
 
 
 @router.patch("/subjects/{subject_id}")
@@ -430,11 +433,15 @@ async def create_project(
 
 
 @router.get("/projects")
-async def list_projects(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(
-        select(Project).order_by(col(Project.created_at).desc())
-    )
-    return result.scalars().all()
+async def list_projects(
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(session_dep),
+):
+    stmt = select(Project).order_by(col(Project.created_at).desc())
+    total = await _count_rows(session, select(func.count()).select_from(Project))
+    rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
+    return _paginated(rows, total, limit, offset)
 
 
 @router.patch("/projects/{project_id}")
@@ -475,11 +482,15 @@ async def create_project_membership(
 
 
 @router.get("/project-memberships")
-async def list_project_memberships(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(
-        select(ProjectMembership).order_by(col(ProjectMembership.created_at).desc())
-    )
-    return result.scalars().all()
+async def list_project_memberships(
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(session_dep),
+):
+    stmt = select(ProjectMembership).order_by(col(ProjectMembership.created_at).desc())
+    total = await _count_rows(session, select(func.count()).select_from(ProjectMembership))
+    rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
+    return _paginated(rows, total, limit, offset)
 
 
 @router.post("/gateway-keys")
@@ -508,11 +519,15 @@ async def issue_gateway_key(
 
 
 @router.get("/gateway-keys")
-async def list_gateway_keys(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(
-        select(GatewayKey).order_by(col(GatewayKey.created_at).desc())
-    )
-    return [_redact_gateway_key(item) for item in result.scalars().all()]
+async def list_gateway_keys(
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(session_dep),
+):
+    stmt = select(GatewayKey).order_by(col(GatewayKey.created_at).desc())
+    total = await _count_rows(session, select(func.count()).select_from(GatewayKey))
+    rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
+    return _paginated([_redact_gateway_key(item) for item in rows], total, limit, offset)
 
 
 @router.patch("/gateway-keys/{gateway_key_id}/state")
@@ -723,9 +738,15 @@ async def create_team(
 
 
 @router.get("/teams")
-async def list_teams(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(select(Team).order_by(col(Team.name)))
-    return result.scalars().all()
+async def list_teams(
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(session_dep),
+):
+    stmt = select(Team).order_by(col(Team.name))
+    total = await _count_rows(session, select(func.count()).select_from(Team))
+    rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
+    return _paginated(rows, total, limit, offset)
 
 
 @router.patch("/teams/{team_id}")
@@ -765,11 +786,15 @@ async def create_team_membership(
 
 
 @router.get("/team-memberships")
-async def list_team_memberships(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(
-        select(TeamMembership).order_by(col(TeamMembership.created_at).desc())
-    )
-    return result.scalars().all()
+async def list_team_memberships(
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(session_dep),
+):
+    stmt = select(TeamMembership).order_by(col(TeamMembership.created_at).desc())
+    total = await _count_rows(session, select(func.count()).select_from(TeamMembership))
+    rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
+    return _paginated(rows, total, limit, offset)
 
 
 @router.patch("/team-memberships/{membership_id}/state")
@@ -1107,6 +1132,80 @@ async def usage_summary(
     return [dict(row) for row in rows]
 
 
+@router.get("/usage/totals")
+async def usage_totals(
+    start: datetime | None = None,
+    end: datetime | None = None,
+    model: str | None = None,
+    subject_id: UUID | None = None,
+    project_id: UUID | None = None,
+    session: AsyncSession = Depends(analytics_session_dep),
+):
+    filters = _analytics_filters(
+        start=start, end=end, model=model, subject_id=subject_id, project_id=project_id
+    )
+    effective_total_tokens = func.coalesce(
+        col(RequestFact.total_tokens),
+        func.coalesce(col(RequestFact.prompt_tokens), 0)
+        + func.coalesce(col(RequestFact.completion_tokens), 0),
+        0,
+    )
+    stmt = select(
+        func.count(col(RequestFact.id)).label("request_count"),
+        func.coalesce(func.sum(col(RequestFact.prompt_tokens)), 0).label("prompt_tokens"),
+        func.coalesce(func.sum(col(RequestFact.completion_tokens)), 0).label("completion_tokens"),
+        func.coalesce(func.sum(effective_total_tokens), 0).label("total_tokens"),
+        func.coalesce(func.sum(col(RequestFact.cached_tokens)), 0).label("cached_tokens"),
+        func.coalesce(
+            func.sum(
+                case((col(RequestFact.outcome) == RequestOutcome.SUCCESS, 1), else_=0)
+            ),
+            0,
+        ).label("success_count"),
+        func.coalesce(
+            func.sum(
+                case((col(RequestFact.outcome) != RequestOutcome.SUCCESS, 1), else_=0)
+            ),
+            0,
+        ).label("failure_count"),
+        func.avg(col(RequestFact.latency_ms)).label("avg_latency_ms"),
+        func.avg(col(RequestFact.time_to_first_token_ms)).label("avg_ttft_ms"),
+        func.avg(col(RequestFact.stream_duration_ms)).label("avg_stream_duration_ms"),
+        func.coalesce(func.sum(col(RequestFact.retry_count)), 0).label("retry_count"),
+        func.coalesce(func.sum(col(RequestFact.fallback_count)), 0).label("fallback_count"),
+        func.coalesce(func.sum(col(RequestFact.fallback_tokens)), 0).label("fallback_tokens"),
+        func.avg(col(RequestFact.queue_ms)).label("avg_queue_ms"),
+        func.avg(col(RequestFact.prefill_ms)).label("avg_prefill_ms"),
+        func.avg(col(RequestFact.decode_ms)).label("avg_decode_ms"),
+        func.avg(col(RequestFact.kv_cache_usage)).label("avg_kv_cache_usage"),
+        func.coalesce(
+            func.sum(
+                case(
+                    (
+                        or_(
+                            col(RequestFact.queue_ms).isnot(None),
+                            col(RequestFact.prefill_ms).isnot(None),
+                            col(RequestFact.decode_ms).isnot(None),
+                            col(RequestFact.kv_cache_usage).isnot(None),
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ),
+            0,
+        ).label("vllm_metrics_count"),
+    ).where(*filters)
+    row = (await session.execute(stmt)).mapping()
+    if not row or row["request_count"] == 0:
+        return None
+    data = dict(row)
+    for key, value in list(data.items()):
+        if key.startswith("avg_") and value is not None:
+            data[key] = round(float(value), 2)
+    return data
+
+
 @router.get("/usage/ranking")
 async def usage_ranking(
     start: datetime | None = None,
@@ -1187,7 +1286,7 @@ async def analytics_time_buckets(
             )
         )
         .group_by(bucket_start)
-        .order_by(bucket_start)
+        .order_by(bucket_start.desc())
     )
     rows = (await session.execute(stmt)).mappings().all()
     return [_analytics_row(row) for row in rows]
@@ -1377,7 +1476,10 @@ def _analytics_row(row) -> dict[str, Any]:
         elif key.startswith("avg_") and value is not None:
             data[key] = round(float(value), 2)
     if "bucket_start" in data and data["bucket_start"] is not None:
-        data["bucket_start"] = data["bucket_start"].isoformat()
+        bs = data["bucket_start"]
+        if isinstance(bs, datetime) and bs.tzinfo is None:
+            bs = bs.replace(tzinfo=timezone.utc)
+        data["bucket_start"] = bs.isoformat()
     if "dimension_id" in data and data["dimension_id"] is not None:
         data["dimension_id"] = str(data["dimension_id"])
     return data
@@ -1491,6 +1593,15 @@ def _apply_patch(target, payload: BaseModel) -> None:
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(target, key, value)
     target.updated_at = utcnow()
+
+
+def _paginated(items: list, total: int, limit: int | None, offset: int) -> dict:
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit if limit is not None else total,
+        "offset": offset,
+    }
 
 
 async def _audit_update(
