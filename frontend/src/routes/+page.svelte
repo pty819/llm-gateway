@@ -20,17 +20,23 @@
 		AuditEvent,
 		AuthProfile,
 		Diagnostics,
-		DuckDBAnalyticsStatus,
+		GatewayKey,
 		GatewayKeyCreateResponse,
 		Inventory,
 		IPPolicyMode,
 		LoginResponse,
 		OwnUsageSummary,
+		PaginatedResponse,
+		Project,
+		ProjectMembership,
 		ReadyStatus,
 		RegisterResponse,
 		ResourceState,
 		RouterPolicy,
+		Subject,
 		SubjectType,
+		Team,
+		TeamMembership,
 		UpstreamHealth
 	} from '$lib/api/types';
 	import StateBadge from '$lib/components/StateBadge.svelte';
@@ -93,8 +99,6 @@
 	let usageEnd = $state('');
 	let analyticsBucket = $state<'minute' | 'hour' | 'day'>('hour');
 	let analyticsDimension = $state<'model' | 'subject' | 'project' | 'endpoint' | 'outcome' | 'streaming'>('model');
-	let duckdbStatus = $state<DuckDBAnalyticsStatus | null>(null);
-	let duckdbRefreshLimit = $state('');
 	let ownUsageStart = $state('');
 	let ownUsageEnd = $state('');
 	let ownUsage = $state<OwnUsageSummary | null>(null);
@@ -389,41 +393,41 @@
 				return;
 			}
 			const [
-				subjects,
-				projects,
-				memberships,
-				keys,
+				subjectsPage,
+				projectsPage,
+				membershipsPage,
+				keysPage,
 				models,
 				entitlements,
-				teams,
-				teamMemberships,
+				teamsPage,
+				teamMembershipsPage,
 				modelTeamGrants,
 				upstreams,
 				ratePolicies,
 				audit
 			] = await Promise.all([
-				api.get<Inventory['subjects']>('/admin/subjects'),
-				api.get<Inventory['projects']>('/admin/projects'),
-				api.get<Inventory['memberships']>('/admin/project-memberships'),
-				api.get<Inventory['keys']>('/admin/gateway-keys'),
+				api.get<PaginatedResponse<Subject>>('/admin/subjects'),
+				api.get<PaginatedResponse<Project>>('/admin/projects'),
+				api.get<PaginatedResponse<ProjectMembership>>('/admin/project-memberships'),
+				api.get<PaginatedResponse<GatewayKey>>('/admin/gateway-keys'),
 				api.get<Inventory['models']>('/admin/model-aliases'),
 				api.get<Inventory['entitlements']>('/admin/model-entitlements'),
-				api.get<Inventory['teams']>('/admin/teams'),
-				api.get<Inventory['teamMemberships']>('/admin/team-memberships'),
+				api.get<PaginatedResponse<Team>>('/admin/teams'),
+				api.get<PaginatedResponse<TeamMembership>>('/admin/team-memberships'),
 				api.get<Inventory['modelTeamGrants']>('/admin/model-team-grants'),
 				api.get<Inventory['upstreams']>('/admin/upstreams'),
 				api.get<Inventory['ratePolicies']>('/admin/rate-policies'),
 				api.get<Inventory['audit']>('/admin/audit-events')
 			]);
 			inventory = {
-				subjects,
-				projects,
-				memberships,
-				keys,
+				subjects: subjectsPage.items,
+				projects: projectsPage.items,
+				memberships: membershipsPage.items,
+				keys: keysPage.items,
 				models,
 				entitlements,
-				teams,
-				teamMemberships,
+				teams: teamsPage.items,
+				teamMemberships: teamMembershipsPage.items,
 				modelTeamGrants,
 				upstreams,
 				routerConfigs: [],
@@ -435,28 +439,11 @@
 				analyticsDrilldown: inventory.analyticsDrilldown,
 				audit
 			};
-			void refreshDuckDBStatus();
 		});
-	}
-
-	async function refreshDuckDBStatus() {
-		try {
-			duckdbStatus = await api.get<DuckDBAnalyticsStatus>('/admin/analytics/duckdb/status');
-		} catch {
-			duckdbStatus = null;
-		}
 	}
 
 	async function refreshUsageAnalytics() {
 		await run(async () => {
-			duckdbStatus = await api.post<DuckDBAnalyticsStatus>(
-				'/admin/analytics/duckdb/refresh',
-				clean({
-					start: usageStart,
-					end: usageEnd,
-					limit: duckdbRefreshLimit === '' ? null : Number(duckdbRefreshLimit)
-				})
-			);
 			const analyticsParams = {
 				start: usageStart,
 				end: usageEnd,
@@ -465,17 +452,17 @@
 				project_id: projectFilter
 			};
 			const [usageTotals, usage, buckets, drilldown] = await Promise.all([
-				api.get<Inventory['usageTotals']>('/admin/usage/duckdb/totals', analyticsParams),
-				api.get<Inventory['usage']>('/admin/usage/duckdb/summary', {
+				api.get<Inventory['usageTotals']>('/admin/usage/totals', analyticsParams),
+				api.get<Inventory['usage']>('/admin/usage/summary', {
 					...analyticsParams,
 					limit: PAGE_SIZE.usagePreview
 				}),
-				api.get<Inventory['analyticsBuckets']>('/admin/analytics/duckdb/time-buckets', {
+				api.get<Inventory['analyticsBuckets']>('/admin/analytics/time-buckets', {
 					...analyticsParams,
 					bucket: analyticsBucket,
 					limit: PAGE_SIZE.usagePreview
 				}),
-				api.get<Inventory['analyticsDrilldown']>('/admin/analytics/duckdb/drilldown', {
+				api.get<Inventory['analyticsDrilldown']>('/admin/analytics/drilldown', {
 					...analyticsParams,
 					dimension: analyticsDimension,
 					limit: PAGE_SIZE.usagePreview
@@ -487,15 +474,7 @@
 
 	async function refreshUsageRanking() {
 		await run(async () => {
-			duckdbStatus = await api.post<DuckDBAnalyticsStatus>(
-				'/admin/analytics/duckdb/refresh',
-				clean({
-					start: usageStart,
-					end: usageEnd,
-					limit: duckdbRefreshLimit === '' ? null : Number(duckdbRefreshLimit)
-				})
-			);
-			const ranking = await api.get<Inventory['ranking']>('/admin/usage/duckdb/ranking', {
+			const ranking = await api.get<Inventory['ranking']>('/admin/usage/ranking', {
 				start: usageStart,
 				end: usageEnd,
 				model: rankingModel,
@@ -1465,16 +1444,8 @@
 							<div class="metric"><span>模型</span><strong>{inventory.models.length}</strong></div>
 						</div>
 					</section>
-					<section class="panel"><div class="actions"><button class="secondary" type="button" onclick={() => setUsageRange(1 / 24)}>最近 1 小时</button><button class="secondary" type="button" onclick={() => setUsageRange(1)}>最近 1 天</button><button class="secondary" type="button" onclick={() => setUsageRange(7)}>最近 1 周</button><button class="secondary" type="button" onclick={() => setUsageRange(30)}>最近 1 月</button></div><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>时间粒度<select bind:value={analyticsBucket}><option value="minute">分钟</option><option value="hour">小时</option><option value="day">天</option></select></label><label>分析维度<select bind:value={analyticsDimension}><option value="model">模型</option><option value="subject">用户</option><option value="project">项目</option><option value="endpoint">协议</option><option value="outcome">结果</option><option value="streaming">流式</option></select></label><label>模型筛选<select bind:value={modelFilter}><option value="">全部</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>搜索用户<input bind:value={usageSubjectSearch} placeholder="输入姓名或工号" /></label><label>用户筛选<select bind:value={subjectFilter}><option value="">全部</option>{#each subjectOptions(usageSubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>项目筛选<select bind:value={projectFilter}><option value="">全部</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><label>刷新行数上限<input type="number" min="1" placeholder="留空表示不限" bind:value={duckdbRefreshLimit} /></label><button type="button" onclick={refreshUsageAnalytics} disabled={loading}>{loading ? '查询中' : '查询'}</button></div></section>
+					<section class="panel"><div class="actions"><button class="secondary" type="button" onclick={() => setUsageRange(1 / 24)}>最近 1 小时</button><button class="secondary" type="button" onclick={() => setUsageRange(1)}>最近 1 天</button><button class="secondary" type="button" onclick={() => setUsageRange(7)}>最近 1 周</button><button class="secondary" type="button" onclick={() => setUsageRange(30)}>最近 1 月</button></div><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>时间粒度<select bind:value={analyticsBucket}><option value="minute">分钟</option><option value="hour">小时</option><option value="day">天</option></select></label><label>分析维度<select bind:value={analyticsDimension}><option value="model">模型</option><option value="subject">用户</option><option value="project">项目</option><option value="endpoint">协议</option><option value="outcome">结果</option><option value="streaming">流式</option></select></label><label>模型筛选<select bind:value={modelFilter}><option value="">全部</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>搜索用户<input bind:value={usageSubjectSearch} placeholder="输入姓名或工号" /></label><label>用户筛选<select bind:value={subjectFilter}><option value="">全部</option>{#each subjectOptions(usageSubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>项目筛选<select bind:value={projectFilter}><option value="">全部</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><button type="button" onclick={refreshUsageAnalytics} disabled={loading}>{loading ? '查询中' : '查询'}</button></div></section>
 					<section class="panel">
-						<h2>DuckDB 状态</h2>
-						<div class="grid">
-							<div class="metric"><span>状态</span><strong>{duckdbStatus?.enabled ? '启用' : '未知'}</strong></div>
-							<div class="metric"><span>镜像行数</span><strong>{duckdbStatus?.row_count ?? 0}</strong></div>
-							<div class="metric"><span>文件大小</span><strong>{bytesLabel(duckdbStatus?.file_size_bytes ?? 0)}</strong></div>
-							<div class="metric"><span>数据范围</span><strong>{duckdbStatus?.min_started_at ? `${new Date(duckdbStatus.min_started_at).toLocaleString()} → ${duckdbStatus.max_started_at ? new Date(duckdbStatus.max_started_at).toLocaleString() : '未知'}` : '未刷新'}</strong></div>
-						</div>
-						<p class="muted">路径：{duckdbStatus?.path ?? '未初始化'}。查询会先按所选时间范围刷新 DuckDB 镜像，再更新本页汇总、趋势和 Drilldown。</p>
 					</section>
 					<div class="grid"><div class="metric"><span>请求数</span><strong>{totals.requests}</strong></div><div class="metric"><span>总 token</span><strong>{totals.total}</strong></div><div class="metric"><span>成功</span><strong>{totals.success}</strong></div><div class="metric"><span>失败</span><strong>{totals.failure}</strong></div><div class="metric"><span>平均延迟</span><strong>{msLabel(analyticsPerformance.latencyWeight ? analyticsPerformance.latencyTotal / analyticsPerformance.latencyWeight : null)}</strong></div><div class="metric"><span>平均 TTFT</span><strong>{msLabel(analyticsPerformance.ttftWeight ? analyticsPerformance.ttftTotal / analyticsPerformance.ttftWeight : null)}</strong></div><div class="metric"><span>Retry / Fallback</span><strong>{analyticsPerformance.retry} / {analyticsPerformance.fallback}</strong></div><div class="metric"><span>vLLM 指标覆盖</span><strong>{analyticsPerformance.vllmObserved} / {analyticsPerformance.requests}</strong></div></div>
 					<section class="panel"><h2>最近 5 个时间桶</h2>{@render AnalyticsBucketTable(visibleAnalyticsBuckets, analyticsMaxTokens)}</section>
@@ -1482,15 +1453,8 @@
 					<section class="panel"><h2>Top 5 汇总明细</h2>{@render UsageTable(visibleUsageRows, subjectLabel, projectLabel)}</section>
 				{:else if active === 'ranking'}
 					{@render PageTitle('排行榜', '按时间范围统计 token 用量最高的用户。')}
-					<section class="panel"><div class="actions"><button class="secondary" type="button" onclick={() => setUsageRange(1 / 24)}>最近 1 小时</button><button class="secondary" type="button" onclick={() => setUsageRange(1)}>最近 1 天</button><button class="secondary" type="button" onclick={() => setUsageRange(7)}>最近 1 周</button><button class="secondary" type="button" onclick={() => setUsageRange(30)}>最近 1 月</button></div><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>模型筛选<select bind:value={rankingModel}><option value="">全部</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>Top N<input type="number" bind:value={rankingLimit} min="1" max="100" /></label><label>刷新行数上限<input type="number" min="1" placeholder="留空表示不限" bind:value={duckdbRefreshLimit} /></label><button type="button" onclick={refreshUsageRanking} disabled={loading}>{loading ? '查询中' : '查询'}</button></div></section>
+					<section class="panel"><div class="actions"><button class="secondary" type="button" onclick={() => setUsageRange(1 / 24)}>最近 1 小时</button><button class="secondary" type="button" onclick={() => setUsageRange(1)}>最近 1 天</button><button class="secondary" type="button" onclick={() => setUsageRange(7)}>最近 1 周</button><button class="secondary" type="button" onclick={() => setUsageRange(30)}>最近 1 月</button></div><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>模型筛选<select bind:value={rankingModel}><option value="">全部</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>Top N<input type="number" bind:value={rankingLimit} min="1" max="100" /></label><button type="button" onclick={refreshUsageRanking} disabled={loading}>{loading ? '查询中' : '查询'}</button></div></section>
 					<section class="panel">
-						<h2>DuckDB 状态</h2>
-						<div class="grid">
-							<div class="metric"><span>状态</span><strong>{duckdbStatus?.enabled ? '启用' : '未知'}</strong></div>
-							<div class="metric"><span>镜像行数</span><strong>{duckdbStatus?.row_count ?? 0}</strong></div>
-							<div class="metric"><span>文件大小</span><strong>{bytesLabel(duckdbStatus?.file_size_bytes ?? 0)}</strong></div>
-							<div class="metric"><span>数据范围</span><strong>{duckdbStatus?.min_started_at ? `${new Date(duckdbStatus.min_started_at).toLocaleString()} → ${duckdbStatus.max_started_at ? new Date(duckdbStatus.max_started_at).toLocaleString() : '未知'}` : '未刷新'}</strong></div>
-						</div>
 					</section>
 					<section class="panel"><div class="table-wrap"><table><thead><tr><th>#</th><th>用户 / Subject</th><th>请求数</th><th>输入 token</th><th>输出 token</th><th>总 token</th></tr></thead><tbody>{#each rankingPageRows as row, i}<tr><td>{(rankingPage - 1) * PAGE_SIZE.ranking + i + 1}</td><td>{row.subject_name} / {row.login_username ?? row.subject_id}</td><td>{row.request_count}</td><td>{row.prompt_tokens}</td><td>{row.completion_tokens}</td><td>{row.total_tokens}</td></tr>{:else}<tr><td colspan="6" class="empty">暂无用量数据。</td></tr>{/each}</tbody></table></div>{@render Pagination(rankingRows.length, rankingPage, PAGE_SIZE.ranking, (page) => (rankingPage = page))}</section>
 				{:else if active === 'audit'}

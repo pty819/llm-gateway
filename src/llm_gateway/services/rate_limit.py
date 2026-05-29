@@ -37,6 +37,12 @@ async def resolve_effective_rate_policy(
     project_id: UUID,
     defaults: Settings,
 ) -> EffectiveRatePolicy:
+    from llm_gateway.services.cache import policy_cache
+
+    cache_key = f"rate:{key_id}:{subject_id}:{project_id}"
+    cached = policy_cache.get(cache_key)
+    if cached is not None:
+        return cached
     requests_per_minute = defaults.default_request_limit_per_minute
     concurrency_limit = defaults.default_concurrency_limit
     for scope, scope_id in (
@@ -58,9 +64,11 @@ async def resolve_effective_rate_policy(
                 )
             if policy.concurrency_limit is not None:
                 concurrency_limit = min(concurrency_limit, policy.concurrency_limit)
-    return EffectiveRatePolicy(
+    effective = EffectiveRatePolicy(
         requests_per_minute=requests_per_minute, concurrency_limit=concurrency_limit
     )
+    policy_cache.set(cache_key, effective)
+    return effective
 
 
 async def check_request_rate(

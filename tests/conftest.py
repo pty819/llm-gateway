@@ -132,9 +132,14 @@ async def gateway_fixture() -> GatewayFixture:
 
 
 async def fetch_request_fact(request_id: str):
+    import asyncio
+
     from llm_gateway.db.models import RequestFact
     from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.facts_queue import drain_now
 
+    await drain_now()
+    await asyncio.sleep(0.05)
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(RequestFact).where(col(RequestFact.request_id) == request_id)

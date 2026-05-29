@@ -2,13 +2,17 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
+AnalyticsBucket = Literal["minute", "hour", "day"]
+AnalyticsDimension = Literal[
+    "model", "subject", "project", "endpoint", "outcome", "streaming"
+]
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
-from llm_gateway.api.deps import admin_dep, session_dep, settings_dep
+from llm_gateway.api.deps import admin_dep, analytics_session_dep, session_dep, settings_dep
 from llm_gateway.core.config import Settings
 from llm_gateway.db.models import (
     AuditEvent,
@@ -32,10 +36,6 @@ from llm_gateway.db.models import (
     UpstreamTarget,
     UserSession,
     utcnow,
-)
-from llm_gateway.services.analytics_duckdb import (
-    DuckDBAnalyticsStore,
-    DuckDBAnalyticsUnavailable,
 )
 from llm_gateway.services.facts import record_audit_event
 from llm_gateway.services.litellm_client import check_upstream_health
@@ -187,11 +187,6 @@ class RouterCommandConfigUpdate(BaseModel):
     port: int | None = None
     extra_args: dict[str, Any] | None = None
 
-
-class DuckDBRefreshRequest(BaseModel):
-    start: datetime | None = None
-    end: datetime | None = None
-    limit: int | None = Field(default=None, ge=1, le=1_000_000)
 
 
 class RatePolicyCreate(BaseModel):
@@ -1053,7 +1048,7 @@ async def usage_summary(
     subject_id: UUID | None = None,
     project_id: UUID | None = None,
     limit: int | None = Query(default=None, ge=1, le=500),
-    session: AsyncSession = Depends(session_dep),
+    session: AsyncSession = Depends(analytics_session_dep),
 ):
     filters = []
     if start:
@@ -1164,76 +1159,7 @@ async def usage_ranking(
     return [dict(row) for row in rows]
 
 
-@router.get("/usage/duckdb/summary")
-async def duckdb_usage_summary(
-    start: datetime | None = None,
-    end: datetime | None = None,
-    model: str | None = None,
-    subject_id: UUID | None = None,
-    project_id: UUID | None = None,
-    limit: int | None = Query(default=None, ge=1, le=500),
-    settings: Settings = Depends(settings_dep),
-):
-    try:
-        return await DuckDBAnalyticsStore(settings).usage_summary(
-            start=start,
-            end=end,
-            model=model,
-            subject_id=subject_id,
-            project_id=project_id,
-            limit=limit,
-        )
-    except DuckDBAnalyticsUnavailable as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
 
-
-@router.get("/usage/duckdb/totals")
-async def duckdb_usage_totals(
-    start: datetime | None = None,
-    end: datetime | None = None,
-    model: str | None = None,
-    subject_id: UUID | None = None,
-    project_id: UUID | None = None,
-    settings: Settings = Depends(settings_dep),
-):
-    try:
-        return await DuckDBAnalyticsStore(settings).usage_totals(
-            start=start,
-            end=end,
-            model=model,
-            subject_id=subject_id,
-            project_id=project_id,
-        )
-    except DuckDBAnalyticsUnavailable as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-
-
-@router.get("/usage/duckdb/ranking")
-async def duckdb_usage_ranking(
-    start: datetime | None = None,
-    end: datetime | None = None,
-    model: str | None = None,
-    limit: int = Query(default=20, ge=1, le=100),
-    settings: Settings = Depends(settings_dep),
-):
-    try:
-        return await DuckDBAnalyticsStore(settings).usage_ranking(
-            start=start, end=end, model=model, limit=limit
-        )
-    except DuckDBAnalyticsUnavailable as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-
-
-AnalyticsBucket = Literal["minute", "hour", "day"]
-AnalyticsDimension = Literal[
-    "model", "subject", "project", "endpoint", "outcome", "streaming"
-]
 
 
 @router.get("/analytics/time-buckets")
@@ -1244,7 +1170,7 @@ async def analytics_time_buckets(
     model: str | None = None,
     subject_id: UUID | None = None,
     project_id: UUID | None = None,
-    session: AsyncSession = Depends(session_dep),
+    session: AsyncSession = Depends(analytics_session_dep),
 ):
     bucket_start = func.date_trunc(bucket, col(RequestFact.started_at)).label(
         "bucket_start"
@@ -1276,7 +1202,7 @@ async def analytics_drilldown(
     subject_id: UUID | None = None,
     project_id: UUID | None = None,
     limit: int = Query(default=100, ge=1, le=500),
-    session: AsyncSession = Depends(session_dep),
+    session: AsyncSession = Depends(analytics_session_dep),
 ):
     dimension_id, dimension_label, joins, groups = _analytics_dimension(dimension)
     stmt = (
@@ -1301,90 +1227,8 @@ async def analytics_drilldown(
     return [_analytics_row(row) for row in rows]
 
 
-@router.get("/analytics/duckdb/status")
-async def duckdb_analytics_status(
-    settings: Settings = Depends(settings_dep),
-):
-    try:
-        status_payload = await DuckDBAnalyticsStore(settings).status()
-    except DuckDBAnalyticsUnavailable as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-    return _duckdb_payload(status_payload)
 
 
-@router.post("/analytics/duckdb/refresh")
-async def refresh_duckdb_analytics(
-    payload: DuckDBRefreshRequest,
-    session: AsyncSession = Depends(session_dep),
-    settings: Settings = Depends(settings_dep),
-):
-    try:
-        result = await DuckDBAnalyticsStore(settings).refresh(
-            session, start=payload.start, end=payload.end, limit=payload.limit
-        )
-    except DuckDBAnalyticsUnavailable as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-    return _duckdb_payload(result)
-
-
-@router.get("/analytics/duckdb/time-buckets")
-async def duckdb_analytics_time_buckets(
-    start: datetime | None = None,
-    end: datetime | None = None,
-    bucket: AnalyticsBucket = "hour",
-    model: str | None = None,
-    subject_id: UUID | None = None,
-    project_id: UUID | None = None,
-    limit: int | None = Query(default=None, ge=1, le=500),
-    settings: Settings = Depends(settings_dep),
-):
-    try:
-        rows = await DuckDBAnalyticsStore(settings).time_buckets(
-            start=start,
-            end=end,
-            bucket=bucket,
-            model=model,
-            subject_id=subject_id,
-            project_id=project_id,
-            limit=limit,
-        )
-    except DuckDBAnalyticsUnavailable as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-    return [_analytics_row(row) for row in rows]
-
-
-@router.get("/analytics/duckdb/drilldown")
-async def duckdb_analytics_drilldown(
-    dimension: AnalyticsDimension = "model",
-    start: datetime | None = None,
-    end: datetime | None = None,
-    model: str | None = None,
-    subject_id: UUID | None = None,
-    project_id: UUID | None = None,
-    limit: int = Query(default=100, ge=1, le=500),
-    settings: Settings = Depends(settings_dep),
-):
-    try:
-        rows = await DuckDBAnalyticsStore(settings).drilldown(
-            dimension=dimension,
-            start=start,
-            end=end,
-            model=model,
-            subject_id=subject_id,
-            project_id=project_id,
-            limit=limit,
-        )
-    except DuckDBAnalyticsUnavailable as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-    return [_analytics_row(row) for row in rows]
 
 
 def _analytics_filters(
@@ -1538,21 +1382,6 @@ def _analytics_row(row) -> dict[str, Any]:
         data["dimension_id"] = str(data["dimension_id"])
     return data
 
-
-def _duckdb_payload(item) -> dict[str, Any]:
-    data = {
-        "enabled": item.enabled,
-        "path": item.path,
-        "row_count": item.row_count,
-        "min_started_at": item.min_started_at,
-        "max_started_at": item.max_started_at,
-        "file_size_bytes": item.file_size_bytes,
-    }
-    if hasattr(item, "exists"):
-        data["exists"] = item.exists
-    if hasattr(item, "rows_copied"):
-        data["rows_copied"] = item.rows_copied
-    return data
 
 
 @router.get("/audit-events")

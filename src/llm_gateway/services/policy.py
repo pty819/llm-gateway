@@ -53,6 +53,19 @@ async def resolve_route_context(
     requested_model: str,
     client_ip: str,
 ) -> RouteContext:
+    from llm_gateway.services.cache import route_cache
+
+    route_cache_key = f"route:{auth.key.id}:{requested_model}"
+    cached = route_cache.get(route_cache_key)
+    if cached is not None:
+        if not await subject_can_use_model(
+            session, auth=auth, model_alias_id=cached.model_alias.id
+        ):
+            raise PolicyDenied("model_not_entitled")
+        model_alias = cached.model_alias
+        if not client_ip_allowed(model_alias, client_ip):
+            raise PolicyDenied("model_ip_denied")
+        return cached
     alias_result = await session.execute(
         select(ModelAlias).where(col(ModelAlias.alias) == requested_model)
     )
@@ -78,12 +91,20 @@ async def resolve_route_context(
     if not upstream:
         raise PolicyDenied("upstream_not_configured")
 
-    return RouteContext(model_alias=model_alias, upstream=upstream)
+    ctx = RouteContext(model_alias=model_alias, upstream=upstream)
+    route_cache.set(route_cache_key, ctx)
+    return ctx
 
 
 async def subject_can_use_model(
     session: AsyncSession, *, auth: AuthContext, model_alias_id
 ) -> bool:
+    from llm_gateway.services.cache import _CACHE_MISS, policy_cache
+
+    cache_key = f"entitle:{auth.key.id}:{auth.subject.id}:{auth.project.id}:{model_alias_id}"
+    cached = policy_cache.get(cache_key)
+    if cached is not None:
+        return cached is not _CACHE_MISS
     entitlement_result = await session.execute(
         select(col(ModelEntitlement.id)).where(
             col(ModelEntitlement.model_alias_id) == model_alias_id,
@@ -96,6 +117,7 @@ async def subject_can_use_model(
         )
     )
     if entitlement_result.scalars().first():
+        policy_cache.set(cache_key, True)
         return True
 
     team_result = await session.execute(
@@ -110,7 +132,12 @@ async def subject_can_use_model(
             col(TeamMembership.subject_id) == auth.subject.id,
         )
     )
-    return team_result.scalars().first() is not None
+    result = team_result.scalars().first() is not None
+    if result:
+        policy_cache.set(cache_key, True)
+    else:
+        policy_cache.set(cache_key, _CACHE_MISS)
+    return result
 
 
 async def list_accessible_model_aliases(

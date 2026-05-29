@@ -17,6 +17,10 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://llm_gateway:llm_gateway@localhost:5432/llm_gateway",
         alias="LLM_GATEWAY_DATABASE_URL",
     )
+    analytics_database_url: str = Field(
+        default="",
+        alias="LLM_GATEWAY_ANALYTICS_DATABASE_URL",
+    )
     redis_url: str = Field(
         default="redis://localhost:6379/0", alias="LLM_GATEWAY_REDIS_URL"
     )
@@ -34,12 +38,6 @@ class Settings(BaseSettings):
     )
     request_fact_timeout_seconds: int = Field(
         default=30, alias="LLM_GATEWAY_FACT_TIMEOUT_SECONDS"
-    )
-    analytics_duckdb_enabled: bool = Field(
-        default=True, alias="LLM_GATEWAY_ANALYTICS_DUCKDB_ENABLED"
-    )
-    analytics_duckdb_path: str = Field(
-        default=".data/analytics.duckdb", alias="LLM_GATEWAY_ANALYTICS_DUCKDB_PATH"
     )
     admin_token: str = Field(default="dev-admin-token", alias="LLM_GATEWAY_ADMIN_TOKEN")
     bootstrap_admin_username: str = Field(

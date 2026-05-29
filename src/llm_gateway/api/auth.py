@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -183,6 +183,14 @@ async def own_usage_summary(
     session: AsyncSession = Depends(session_dep),
 ):
     filters = [col(RequestFact.subject_id) == context.subject.id]
+    if start and end and (end - start).days > 90:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="time_window_exceeds_90_days",
+        )
+    if start is None and end is None:
+        end = utcnow()
+        start = end - timedelta(days=30)
     if start:
         filters.append(col(RequestFact.started_at) >= start)
     if end:

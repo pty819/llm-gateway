@@ -19,7 +19,7 @@ from llm_gateway.api.deps import (
 )
 from llm_gateway.core.config import Settings
 from llm_gateway.db.models import EndpointFamily, RequestOutcome, utcnow
-from llm_gateway.services.facts import record_request_fact
+from llm_gateway.services.facts_queue import enqueue_fact
 from llm_gateway.services.litellm_client import (
     anthropic_messages_once,
     anthropic_messages_stream,
@@ -119,7 +119,6 @@ async def openai_chat_completions(
         auth = await _authenticate_proxy_request(request, session)
     except HTTPException as exc:
         await _record_unauthenticated_request(
-            session=session,
             request_id=request_id,
             started_at=started_at,
             endpoint_family=EndpointFamily.OPENAI_CHAT,
@@ -140,7 +139,6 @@ async def openai_chat_completions(
         )
     except HTTPException as exc:
         await _record_rejected_request(
-            session=session,
             request_id=request_id,
             started_at=started_at,
             endpoint_family=EndpointFamily.OPENAI_CHAT,
@@ -166,7 +164,6 @@ async def openai_chat_completions(
         )
         return StreamingResponse(
             _stream_openai_response(
-                session=session,
                 redis=redis,
                 auth=auth,
                 route=route,
@@ -187,26 +184,26 @@ async def openai_chat_completions(
             result = await completion_once(
                 model_alias=route.model_alias, upstream=route.upstream, body=body
             )
-        await record_request_fact(
-            session,
-            request_id=request_id,
-            started_at=started_at,
-            ended_at=utcnow(),
-            endpoint_family=EndpointFamily.OPENAI_CHAT,
-            subject_id=auth.subject.id,
-            subject_type=auth.subject.type,
-            project_id=auth.project.id,
-            model_alias=route.model_alias.alias,
-            upstream_target_id=route.upstream.id,
-            streaming=False,
-            outcome=RequestOutcome.SUCCESS,
-            usage=result.usage,
+        await enqueue_fact(
+            {
+                "request_id": request_id,
+                "started_at": started_at,
+                "ended_at": utcnow(),
+                "endpoint_family": EndpointFamily.OPENAI_CHAT,
+                "subject_id": auth.subject.id,
+                "subject_type": auth.subject.type,
+                "project_id": auth.project.id,
+                "model_alias": route.model_alias.alias,
+                "upstream_target_id": route.upstream.id,
+                "streaming": False,
+                "outcome": RequestOutcome.SUCCESS,
+                "usage": result.usage,
+            },
+            endpoint="chat_completions",
         )
-        await session.commit()
         return JSONResponse(jsonable_encoder(_plain(result.response)))
     except RateLimitExceeded as exc:
         await _raise_rate_limited_after_route(
-            session=session,
             request_id=request_id,
             started_at=started_at,
             endpoint_family=EndpointFamily.OPENAI_CHAT,
@@ -217,7 +214,6 @@ async def openai_chat_completions(
         )
     except Exception as exc:
         await _record_failure(
-            session=session,
             request_id=request_id,
             started_at=started_at,
             endpoint_family=EndpointFamily.OPENAI_CHAT,
@@ -233,7 +229,6 @@ async def openai_chat_completions(
 
 async def _stream_openai_response(
     *,
-    session: AsyncSession,
     redis: Redis,
     auth: AuthContext,
     route,
@@ -267,25 +262,26 @@ async def _stream_openai_response(
     finally:
         with suppress(Exception):
             await release_concurrency_slot(redis, concurrency_key)
-        await record_request_fact(
-            session,
-            request_id=request_id,
-            started_at=started_at,
-            ended_at=utcnow(),
-            endpoint_family=EndpointFamily.OPENAI_CHAT,
-            subject_id=auth.subject.id,
-            subject_type=auth.subject.type,
-            project_id=auth.project.id,
-            model_alias=route.model_alias.alias,
-            upstream_target_id=route.upstream.id,
-            streaming=True,
-            outcome=outcome,
-            usage=usage,
-            first_token_at=first_token_at,
-            error_class=type(error).__name__ if error else None,
-            error_detail=str(error) if error else None,
+        await enqueue_fact(
+            {
+                "request_id": request_id,
+                "started_at": started_at,
+                "ended_at": utcnow(),
+                "endpoint_family": EndpointFamily.OPENAI_CHAT,
+                "subject_id": auth.subject.id,
+                "subject_type": auth.subject.type,
+                "project_id": auth.project.id,
+                "model_alias": route.model_alias.alias,
+                "upstream_target_id": route.upstream.id,
+                "streaming": True,
+                "outcome": outcome,
+                "usage": usage,
+                "first_token_at": first_token_at,
+                "error_class": type(error).__name__ if error else None,
+                "error_detail": str(error) if error else None,
+            },
+            endpoint="stream_openai",
         )
-        await session.commit()
 
 
 @router.post("/v1/responses")
@@ -304,7 +300,6 @@ async def openai_responses(
         auth = await _authenticate_proxy_request(request, session)
     except HTTPException as exc:
         await _record_unauthenticated_request(
-            session=session,
             request_id=request_id,
             started_at=started_at,
             endpoint_family=EndpointFamily.OPENAI_RESPONSES,
@@ -325,7 +320,6 @@ async def openai_responses(
         )
     except HTTPException as exc:
         await _record_rejected_request(
-            session=session,
             request_id=request_id,
             started_at=started_at,
             endpoint_family=EndpointFamily.OPENAI_RESPONSES,
@@ -351,7 +345,6 @@ async def openai_responses(
         )
         return StreamingResponse(
             _stream_responses(
-                session=session,
                 redis=redis,
                 auth=auth,
                 route=route,
@@ -372,26 +365,26 @@ async def openai_responses(
             result = await responses_once(
                 model_alias=route.model_alias, upstream=route.upstream, body=body
             )
-        await record_request_fact(
-            session,
-            request_id=request_id,
-            started_at=started_at,
-            ended_at=utcnow(),
-            endpoint_family=EndpointFamily.OPENAI_RESPONSES,
-            subject_id=auth.subject.id,
-            subject_type=auth.subject.type,
-            project_id=auth.project.id,
-            model_alias=route.model_alias.alias,
-            upstream_target_id=route.upstream.id,
-            streaming=False,
-            outcome=RequestOutcome.SUCCESS,
-            usage=result.usage,
+        await enqueue_fact(
+            {
+                "request_id": request_id,
+                "started_at": started_at,
+                "ended_at": utcnow(),
+                "endpoint_family": EndpointFamily.OPENAI_RESPONSES,
+                "subject_id": auth.subject.id,
+                "subject_type": auth.subject.type,
+                "project_id": auth.project.id,
+                "model_alias": route.model_alias.alias,
+                "upstream_target_id": route.upstream.id,
+                "streaming": False,
+                "outcome": RequestOutcome.SUCCESS,
+                "usage": result.usage,
+            },
+            endpoint="responses",
         )
-        await session.commit()
         return JSONResponse(jsonable_encoder(_plain(result.response)))
     except RateLimitExceeded as exc:
         await _raise_rate_limited_after_route(
-            session=session,
             request_id=request_id,
             started_at=started_at,
             endpoint_family=EndpointFamily.OPENAI_RESPONSES,
@@ -402,7 +395,6 @@ async def openai_responses(
         )
     except Exception as exc:
         await _record_failure(
-            session=session,
             request_id=request_id,
             started_at=started_at,
             endpoint_family=EndpointFamily.OPENAI_RESPONSES,
@@ -418,7 +410,6 @@ async def openai_responses(
 
 async def _stream_responses(
     *,
-    session: AsyncSession,
     redis: Redis,
     auth: AuthContext,
     route,
@@ -452,25 +443,26 @@ async def _stream_responses(
     finally:
         with suppress(Exception):
             await release_concurrency_slot(redis, concurrency_key)
-        await record_request_fact(
-            session,
-            request_id=request_id,
-            started_at=started_at,
-            ended_at=utcnow(),
-            endpoint_family=EndpointFamily.OPENAI_RESPONSES,
-            subject_id=auth.subject.id,
-            subject_type=auth.subject.type,
-            project_id=auth.project.id,
-            model_alias=route.model_alias.alias,
-            upstream_target_id=route.upstream.id,
-            streaming=True,
-            outcome=outcome,
-            usage=usage,
-            first_token_at=first_token_at,
-            error_class=type(error).__name__ if error else None,
-            error_detail=str(error) if error else None,
+        await enqueue_fact(
+            {
+                "request_id": request_id,
+                "started_at": started_at,
+                "ended_at": utcnow(),
+                "endpoint_family": EndpointFamily.OPENAI_RESPONSES,
+                "subject_id": auth.subject.id,
+                "subject_type": auth.subject.type,
+                "project_id": auth.project.id,
+                "model_alias": route.model_alias.alias,
+                "upstream_target_id": route.upstream.id,
+                "streaming": True,
+                "outcome": outcome,
+                "usage": usage,
+                "first_token_at": first_token_at,
+                "error_class": type(error).__name__ if error else None,
+                "error_detail": str(error) if error else None,
+            },
+            endpoint="stream_responses",
         )
-        await session.commit()
 
 
 @router.post("/v1/messages")
@@ -489,7 +481,6 @@ async def anthropic_messages(
         auth = await _authenticate_proxy_request(request, session)
     except HTTPException as exc:
         await _record_unauthenticated_request(
-            session=session,
             request_id=request_id,
             started_at=started_at,
             endpoint_family=EndpointFamily.ANTHROPIC_MESSAGES,
@@ -510,7 +501,6 @@ async def anthropic_messages(
         )
     except HTTPException as exc:
         await _record_rejected_request(
-            session=session,
             request_id=request_id,
             started_at=started_at,
             endpoint_family=EndpointFamily.ANTHROPIC_MESSAGES,
@@ -536,7 +526,6 @@ async def anthropic_messages(
         )
         return StreamingResponse(
             _stream_anthropic_response(
-                session=session,
                 redis=redis,
                 auth=auth,
                 route=route,
@@ -555,26 +544,26 @@ async def anthropic_messages(
             result = await anthropic_messages_once(
                 model_alias=route.model_alias, upstream=route.upstream, body=body
             )
-        await record_request_fact(
-            session,
-            request_id=request_id,
-            started_at=started_at,
-            ended_at=utcnow(),
-            endpoint_family=EndpointFamily.ANTHROPIC_MESSAGES,
-            subject_id=auth.subject.id,
-            subject_type=auth.subject.type,
-            project_id=auth.project.id,
-            model_alias=route.model_alias.alias,
-            upstream_target_id=route.upstream.id,
-            streaming=False,
-            outcome=RequestOutcome.SUCCESS,
-            usage=result.usage,
+        await enqueue_fact(
+            {
+                "request_id": request_id,
+                "started_at": started_at,
+                "ended_at": utcnow(),
+                "endpoint_family": EndpointFamily.ANTHROPIC_MESSAGES,
+                "subject_id": auth.subject.id,
+                "subject_type": auth.subject.type,
+                "project_id": auth.project.id,
+                "model_alias": route.model_alias.alias,
+                "upstream_target_id": route.upstream.id,
+                "streaming": False,
+                "outcome": RequestOutcome.SUCCESS,
+                "usage": result.usage,
+            },
+            endpoint="anthropic_messages",
         )
-        await session.commit()
         return JSONResponse(jsonable_encoder(_plain(result.response)))
     except RateLimitExceeded as exc:
         await _raise_rate_limited_after_route(
-            session=session,
             request_id=request_id,
             started_at=started_at,
             endpoint_family=EndpointFamily.ANTHROPIC_MESSAGES,
@@ -585,7 +574,6 @@ async def anthropic_messages(
         )
     except Exception as exc:
         await _record_failure(
-            session=session,
             request_id=request_id,
             started_at=started_at,
             endpoint_family=EndpointFamily.ANTHROPIC_MESSAGES,
@@ -601,7 +589,6 @@ async def anthropic_messages(
 
 async def _stream_anthropic_response(
     *,
-    session: AsyncSession,
     redis: Redis,
     auth: AuthContext,
     route,
@@ -635,25 +622,26 @@ async def _stream_anthropic_response(
     finally:
         with suppress(Exception):
             await release_concurrency_slot(redis, concurrency_key)
-        await record_request_fact(
-            session,
-            request_id=request_id,
-            started_at=started_at,
-            ended_at=utcnow(),
-            endpoint_family=EndpointFamily.ANTHROPIC_MESSAGES,
-            subject_id=auth.subject.id,
-            subject_type=auth.subject.type,
-            project_id=auth.project.id,
-            model_alias=route.model_alias.alias,
-            upstream_target_id=route.upstream.id,
-            streaming=True,
-            outcome=outcome,
-            usage=usage,
-            first_token_at=first_token_at,
-            error_class=type(error).__name__ if error else None,
-            error_detail=str(error) if error else None,
+        await enqueue_fact(
+            {
+                "request_id": request_id,
+                "started_at": started_at,
+                "ended_at": utcnow(),
+                "endpoint_family": EndpointFamily.ANTHROPIC_MESSAGES,
+                "subject_id": auth.subject.id,
+                "subject_type": auth.subject.type,
+                "project_id": auth.project.id,
+                "model_alias": route.model_alias.alias,
+                "upstream_target_id": route.upstream.id,
+                "streaming": True,
+                "outcome": outcome,
+                "usage": usage,
+                "first_token_at": first_token_at,
+                "error_class": type(error).__name__ if error else None,
+                "error_detail": str(error) if error else None,
+            },
+            endpoint="stream_anthropic",
         )
-        await session.commit()
 
 
 @router.get("/v1/models")
@@ -698,7 +686,6 @@ async def _acquire_streaming_concurrency(
         )
     except RateLimitExceeded as exc:
         await _raise_rate_limited_after_route(
-            session=session,
             request_id=request_id,
             started_at=started_at,
             endpoint_family=endpoint_family,
@@ -711,7 +698,6 @@ async def _acquire_streaming_concurrency(
 
 async def _raise_rate_limited_after_route(
     *,
-    session: AsyncSession,
     request_id: str,
     started_at: datetime,
     endpoint_family: EndpointFamily,
@@ -721,7 +707,6 @@ async def _raise_rate_limited_after_route(
     exc: RateLimitExceeded,
 ) -> NoReturn:
     await _record_failure(
-        session=session,
         request_id=request_id,
         started_at=started_at,
         endpoint_family=endpoint_family,
@@ -739,7 +724,6 @@ async def _raise_rate_limited_after_route(
 
 async def _record_failure(
     *,
-    session: AsyncSession,
     request_id: str,
     started_at: datetime,
     endpoint_family: EndpointFamily,
@@ -750,24 +734,25 @@ async def _record_failure(
     outcome: RequestOutcome,
     exc: Exception,
 ) -> None:
-    await record_request_fact(
-        session,
-        request_id=request_id,
-        started_at=started_at,
-        ended_at=utcnow(),
-        endpoint_family=endpoint_family,
-        subject_id=auth.subject.id,
-        subject_type=auth.subject.type,
-        project_id=auth.project.id,
-        model_alias=model_alias,
-        upstream_target_id=upstream_target_id,
-        streaming=streaming,
-        outcome=outcome,
-        usage=None,
-        error_class=type(exc).__name__,
-        error_detail=str(exc),
+    await enqueue_fact(
+        {
+            "request_id": request_id,
+            "started_at": started_at,
+            "ended_at": utcnow(),
+            "endpoint_family": endpoint_family,
+            "subject_id": auth.subject.id,
+            "subject_type": auth.subject.type,
+            "project_id": auth.project.id,
+            "model_alias": model_alias,
+            "upstream_target_id": upstream_target_id,
+            "streaming": streaming,
+            "outcome": outcome,
+            "usage": None,
+            "error_class": type(exc).__name__,
+            "error_detail": str(exc),
+        },
+        endpoint=endpoint_family.value,
     )
-    await session.commit()
 
 
 def _outcome_for_http_exception(exc: HTTPException) -> RequestOutcome:
@@ -802,36 +787,35 @@ async def _authenticate_proxy_request(
 
 async def _record_unauthenticated_request(
     *,
-    session: AsyncSession,
     request_id: str,
     started_at: datetime,
     endpoint_family: EndpointFamily,
     model_alias: str | None,
     exc: HTTPException,
 ) -> None:
-    await record_request_fact(
-        session,
-        request_id=request_id,
-        started_at=started_at,
-        ended_at=utcnow(),
-        endpoint_family=endpoint_family,
-        subject_id=None,
-        subject_type=None,
-        project_id=None,
-        model_alias=model_alias,
-        upstream_target_id=None,
-        streaming=False,
-        outcome=RequestOutcome.AUTH_FAILURE,
-        usage=None,
-        error_class=str(exc.status_code),
-        error_detail=str(exc.detail),
+    await enqueue_fact(
+        {
+            "request_id": request_id,
+            "started_at": started_at,
+            "ended_at": utcnow(),
+            "endpoint_family": endpoint_family,
+            "subject_id": None,
+            "subject_type": None,
+            "project_id": None,
+            "model_alias": model_alias,
+            "upstream_target_id": None,
+            "streaming": False,
+            "outcome": RequestOutcome.AUTH_FAILURE,
+            "usage": None,
+            "error_class": str(exc.status_code),
+            "error_detail": str(exc.detail),
+        },
+        endpoint=endpoint_family.value,
     )
-    await session.commit()
 
 
 async def _record_rejected_request(
     *,
-    session: AsyncSession,
     request_id: str,
     started_at: datetime,
     endpoint_family: EndpointFamily,
@@ -840,21 +824,22 @@ async def _record_rejected_request(
     outcome: RequestOutcome,
     exc: HTTPException,
 ) -> None:
-    await record_request_fact(
-        session,
-        request_id=request_id,
-        started_at=started_at,
-        ended_at=utcnow(),
-        endpoint_family=endpoint_family,
-        subject_id=auth.subject.id,
-        subject_type=auth.subject.type,
-        project_id=auth.project.id,
-        model_alias=model_alias,
-        upstream_target_id=None,
-        streaming=False,
-        outcome=outcome,
-        usage=None,
-        error_class=str(exc.status_code),
-        error_detail=str(exc.detail),
+    await enqueue_fact(
+        {
+            "request_id": request_id,
+            "started_at": started_at,
+            "ended_at": utcnow(),
+            "endpoint_family": endpoint_family,
+            "subject_id": auth.subject.id,
+            "subject_type": auth.subject.type,
+            "project_id": auth.project.id,
+            "model_alias": model_alias,
+            "upstream_target_id": None,
+            "streaming": False,
+            "outcome": outcome,
+            "usage": None,
+            "error_class": str(exc.status_code),
+            "error_detail": str(exc.detail),
+        },
+        endpoint=endpoint_family.value,
     )
-    await session.commit()

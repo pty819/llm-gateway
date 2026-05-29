@@ -97,6 +97,14 @@ def verify_password(password: str, stored_hash: str) -> bool:
 async def authenticate_gateway_key(
     session: AsyncSession, raw_key: str
 ) -> AuthContext | None:
+    from llm_gateway.services.cache import _CACHE_MISS, auth_cache
+
+    cache_key = f"auth:{hash_gateway_key(raw_key)}"
+    cached = auth_cache.get(cache_key)
+    if cached is not None:
+        if cached is _CACHE_MISS:
+            return None
+        return cached
     prefix = key_prefix(raw_key)
     result = await session.execute(
         select(GatewayKey).where(col(GatewayKey.key_prefix) == prefix)
@@ -113,13 +121,18 @@ async def authenticate_gateway_key(
         subject = await session.get(Subject, candidate.subject_id)
         project = await session.get(Project, candidate.project_id)
         if not subject or not project:
+            auth_cache.set(cache_key, _CACHE_MISS)
             return None
         if (
             subject.state != ResourceState.ACTIVE
             or project.state != ResourceState.ACTIVE
         ):
+            auth_cache.set(cache_key, _CACHE_MISS)
             return None
-        return AuthContext(key=candidate, subject=subject, project=project)
+        ctx = AuthContext(key=candidate, subject=subject, project=project)
+        auth_cache.set(cache_key, ctx)
+        return ctx
+    auth_cache.set(cache_key, _CACHE_MISS)
     return None
 
 
