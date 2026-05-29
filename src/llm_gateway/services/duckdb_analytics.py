@@ -4,6 +4,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from threading import Lock
+from urllib.parse import urlparse
 from uuid import UUID
 
 import duckdb
@@ -12,25 +13,39 @@ from llm_gateway.core.config import Settings
 
 logger = logging.getLogger(__name__)
 
-_METRICS_SQL = """\
-COUNT(id) AS request_count,
-COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
-COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
-COALESCE(SUM(COALESCE(total_tokens, COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0), 0)), 0) AS total_tokens,
-COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
-COALESCE(SUM(CASE WHEN outcome ILIKE 'success' THEN 1 ELSE 0 END), 0) AS success_count,
-COALESCE(SUM(CASE WHEN NOT outcome ILIKE 'success' THEN 1 ELSE 0 END), 0) AS failure_count,
-ROUND(AVG(latency_ms), 2) AS avg_latency_ms,
-ROUND(AVG(time_to_first_token_ms), 2) AS avg_ttft_ms,
-ROUND(AVG(stream_duration_ms), 2) AS avg_stream_duration_ms,
-COALESCE(SUM(retry_count), 0) AS retry_count,
-COALESCE(SUM(fallback_count), 0) AS fallback_count,
-COALESCE(SUM(fallback_tokens), 0) AS fallback_tokens,
-ROUND(AVG(queue_ms), 2) AS avg_queue_ms,
-ROUND(AVG(prefill_ms), 2) AS avg_prefill_ms,
-ROUND(AVG(decode_ms), 2) AS avg_decode_ms,
-ROUND(AVG(kv_cache_usage), 2) AS avg_kv_cache_usage,
-COALESCE(SUM(CASE WHEN queue_ms IS NOT NULL OR prefill_ms IS NOT NULL OR decode_ms IS NOT NULL OR kv_cache_usage IS NOT NULL THEN 1 ELSE 0 END), 0) AS vllm_metrics_count"""
+_TABLE = "pg.public.request_facts"
+
+_SUCCESS_CASE = "CASE WHEN LOWER(rf.outcome) = 'success' THEN 1 ELSE 0 END"
+
+_METRICS_SQL = f"""\
+COUNT(rf.id) AS request_count,
+COALESCE(SUM(rf.prompt_tokens), 0) AS prompt_tokens,
+COALESCE(SUM(rf.completion_tokens), 0) AS completion_tokens,
+COALESCE(SUM(COALESCE(rf.total_tokens, COALESCE(rf.prompt_tokens, 0) + COALESCE(rf.completion_tokens), 0)), 0) AS total_tokens,
+COALESCE(SUM(rf.cached_tokens), 0) AS cached_tokens,
+COALESCE(SUM({_SUCCESS_CASE}), 0) AS success_count,
+COALESCE(SUM(CASE WHEN LOWER(rf.outcome) != 'success' THEN 1 ELSE 0 END), 0) AS failure_count,
+ROUND(AVG(rf.latency_ms), 2) AS avg_latency_ms,
+ROUND(AVG(rf.time_to_first_token_ms), 2) AS avg_ttft_ms,
+ROUND(AVG(rf.stream_duration_ms), 2) AS avg_stream_duration_ms,
+COALESCE(SUM(rf.retry_count), 0) AS retry_count,
+COALESCE(SUM(rf.fallback_count), 0) AS fallback_count,
+COALESCE(SUM(rf.fallback_tokens), 0) AS fallback_tokens,
+ROUND(AVG(rf.queue_ms), 2) AS avg_queue_ms,
+ROUND(AVG(rf.prefill_ms), 2) AS avg_prefill_ms,
+ROUND(AVG(rf.decode_ms), 2) AS avg_decode_ms,
+ROUND(AVG(rf.kv_cache_usage), 2) AS avg_kv_cache_usage,
+COALESCE(SUM(CASE WHEN rf.queue_ms IS NOT NULL OR rf.prefill_ms IS NOT NULL OR rf.decode_ms IS NOT NULL OR rf.kv_cache_usage IS NOT NULL THEN 1 ELSE 0 END), 0) AS vllm_metrics_count"""
+
+_CORE_METRICS_SQL = f"""\
+COUNT(rf.id) AS request_count,
+COALESCE(SUM(rf.prompt_tokens), 0) AS prompt_tokens,
+COALESCE(SUM(rf.completion_tokens), 0) AS completion_tokens,
+COALESCE(SUM(COALESCE(rf.total_tokens, COALESCE(rf.prompt_tokens, 0) + COALESCE(rf.completion_tokens), 0)), 0) AS total_tokens,
+COALESCE(SUM({_SUCCESS_CASE}), 0) AS success_count,
+COALESCE(SUM(CASE WHEN LOWER(rf.outcome) != 'success' THEN 1 ELSE 0 END), 0) AS failure_count"""
+
+_VALID_BUCKETS = frozenset({"minute", "hour", "day", "week", "month", "year", "quarter"})
 
 
 def _build_filters(
@@ -60,40 +75,71 @@ def _build_filters(
     return clauses, params
 
 
-def _to_libpg_dsn(database_url: str) -> str:
-    """Convert a SQLAlchemy asyncpg URL to a libpq-compatible connection string."""
-    url = database_url
-    if "+" in url:
-        url = url.replace("+asyncpg", "")
-    return url
+def _where(clauses: list[str]) -> str:
+    return f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+
+def _parse_pg_dsn(database_url: str) -> tuple[str, str, int, str, str]:
+    """Parse a SQLAlchemy database URL into (host, database, port, user, password)."""
+    parsed = urlparse(database_url)
+    scheme = parsed.scheme.split("+")[0]
+    if scheme not in ("postgresql", "postgres"):
+        raise ValueError(f"Expected postgresql:// DSN, got {parsed.scheme}://")
+    return (
+        parsed.hostname or "localhost",
+        parsed.path.lstrip("/") or "postgres",
+        parsed.port or 5432,
+        parsed.username or "",
+        parsed.password or "",
+    )
+
+
+def _sql_escape(value: str) -> str:
+    return value.replace("'", "''")
 
 
 class DuckDBAnalytics:
     def __init__(self, settings: Settings) -> None:
         self._lock = Lock()
-        dsn = _to_libpg_dsn(settings.database_url)
-        self._con = duckdb.connect()
-        self._con.execute("INSTALL postgres")
-        self._con.execute("LOAD postgres")
-        self._con.execute(
-            f"ATTACH '{dsn}' AS pg (TYPE postgres, READ_ONLY)"
-        )
-        self._con.execute("SET pg_connection_limit=8")
-        logger.info("DuckDB analytics attached to PostgreSQL at %s", dsn.split("@")[-1] if "@" in dsn else dsn)
+        self._closed = False
+        host, database, port, user, password = _parse_pg_dsn(settings.database_url)
+        display = f"{host}:{port}/{database}"
+        try:
+            self._con = duckdb.connect()
+            self._con.execute("INSTALL postgres")
+            self._con.execute("LOAD postgres")
+            self._con.execute(
+                f"CREATE SECRET pg_secret (TYPE postgres,"
+                f" HOST '{_sql_escape(host)}',"
+                f" PORT {port},"
+                f" DATABASE '{_sql_escape(database)}',"
+                f" USER '{_sql_escape(user)}',"
+                f" PASSWORD '{_sql_escape(password)}')"
+            )
+            self._con.execute("ATTACH '' AS pg (TYPE postgres, READ_ONLY, SECRET pg_secret)")
+            self._con.execute("SET pg_connection_limit=8")
+        except Exception:
+            self._con.close()
+            raise
+        logger.info("DuckDB analytics attached to PostgreSQL at %s", display)
 
     def close(self) -> None:
-        try:
-            self._con.close()
-        except Exception:
-            pass
+        with self._lock:
+            self._closed = True
+            try:
+                self._con.close()
+            except Exception as exc:
+                logger.debug("Error closing DuckDB connection: %s", exc)
 
     def _query(self, sql: str, params: list[object] | None = None) -> list[dict]:
         with self._lock:
+            if self._closed:
+                raise RuntimeError("DuckDB analytics connection closed")
             result = self._con.execute(sql, params or [])
             columns = [desc[0] for desc in result.description]
             rows = result.fetchall()
         return [
-            {k: _serialize_value(k, v) for k, v in zip(columns, row)}
+            {k: _serialize_value(v) for k, v in zip(columns, row)}
             for row in rows
         ]
 
@@ -109,8 +155,7 @@ class DuckDBAnalytics:
         project_id: UUID | None = None,
     ) -> dict | None:
         clauses, params = _build_filters(start, end, model, subject_id, project_id)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        sql = f"SELECT {_METRICS_SQL} FROM pg.public.request_facts {where}"
+        sql = f"SELECT {_METRICS_SQL} FROM {_TABLE} rf {_where(clauses)}"
         rows = await self.query(sql, params)
         if not rows or rows[0]["request_count"] == 0:
             return None
@@ -126,15 +171,13 @@ class DuckDBAnalytics:
         limit: int | None = None,
     ) -> list[dict]:
         clauses, params = _build_filters(start, end, model, subject_id, project_id)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        limit_clause = f"\nLIMIT {int(limit)}" if limit is not None else ""
         sql = f"""\
 SELECT model_alias, subject_id, project_id,
        {_METRICS_SQL}
-FROM pg.public.request_facts {where}
-GROUP BY model_alias, subject_id, project_id
-ORDER BY total_tokens DESC, request_count DESC"""
-        if limit is not None:
-            sql += f"\nLIMIT {int(limit)}"
+FROM {_TABLE} rf {_where(clauses)}
+GROUP BY rf.model_alias, rf.subject_id, rf.project_id
+ORDER BY total_tokens DESC, request_count DESC{limit_clause}"""
         return await self.query(sql, params)
 
     async def usage_ranking(
@@ -146,16 +189,17 @@ ORDER BY total_tokens DESC, request_count DESC"""
     ) -> list[dict]:
         clauses, params = _build_filters(start, end, model, None, None)
         clauses.append("rf.subject_id IS NOT NULL")
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = f"""\
 SELECT rf.subject_id, s.login_username, COALESCE(s.name, '无用户') AS subject_name,
        COUNT(rf.id) AS request_count,
        COALESCE(SUM(rf.prompt_tokens), 0) AS prompt_tokens,
        COALESCE(SUM(rf.completion_tokens), 0) AS completion_tokens,
-       COALESCE(SUM(COALESCE(rf.total_tokens, COALESCE(rf.prompt_tokens, 0) + COALESCE(rf.completion_tokens, 0), 0)), 0) AS total_tokens
-FROM pg.public.request_facts rf
+       COALESCE(SUM(COALESCE(rf.total_tokens, COALESCE(rf.prompt_tokens, 0) + COALESCE(rf.completion_tokens), 0)), 0) AS total_tokens,
+       COALESCE(SUM(CASE WHEN LOWER(rf.outcome) = 'success' THEN 1 ELSE 0 END), 0) AS success_count,
+       COALESCE(SUM(CASE WHEN LOWER(rf.outcome) != 'success' THEN 1 ELSE 0 END), 0) AS failure_count
+FROM {_TABLE} rf
 LEFT JOIN pg.public.subjects s ON rf.subject_id = s.id
-{where}
+{_where(clauses)}
 GROUP BY rf.subject_id, s.login_username, s.name
 ORDER BY total_tokens DESC, request_count DESC
 LIMIT {int(limit)}"""
@@ -170,24 +214,19 @@ LIMIT {int(limit)}"""
         subject_id: UUID | None = None,
         project_id: UUID | None = None,
     ) -> list[dict]:
+        if bucket not in _VALID_BUCKETS:
+            raise ValueError(f"Invalid bucket: {bucket!r}")
         clauses, params = _build_filters(start, end, model, subject_id, project_id)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = f"""\
-SELECT date_trunc('{bucket}', started_at) AS bucket_start,
+SELECT date_trunc('{bucket}', rf.started_at) AS bucket_start,
        {_METRICS_SQL}
-FROM pg.public.request_facts {where}
+FROM {_TABLE} rf {_where(clauses)}
 GROUP BY bucket_start
 ORDER BY bucket_start DESC"""
         rows = await self.query(sql, params)
         for row in rows:
             if row.get("bucket_start") is not None:
-                bs = row["bucket_start"]
-                if isinstance(bs, datetime):
-                    if bs.tzinfo is None:
-                        bs = bs.replace(tzinfo=timezone.utc)
-                    row["bucket_start"] = bs.isoformat()
-                elif isinstance(bs, str) and "+" not in bs and bs.endswith("Z") is False:
-                    row["bucket_start"] = bs + "+00:00"
+                row["bucket_start"] = _ensure_utc_iso(row["bucket_start"])
         return rows
 
     async def drilldown(
@@ -201,14 +240,13 @@ ORDER BY bucket_start DESC"""
         limit: int = 100,
     ) -> list[dict]:
         clauses, params = _build_filters(start, end, model, subject_id, project_id)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         dim_sql, join_sql, group_sql = _dimension_sql(dimension)
         sql = f"""\
 SELECT {dim_sql},
        {_METRICS_SQL}
-FROM pg.public.request_facts rf
+FROM {_TABLE} rf
 {join_sql}
-{where}
+{_where(clauses)}
 GROUP BY {group_sql}
 ORDER BY request_count DESC
 LIMIT {int(limit)}"""
@@ -225,15 +263,7 @@ LIMIT {int(limit)}"""
         end: datetime | None = None,
     ) -> dict:
         clauses, params = _build_filters(start, end, None, subject_id, None)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        sql = f"""\
-SELECT COUNT(id) AS request_count,
-       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
-       COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
-       COALESCE(SUM(COALESCE(total_tokens, COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0), 0)), 0) AS total_tokens,
-       COALESCE(SUM(CASE WHEN outcome ILIKE 'success' THEN 1 ELSE 0 END), 0) AS success_count,
-       COALESCE(SUM(CASE WHEN NOT outcome ILIKE 'success' THEN 1 ELSE 0 END), 0) AS failure_count
-FROM pg.public.request_facts {where}"""
+        sql = f"SELECT {_CORE_METRICS_SQL} FROM {_TABLE} rf {_where(clauses)}"
         rows = await self.query(sql, params)
         return rows[0] if rows else {
             "request_count": 0, "prompt_tokens": 0, "completion_tokens": 0,
@@ -279,14 +309,22 @@ def _dimension_sql(dimension: str) -> tuple[str, str, str]:
     )
 
 
-def _serialize_value(key: str, value: object) -> object:
+def _serialize_value(value: object) -> object:
     if isinstance(value, UUID):
         return str(value)
     if isinstance(value, datetime):
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.isoformat()
+        return _ensure_utc_iso(value)
     return value
+
+
+def _ensure_utc_iso(value: datetime | str) -> str:
+    if isinstance(value, str):
+        if "+" not in value and not value.endswith("Z"):
+            return value + "+00:00"
+        return value
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
 
 
 _analytics: DuckDBAnalytics | None = None
