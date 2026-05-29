@@ -17,10 +17,6 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://llm_gateway:llm_gateway@localhost:5432/llm_gateway",
         alias="LLM_GATEWAY_DATABASE_URL",
     )
-    analytics_database_url: str = Field(
-        default="",
-        alias="LLM_GATEWAY_ANALYTICS_DATABASE_URL",
-    )
     redis_url: str = Field(
         default="redis://localhost:6379/0", alias="LLM_GATEWAY_REDIS_URL"
     )

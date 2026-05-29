@@ -5,7 +5,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from llm_gateway.core.config import Settings, get_settings
-from llm_gateway.db.session import get_analytics_session, get_session
+from llm_gateway.db.session import get_session
 from llm_gateway.services.rate_limit import redis_client
 from llm_gateway.services.security import (
     AuthContext,
@@ -18,11 +18,6 @@ from llm_gateway.services.security import (
 
 async def session_dep() -> AsyncGenerator[AsyncSession, None]:
     async for session in get_session():
-        yield session
-
-
-async def analytics_session_dep() -> AsyncGenerator[AsyncSession, None]:
-    async for session in get_analytics_session():
         yield session
 
 

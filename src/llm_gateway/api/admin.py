@@ -12,7 +12,7 @@ from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
-from llm_gateway.api.deps import admin_dep, analytics_session_dep, session_dep, settings_dep
+from llm_gateway.api.deps import admin_dep, session_dep, settings_dep
 from llm_gateway.core.config import Settings
 from llm_gateway.db.models import (
     AuditEvent,
@@ -1073,7 +1073,7 @@ async def usage_summary(
     subject_id: UUID | None = None,
     project_id: UUID | None = None,
     limit: int | None = Query(default=None, ge=1, le=500),
-    session: AsyncSession = Depends(analytics_session_dep),
+    session: AsyncSession = Depends(session_dep),
 ):
     filters = []
     if start:
@@ -1139,7 +1139,7 @@ async def usage_totals(
     model: str | None = None,
     subject_id: UUID | None = None,
     project_id: UUID | None = None,
-    session: AsyncSession = Depends(analytics_session_dep),
+    session: AsyncSession = Depends(session_dep),
 ):
     filters = _analytics_filters(
         start=start, end=end, model=model, subject_id=subject_id, project_id=project_id
@@ -1269,7 +1269,7 @@ async def analytics_time_buckets(
     model: str | None = None,
     subject_id: UUID | None = None,
     project_id: UUID | None = None,
-    session: AsyncSession = Depends(analytics_session_dep),
+    session: AsyncSession = Depends(session_dep),
 ):
     bucket_start = func.date_trunc(bucket, col(RequestFact.started_at)).label(
         "bucket_start"
@@ -1301,7 +1301,7 @@ async def analytics_drilldown(
     subject_id: UUID | None = None,
     project_id: UUID | None = None,
     limit: int = Query(default=100, ge=1, le=500),
-    session: AsyncSession = Depends(analytics_session_dep),
+    session: AsyncSession = Depends(session_dep),
 ):
     dimension_id, dimension_label, joins, groups = _analytics_dimension(dimension)
     stmt = (
