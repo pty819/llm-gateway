@@ -101,7 +101,9 @@ async def subject_can_use_model(
 ) -> bool:
     from llm_gateway.services.cache import _CACHE_MISS, policy_cache
 
-    cache_key = f"entitle:{auth.key.id}:{auth.subject.id}:{auth.project.id}:{model_alias_id}"
+    cache_key = (
+        f"entitle:{auth.key.id}:{auth.subject.id}:{auth.project.id}:{model_alias_id}"
+    )
     cached = policy_cache.get(cache_key)
     if cached is not None:
         return cached is not _CACHE_MISS

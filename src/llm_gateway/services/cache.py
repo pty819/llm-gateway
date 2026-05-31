@@ -7,7 +7,6 @@ _CACHE_MISS = object()
 
 
 class TTLCache:
-
     def __init__(self, ttl: float = 30.0, max_size: int = 4096):
         self._ttl = ttl
         self._max_size = max_size

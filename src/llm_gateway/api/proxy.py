@@ -14,10 +14,10 @@ from llm_gateway.api.deps import (
     bearer_token,
     client_ip_dep,
     redis_dep,
-    session_dep,
     settings_dep,
 )
 from llm_gateway.core.config import Settings
+from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.db.models import EndpointFamily, RequestOutcome, utcnow
 from llm_gateway.services.facts_queue import enqueue_fact
 from llm_gateway.services.litellm_client import (
@@ -103,10 +103,77 @@ async def _prepare(
         ) from exc
 
 
+async def _resolve_proxy_context(
+    *,
+    request: Request,
+    redis: Redis,
+    settings: Settings,
+    body: dict[str, Any],
+    client_ip: str,
+    request_id: str,
+    started_at: datetime,
+    endpoint_family: EndpointFamily,
+):
+    async with AsyncSessionLocal() as session:
+        try:
+            auth = await _authenticate_proxy_request(request, session)
+        except HTTPException as exc:
+            await _record_unauthenticated_request(
+                request_id=request_id,
+                started_at=started_at,
+                endpoint_family=endpoint_family,
+                model_alias=body.get("model")
+                if isinstance(body.get("model"), str)
+                else None,
+                exc=exc,
+            )
+            await session.rollback()
+            raise
+
+        try:
+            route, rate_policy = await _prepare(
+                session=session,
+                redis=redis,
+                settings=settings,
+                auth=auth,
+                body=body,
+                client_ip=client_ip,
+            )
+        except HTTPException as exc:
+            await _record_rejected_request(
+                request_id=request_id,
+                started_at=started_at,
+                endpoint_family=endpoint_family,
+                auth=auth,
+                model_alias=body.get("model")
+                if isinstance(body.get("model"), str)
+                else None,
+                outcome=_outcome_for_http_exception(exc),
+                exc=exc,
+            )
+            await session.rollback()
+            raise
+
+        _detach_proxy_context(session, auth, route)
+        await session.rollback()
+        return auth, route, rate_policy
+
+
+def _detach_proxy_context(session: AsyncSession, auth: AuthContext, route) -> None:
+    for item in (
+        auth.key,
+        auth.subject,
+        auth.project,
+        route.model_alias,
+        route.upstream,
+    ):
+        with suppress(Exception):
+            session.expunge(item)
+
+
 @router.post("/v1/chat/completions")
 async def openai_chat_completions(
     request: Request,
-    session: AsyncSession = Depends(session_dep),
     redis: Redis = Depends(redis_dep),
     settings: Settings = Depends(settings_dep),
     client_ip: str = Depends(client_ip_dep),
@@ -115,45 +182,19 @@ async def openai_chat_completions(
     streaming = bool(body.get("stream"))
     started_at = utcnow()
     request_id = request.headers.get("x-request-id") or str(uuid4())
-    try:
-        auth = await _authenticate_proxy_request(request, session)
-    except HTTPException as exc:
-        await _record_unauthenticated_request(
-            request_id=request_id,
-            started_at=started_at,
-            endpoint_family=EndpointFamily.OPENAI_CHAT,
-            model_alias=body.get("model")
-            if isinstance(body.get("model"), str)
-            else None,
-            exc=exc,
-        )
-        raise
-    try:
-        route, rate_policy = await _prepare(
-            session=session,
-            redis=redis,
-            settings=settings,
-            auth=auth,
-            body=body,
-            client_ip=client_ip,
-        )
-    except HTTPException as exc:
-        await _record_rejected_request(
-            request_id=request_id,
-            started_at=started_at,
-            endpoint_family=EndpointFamily.OPENAI_CHAT,
-            auth=auth,
-            model_alias=body.get("model")
-            if isinstance(body.get("model"), str)
-            else None,
-            outcome=_outcome_for_http_exception(exc),
-            exc=exc,
-        )
-        raise
+    auth, route, rate_policy = await _resolve_proxy_context(
+        request=request,
+        redis=redis,
+        settings=settings,
+        body=body,
+        client_ip=client_ip,
+        request_id=request_id,
+        started_at=started_at,
+        endpoint_family=EndpointFamily.OPENAI_CHAT,
+    )
 
     if streaming:
         concurrency_key = await _acquire_streaming_concurrency(
-            session=session,
             redis=redis,
             auth=auth,
             route=route,
@@ -287,7 +328,6 @@ async def _stream_openai_response(
 @router.post("/v1/responses")
 async def openai_responses(
     request: Request,
-    session: AsyncSession = Depends(session_dep),
     redis: Redis = Depends(redis_dep),
     settings: Settings = Depends(settings_dep),
     client_ip: str = Depends(client_ip_dep),
@@ -296,45 +336,19 @@ async def openai_responses(
     streaming = bool(body.get("stream"))
     started_at = utcnow()
     request_id = request.headers.get("x-request-id") or str(uuid4())
-    try:
-        auth = await _authenticate_proxy_request(request, session)
-    except HTTPException as exc:
-        await _record_unauthenticated_request(
-            request_id=request_id,
-            started_at=started_at,
-            endpoint_family=EndpointFamily.OPENAI_RESPONSES,
-            model_alias=body.get("model")
-            if isinstance(body.get("model"), str)
-            else None,
-            exc=exc,
-        )
-        raise
-    try:
-        route, rate_policy = await _prepare(
-            session=session,
-            redis=redis,
-            settings=settings,
-            auth=auth,
-            body=body,
-            client_ip=client_ip,
-        )
-    except HTTPException as exc:
-        await _record_rejected_request(
-            request_id=request_id,
-            started_at=started_at,
-            endpoint_family=EndpointFamily.OPENAI_RESPONSES,
-            auth=auth,
-            model_alias=body.get("model")
-            if isinstance(body.get("model"), str)
-            else None,
-            outcome=_outcome_for_http_exception(exc),
-            exc=exc,
-        )
-        raise
+    auth, route, rate_policy = await _resolve_proxy_context(
+        request=request,
+        redis=redis,
+        settings=settings,
+        body=body,
+        client_ip=client_ip,
+        request_id=request_id,
+        started_at=started_at,
+        endpoint_family=EndpointFamily.OPENAI_RESPONSES,
+    )
 
     if streaming:
         concurrency_key = await _acquire_streaming_concurrency(
-            session=session,
             redis=redis,
             auth=auth,
             route=route,
@@ -468,7 +482,6 @@ async def _stream_responses(
 @router.post("/v1/messages")
 async def anthropic_messages(
     request: Request,
-    session: AsyncSession = Depends(session_dep),
     redis: Redis = Depends(redis_dep),
     settings: Settings = Depends(settings_dep),
     client_ip: str = Depends(client_ip_dep),
@@ -477,45 +490,19 @@ async def anthropic_messages(
     streaming = bool(body.get("stream"))
     started_at = utcnow()
     request_id = request.headers.get("x-request-id") or str(uuid4())
-    try:
-        auth = await _authenticate_proxy_request(request, session)
-    except HTTPException as exc:
-        await _record_unauthenticated_request(
-            request_id=request_id,
-            started_at=started_at,
-            endpoint_family=EndpointFamily.ANTHROPIC_MESSAGES,
-            model_alias=body.get("model")
-            if isinstance(body.get("model"), str)
-            else None,
-            exc=exc,
-        )
-        raise
-    try:
-        route, rate_policy = await _prepare(
-            session=session,
-            redis=redis,
-            settings=settings,
-            auth=auth,
-            body=body,
-            client_ip=client_ip,
-        )
-    except HTTPException as exc:
-        await _record_rejected_request(
-            request_id=request_id,
-            started_at=started_at,
-            endpoint_family=EndpointFamily.ANTHROPIC_MESSAGES,
-            auth=auth,
-            model_alias=body.get("model")
-            if isinstance(body.get("model"), str)
-            else None,
-            outcome=_outcome_for_http_exception(exc),
-            exc=exc,
-        )
-        raise
+    auth, route, rate_policy = await _resolve_proxy_context(
+        request=request,
+        redis=redis,
+        settings=settings,
+        body=body,
+        client_ip=client_ip,
+        request_id=request_id,
+        started_at=started_at,
+        endpoint_family=EndpointFamily.ANTHROPIC_MESSAGES,
+    )
 
     if streaming:
         concurrency_key = await _acquire_streaming_concurrency(
-            session=session,
             redis=redis,
             auth=auth,
             route=route,
@@ -647,16 +634,19 @@ async def _stream_anthropic_response(
 @router.get("/v1/models")
 async def list_models(
     request: Request,
-    session: AsyncSession = Depends(session_dep),
 ):
     raw_key = bearer_token(request)
-    auth = await authenticate_gateway_key(session, raw_key)
-    if not auth:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_gateway_key"
-        )
+    async with AsyncSessionLocal() as session:
+        auth = await authenticate_gateway_key(session, raw_key)
+        if not auth:
+            await session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_gateway_key"
+            )
 
-    rows = await list_accessible_model_aliases(session, auth=auth)
+        rows = await list_accessible_model_aliases(session, auth=auth)
+        await session.rollback()
+
     now = int(utcnow().timestamp())
     return {
         "object": "list",
@@ -669,7 +659,6 @@ async def list_models(
 
 async def _acquire_streaming_concurrency(
     *,
-    session: AsyncSession,
     redis: Redis,
     auth: AuthContext,
     route,

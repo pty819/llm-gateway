@@ -1,4 +1,5 @@
 from datetime import datetime
+from collections.abc import Sequence
 from typing import Any, Literal
 from uuid import UUID
 
@@ -8,8 +9,7 @@ from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
-from llm_gateway.api.deps import admin_dep, session_dep, settings_dep
-from llm_gateway.core.config import Settings
+from llm_gateway.api.deps import admin_dep, session_dep
 from llm_gateway.db.models import (
     AuditEvent,
     GatewayKey,
@@ -184,7 +184,6 @@ class RouterCommandConfigUpdate(BaseModel):
     extra_args: dict[str, Any] | None = None
 
 
-
 class RatePolicyCreate(BaseModel):
     scope: str
     scope_id: UUID
@@ -248,8 +247,20 @@ async def list_subjects(
                 col(Subject.login_username).ilike(needle),
             )
         )
-    total = await _count_rows(session, select(func.count()).select_from(stmt.subquery()))
-    rows = (await session.execute(stmt.order_by(col(Subject.created_at).desc()).offset(offset).limit(limit))).scalars().all()
+    total = await _count_rows(
+        session, select(func.count()).select_from(stmt.subquery())
+    )
+    rows = (
+        (
+            await session.execute(
+                stmt.order_by(col(Subject.created_at).desc())
+                .offset(offset)
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
     return _paginated(rows, total, limit, offset)
 
 
@@ -484,7 +495,9 @@ async def list_project_memberships(
     session: AsyncSession = Depends(session_dep),
 ):
     stmt = select(ProjectMembership).order_by(col(ProjectMembership.created_at).desc())
-    total = await _count_rows(session, select(func.count()).select_from(ProjectMembership))
+    total = await _count_rows(
+        session, select(func.count()).select_from(ProjectMembership)
+    )
     rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
     return _paginated(rows, total, limit, offset)
 
@@ -523,7 +536,9 @@ async def list_gateway_keys(
     stmt = select(GatewayKey).order_by(col(GatewayKey.created_at).desc())
     total = await _count_rows(session, select(func.count()).select_from(GatewayKey))
     rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
-    return _paginated([_redact_gateway_key(item) for item in rows], total, limit, offset)
+    return _paginated(
+        [_redact_gateway_key(item) for item in rows], total, limit, offset
+    )
 
 
 @router.patch("/gateway-keys/{gateway_key_id}/state")
@@ -1071,8 +1086,12 @@ async def usage_summary(
     limit: int | None = Query(default=None, ge=1, le=500),
 ):
     return await get_analytics().usage_summary(
-        start=start, end=end, model=model,
-        subject_id=subject_id, project_id=project_id, limit=limit,
+        start=start,
+        end=end,
+        model=model,
+        subject_id=subject_id,
+        project_id=project_id,
+        limit=limit,
     )
 
 
@@ -1085,8 +1104,11 @@ async def usage_totals(
     project_id: UUID | None = None,
 ):
     return await get_analytics().usage_totals(
-        start=start, end=end, model=model,
-        subject_id=subject_id, project_id=project_id,
+        start=start,
+        end=end,
+        model=model,
+        subject_id=subject_id,
+        project_id=project_id,
     )
 
 
@@ -1098,7 +1120,10 @@ async def usage_ranking(
     limit: int = Query(default=20, ge=1, le=100),
 ):
     return await get_analytics().usage_ranking(
-        start=start, end=end, model=model, limit=limit,
+        start=start,
+        end=end,
+        model=model,
+        limit=limit,
     )
 
 
@@ -1118,8 +1143,12 @@ async def analytics_time_buckets(
     project_id: UUID | None = None,
 ):
     return await get_analytics().time_buckets(
-        bucket=bucket, start=start, end=end, model=model,
-        subject_id=subject_id, project_id=project_id,
+        bucket=bucket,
+        start=start,
+        end=end,
+        model=model,
+        subject_id=subject_id,
+        project_id=project_id,
     )
 
 
@@ -1134,8 +1163,13 @@ async def analytics_drilldown(
     limit: int = Query(default=100, ge=1, le=500),
 ):
     return await get_analytics().drilldown(
-        dimension=dimension, start=start, end=end, model=model,
-        subject_id=subject_id, project_id=project_id, limit=limit,
+        dimension=dimension,
+        start=start,
+        end=end,
+        model=model,
+        subject_id=subject_id,
+        project_id=project_id,
+        limit=limit,
     )
 
 
@@ -1248,7 +1282,7 @@ def _apply_patch(target, payload: BaseModel) -> None:
     target.updated_at = utcnow()
 
 
-def _paginated(items: list, total: int, limit: int | None, offset: int) -> dict:
+def _paginated(items: Sequence, total: int, limit: int | None, offset: int) -> dict:
     return {
         "items": items,
         "total": total,

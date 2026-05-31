@@ -45,7 +45,9 @@ COALESCE(SUM(COALESCE(rf.total_tokens, COALESCE(rf.prompt_tokens, 0) + COALESCE(
 COALESCE(SUM({_SUCCESS_CASE}), 0) AS success_count,
 COALESCE(SUM(CASE WHEN LOWER(rf.outcome) != 'success' THEN 1 ELSE 0 END), 0) AS failure_count"""
 
-_VALID_BUCKETS = frozenset({"minute", "hour", "day", "week", "month", "year", "quarter"})
+_VALID_BUCKETS = frozenset(
+    {"minute", "hour", "day", "week", "month", "year", "quarter"}
+)
 
 
 def _build_filters(
@@ -116,7 +118,9 @@ class DuckDBAnalytics:
                 f" USER '{_sql_escape(user)}',"
                 f" PASSWORD '{_sql_escape(password)}')"
             )
-            self._con.execute("ATTACH '' AS pg (TYPE postgres, READ_ONLY, SECRET pg_secret)")
+            self._con.execute(
+                "ATTACH '' AS pg (TYPE postgres, READ_ONLY, SECRET pg_secret)"
+            )
             self._con.execute("SET pg_connection_limit=8")
         except Exception:
             self._con.close()
@@ -138,10 +142,7 @@ class DuckDBAnalytics:
             result = self._con.execute(sql, params or [])
             columns = [desc[0] for desc in result.description]
             rows = result.fetchall()
-        return [
-            {k: _serialize_value(v) for k, v in zip(columns, row)}
-            for row in rows
-        ]
+        return [{k: _serialize_value(v) for k, v in zip(columns, row)} for row in rows]
 
     async def query(self, sql: str, params: list[object] | None = None) -> list[dict]:
         return await asyncio.to_thread(self._query, sql, params)
@@ -265,10 +266,18 @@ LIMIT {int(limit)}"""
         clauses, params = _build_filters(start, end, None, subject_id, None)
         sql = f"SELECT {_CORE_METRICS_SQL} FROM {_TABLE} rf {_where(clauses)}"
         rows = await self.query(sql, params)
-        return rows[0] if rows else {
-            "request_count": 0, "prompt_tokens": 0, "completion_tokens": 0,
-            "total_tokens": 0, "success_count": 0, "failure_count": 0,
-        }
+        return (
+            rows[0]
+            if rows
+            else {
+                "request_count": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "success_count": 0,
+                "failure_count": 0,
+            }
+        )
 
 
 def _dimension_sql(dimension: str) -> tuple[str, str, str]:

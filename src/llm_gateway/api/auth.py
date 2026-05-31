@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -188,7 +189,9 @@ async def own_usage_summary(
         end = utcnow()
         start = end - timedelta(days=30)
     row = await get_analytics().own_usage_summary(
-        subject_id=context.subject.id, start=start, end=end,
+        subject_id=context.subject.id,
+        start=start,
+        end=end,
     )
     return {
         "start": start,
