@@ -11,6 +11,7 @@ from llm_gateway.db.models import (
     RequestOutcome,
     UsageSource,
 )
+from llm_gateway.services.litellm_client import LiteLLMCallResult
 
 from conftest import fetch_request_fact
 
@@ -617,6 +618,71 @@ async def test_model_ip_allowlist_denies_disallowed_client(
     fact = await fetch_request_fact(request_id)
     assert fact.outcome == RequestOutcome.POLICY_DENIAL
     assert fact.upstream_target_id is None
+
+
+async def test_model_ip_allowlist_accepts_forwarded_client_from_trusted_vite_proxy(
+    client, gateway_fixture, monkeypatch
+):
+    from llm_gateway.api.deps import settings_dep
+    from llm_gateway.core.config import Settings
+    from llm_gateway.db.models import IPPolicyMode, ModelAlias
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.main import app
+
+    async def fake_completion_once(*, model_alias, upstream, body):
+        return LiteLLMCallResult(
+            response={
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "choices": [
+                    {"index": 0, "message": {"role": "assistant", "content": "ok"}}
+                ],
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 1,
+                    "total_tokens": 4,
+                },
+            },
+            usage={"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+        )
+
+    monkeypatch.setattr("llm_gateway.api.proxy.completion_once", fake_completion_once)
+
+    def trusted_proxy_settings() -> Settings:
+        settings = Settings()
+        settings.trusted_proxy_headers = True
+        settings.trusted_proxy_cidrs = "127.0.0.0/8,::1/128"
+        return settings
+
+    app.dependency_overrides[settings_dep] = trusted_proxy_settings
+
+    request_id = f"pytest-ip-forwarded-allow-{uuid4()}"
+    async with AsyncSessionLocal() as session:
+        model_alias = await session.get(ModelAlias, gateway_fixture.model_alias_id)
+        assert model_alias is not None
+        model_alias.ip_policy_mode = IPPolicyMode.ALLOWLIST
+        model_alias.ip_allowlist_cidrs = ["10.21.48.65/32"]
+        await session.commit()
+
+    try:
+        response = await client.post(
+            "/v1/chat/completions",
+            headers={
+                **_auth_headers(gateway_fixture.raw_key, request_id),
+                "x-forwarded-for": "10.21.48.65, 127.0.0.1",
+            },
+            json={
+                "model": gateway_fixture.model_alias,
+                "messages": [{"role": "user", "content": "This should pass."}],
+                "max_tokens": 16,
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(settings_dep, None)
+
+    assert response.status_code == 200, response.text
+    fact = await fetch_request_fact(request_id)
+    assert fact.outcome == RequestOutcome.SUCCESS
 
 
 async def test_key_scoped_rate_policy_blocks_before_upstream(client, gateway_fixture):

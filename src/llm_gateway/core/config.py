@@ -9,6 +9,7 @@ class Settings(BaseSettings):
         env_file=(".env", ".env.local"),
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     app_name: str = "LLM Gateway"
@@ -22,6 +23,9 @@ class Settings(BaseSettings):
     )
     trusted_proxy_headers: bool = Field(
         default=False, alias="LLM_GATEWAY_TRUST_PROXY_HEADERS"
+    )
+    trusted_proxy_cidrs: str = Field(
+        default="127.0.0.0/8,::1/128", alias="LLM_GATEWAY_TRUST_PROXY_CIDRS"
     )
     rate_limit_fail_closed: bool = Field(
         default=True, alias="LLM_GATEWAY_RATE_LIMIT_FAIL_CLOSED"

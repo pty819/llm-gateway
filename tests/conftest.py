@@ -147,8 +147,16 @@ async def fetch_request_fact(request_id: str):
     from llm_gateway.db.session import AsyncSessionLocal
     from llm_gateway.services.facts_queue import drain_now
 
-    await drain_now()
-    await asyncio.sleep(0.05)
+    for _ in range(20):
+        await drain_now()
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(RequestFact).where(col(RequestFact.request_id) == request_id)
+            )
+            fact = result.scalar_one_or_none()
+            if fact is not None:
+                return fact
+        await asyncio.sleep(0.05)
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(RequestFact).where(col(RequestFact.request_id) == request_id)

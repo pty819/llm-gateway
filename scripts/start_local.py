@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import time
+from ipaddress import ip_address
 from pathlib import Path
 
 
@@ -37,6 +38,11 @@ def main() -> None:
             upgrade_cmd.append("--skip-frontend-install")
         run(upgrade_cmd, cwd=ROOT)
 
+    env = os.environ.copy()
+    env.setdefault("LLM_GATEWAY_TRUST_PROXY_HEADERS", "true")
+    env.setdefault("LLM_GATEWAY_TRUST_PROXY_CIDRS", _local_proxy_cidrs(args.host))
+    env.setdefault("LLM_GATEWAY_BACKEND_URL", f"http://{args.host}:{args.backend_port}")
+
     backend = subprocess.Popen(
         [
             "uv",
@@ -50,7 +56,7 @@ def main() -> None:
             "--reload",
         ],
         cwd=ROOT,
-        env=os.environ.copy(),
+        env=env,
     )
     frontend = subprocess.Popen(
         [
@@ -64,7 +70,7 @@ def main() -> None:
             str(args.frontend_port),
         ],
         cwd=FRONTEND,
-        env=os.environ.copy(),
+        env=env,
     )
     print(f"Backend:  http://{args.host}:{args.backend_port}")
     print(f"Frontend: http://{args.host}:{args.frontend_port}")
@@ -101,6 +107,17 @@ def stop_processes(processes: list[subprocess.Popen]) -> None:
             process.wait(timeout=8)
         except subprocess.TimeoutExpired:
             process.kill()
+
+
+def _local_proxy_cidrs(host: str) -> str:
+    cidrs = ["127.0.0.0/8", "::1/128"]
+    try:
+        parsed = ip_address(host)
+    except ValueError:
+        return ",".join(cidrs)
+    if not parsed.is_unspecified and not parsed.is_loopback:
+        cidrs.append(f"{parsed}/{parsed.max_prefixlen}")
+    return ",".join(cidrs)
 
 
 if __name__ == "__main__":

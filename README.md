@@ -47,6 +47,10 @@ LLM_GATEWAY_LITELLM_MODEL=openai/actual-upstream-model-name
 LLM_GATEWAY_ADMIN_TOKEN=dev-admin-token
 LLM_GATEWAY_BOOTSTRAP_ADMIN_USERNAME=admin
 LLM_GATEWAY_BOOTSTRAP_ADMIN_PASSWORD=dev-admin-password
+
+# Required when clients call the gateway through Vite or a reverse proxy.
+LLM_GATEWAY_TRUST_PROXY_HEADERS=true
+LLM_GATEWAY_TRUST_PROXY_CIDRS=127.0.0.0/8,::1/128
 ```
 
 `.env.local` must stay untracked because it contains upstream credentials.
@@ -88,6 +92,8 @@ For local development, one command can upgrade and start both backend and fronte
 uv run python scripts/start_local.py --host 127.0.0.1
 ```
 
+`start_local.py` automatically enables trusted proxy headers for the local Vite proxy, so model IP allowlists see the real browser client IP instead of Vite's backend connection address.
+
 On a LAN server, expose both services on the machine IP:
 
 ```bash
@@ -122,6 +128,16 @@ cd frontend
 npm install
 npm run dev -- --host 127.0.0.1 --port 5173
 ```
+
+If you start backend and frontend separately and clients call `/v1` through the Vite URL, start the backend with trusted proxy headers enabled:
+
+```bash
+LLM_GATEWAY_TRUST_PROXY_HEADERS=true \
+LLM_GATEWAY_TRUST_PROXY_CIDRS=127.0.0.0/8,::1/128 \
+uv run python main.py
+```
+
+For a LAN reverse proxy or a Vite process that reaches the backend through the server's LAN address, add that proxy IP as a `/32`, for example `127.0.0.0/8,::1/128,10.21.48.65/32`.
 
 Frontend default:
 

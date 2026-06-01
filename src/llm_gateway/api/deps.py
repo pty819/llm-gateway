@@ -1,4 +1,5 @@
 from collections.abc import AsyncGenerator
+from ipaddress import ip_address, ip_network
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from redis.asyncio import Redis
@@ -30,16 +31,37 @@ def redis_dep() -> Redis:
 
 
 def client_ip_dep(request: Request, settings: Settings = Depends(settings_dep)) -> str:
-    if settings.trusted_proxy_headers:
+    direct_client_ip = request.client.host if request.client else ""
+    if settings.trusted_proxy_headers and _trusted_proxy_source(
+        direct_client_ip, settings.trusted_proxy_cidrs
+    ):
         forwarded = request.headers.get("x-forwarded-for")
         if forwarded:
             return forwarded.split(",", 1)[0].strip()
         real_ip = request.headers.get("x-real-ip")
         if real_ip:
             return real_ip.strip()
-    if request.client:
-        return request.client.host
-    return ""
+    return direct_client_ip
+
+
+def _trusted_proxy_source(client_ip: str, trusted_cidrs: str) -> bool:
+    if not client_ip:
+        return False
+    try:
+        parsed_ip = ip_address(client_ip)
+    except ValueError:
+        return False
+
+    for cidr in trusted_cidrs.split(","):
+        candidate = cidr.strip()
+        if not candidate:
+            continue
+        try:
+            if parsed_ip in ip_network(candidate, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def bearer_token(request: Request) -> str:
