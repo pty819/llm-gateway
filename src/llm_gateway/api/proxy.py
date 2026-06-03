@@ -41,6 +41,11 @@ from llm_gateway.services.rate_limit import (
     release_concurrency_slot,
     resolve_effective_rate_policy,
 )
+from llm_gateway.services.runtime_metrics import (
+    mark_connection_closed,
+    mark_connection_open,
+    route_info,
+)
 from llm_gateway.services.security import AuthContext, authenticate_gateway_key
 
 
@@ -222,9 +227,15 @@ async def openai_chat_completions(
             key_id=auth.key.id,
             limit=rate_policy.concurrency_limit,
         ):
-            result = await completion_once(
-                model_alias=route.model_alias, upstream=route.upstream, body=body
+            metrics_member = await _mark_runtime_connection_open(
+                redis=redis, request_id=request_id, route=route
             )
+            try:
+                result = await completion_once(
+                    model_alias=route.model_alias, upstream=route.upstream, body=body
+                )
+            finally:
+                await _mark_runtime_connection_closed(redis, metrics_member)
         await enqueue_fact(
             {
                 "request_id": request_id,
@@ -282,6 +293,9 @@ async def _stream_openai_response(
     first_token_at: datetime | None = None
     outcome = RequestOutcome.SUCCESS
     error: BaseException | None = None
+    metrics_member = await _mark_runtime_connection_open(
+        redis=redis, request_id=request_id, route=route
+    )
     try:
         async for event, event_usage in completion_stream(
             model_alias=route.model_alias,
@@ -301,6 +315,7 @@ async def _stream_openai_response(
         error = exc
         yield f"event: error\ndata: {str(exc)}\n\n"
     finally:
+        await _mark_runtime_connection_closed(redis, metrics_member)
         with suppress(Exception):
             await release_concurrency_slot(redis, concurrency_key)
         await enqueue_fact(
@@ -376,9 +391,15 @@ async def openai_responses(
             key_id=auth.key.id,
             limit=rate_policy.concurrency_limit,
         ):
-            result = await responses_once(
-                model_alias=route.model_alias, upstream=route.upstream, body=body
+            metrics_member = await _mark_runtime_connection_open(
+                redis=redis, request_id=request_id, route=route
             )
+            try:
+                result = await responses_once(
+                    model_alias=route.model_alias, upstream=route.upstream, body=body
+                )
+            finally:
+                await _mark_runtime_connection_closed(redis, metrics_member)
         await enqueue_fact(
             {
                 "request_id": request_id,
@@ -436,6 +457,9 @@ async def _stream_responses(
     first_token_at: datetime | None = None
     outcome = RequestOutcome.SUCCESS
     error: BaseException | None = None
+    metrics_member = await _mark_runtime_connection_open(
+        redis=redis, request_id=request_id, route=route
+    )
     try:
         async for event, event_usage in responses_stream(
             model_alias=route.model_alias,
@@ -455,6 +479,7 @@ async def _stream_responses(
         error = exc
         yield f"event: error\ndata: {str(exc)}\n\n"
     finally:
+        await _mark_runtime_connection_closed(redis, metrics_member)
         with suppress(Exception):
             await release_concurrency_slot(redis, concurrency_key)
         await enqueue_fact(
@@ -528,9 +553,15 @@ async def anthropic_messages(
         async with concurrency_slot(
             redis, key_id=auth.key.id, limit=rate_policy.concurrency_limit
         ):
-            result = await anthropic_messages_once(
-                model_alias=route.model_alias, upstream=route.upstream, body=body
+            metrics_member = await _mark_runtime_connection_open(
+                redis=redis, request_id=request_id, route=route
             )
+            try:
+                result = await anthropic_messages_once(
+                    model_alias=route.model_alias, upstream=route.upstream, body=body
+                )
+            finally:
+                await _mark_runtime_connection_closed(redis, metrics_member)
         await enqueue_fact(
             {
                 "request_id": request_id,
@@ -588,6 +619,9 @@ async def _stream_anthropic_response(
     first_token_at: datetime | None = None
     outcome = RequestOutcome.SUCCESS
     error: BaseException | None = None
+    metrics_member = await _mark_runtime_connection_open(
+        redis=redis, request_id=request_id, route=route
+    )
     try:
         async for event, event_usage in anthropic_messages_stream(
             model_alias=route.model_alias,
@@ -607,6 +641,7 @@ async def _stream_anthropic_response(
         error = exc
         yield f"event: error\ndata: {str(exc)}\n\n"
     finally:
+        await _mark_runtime_connection_closed(redis, metrics_member)
         with suppress(Exception):
             await release_concurrency_slot(redis, concurrency_key)
         await enqueue_fact(
@@ -742,6 +777,27 @@ async def _record_failure(
         },
         endpoint=endpoint_family.value,
     )
+
+
+async def _mark_runtime_connection_open(
+    *, redis: Redis, request_id: str, route
+) -> str | None:
+    with suppress(Exception):
+        return await mark_connection_open(
+            redis,
+            request_id=request_id,
+            info=route_info(route.model_alias, route.upstream),
+        )
+    return None
+
+
+async def _mark_runtime_connection_closed(
+    redis: Redis, metrics_member: str | None
+) -> None:
+    if not metrics_member:
+        return
+    with suppress(Exception):
+        await mark_connection_closed(redis, metrics_member)
 
 
 def _outcome_for_http_exception(exc: HTTPException) -> RequestOutcome:

@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from llm_gateway.api import admin, auth, health, proxy
+from llm_gateway.api import admin, auth, health, proxy, realtime
 from llm_gateway.core.config import get_settings
 from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.services.duckdb_analytics import close_analytics, init_analytics
@@ -25,6 +25,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(admin.router)
+    app.include_router(realtime.router)
     app.include_router(proxy.router)
     return app
 

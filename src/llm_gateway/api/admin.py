@@ -149,6 +149,7 @@ class UpstreamTargetCreate(BaseModel):
     model_alias_id: UUID
     name: str
     base_url: str
+    metrics_url: str | None = None
     api_key_ref: str | None = None
     api_key_value: str | None = None
     health_path: str = "/models"
@@ -158,6 +159,7 @@ class UpstreamTargetCreate(BaseModel):
 class UpstreamTargetUpdate(BaseModel):
     name: str | None = None
     base_url: str | None = None
+    metrics_url: str | None = None
     api_key_ref: str | None = None
     api_key_value: str | None = None
     health_path: str | None = None

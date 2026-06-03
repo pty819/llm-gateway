@@ -208,6 +208,18 @@ p {
 	gap: 1rem;
 }
 
+.section-head {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 1rem;
+}
+
+.section-head p {
+	margin: 0.2rem 0 0;
+	color: var(--text-muted);
+}
+
 .panel {
 	background: var(--surface);
 	border: 1px solid var(--line);

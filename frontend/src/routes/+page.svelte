@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import {
 		Activity,
 		BookOpen,
@@ -32,6 +32,7 @@
 		ReadyStatus,
 		RegisterResponse,
 		ResourceState,
+		RuntimeMetricsSnapshot,
 		RouterPolicy,
 		Subject,
 		SubjectType,
@@ -92,6 +93,9 @@
 	let plaintextKey = $state('');
 	let ready = $state<ReadyStatus | null>(null);
 	let diagnostics = $state<Diagnostics | null>(null);
+	let realtime = $state<RuntimeMetricsSnapshot | null>(null);
+	let realtimeStatus = $state('未连接');
+	let realtimeAbort: AbortController | null = null;
 	let profile = $state<AuthProfile | null>(null);
 	let inventory = $state<Inventory>(emptyInventory());
 	let healthResults = $state<Record<string, UpstreamHealth | string>>({});
@@ -172,6 +176,7 @@
 		model_alias_id: '',
 		name: '',
 		base_url: '',
+		metrics_url: '',
 		api_key_ref: '',
 		api_key_value: '',
 		health_path: '/models',
@@ -256,6 +261,8 @@
 	);
 	const visibleAnalyticsBuckets = $derived(inventory.analyticsBuckets.slice(0, PAGE_SIZE.usagePreview));
 	const visibleAnalyticsDrilldown = $derived(inventory.analyticsDrilldown.slice(0, PAGE_SIZE.usagePreview));
+	const realtimeTopUpstreams = $derived((realtime?.upstreams ?? []).slice(0, PAGE_SIZE.usagePreview));
+	const realtimeUpdatedLabel = $derived(realtime ? new Date(realtime.generated_at).toLocaleTimeString() : '无');
 	const analyticsMaxTokens = $derived(
 		Math.max(1, ...visibleAnalyticsBuckets.map((row) => Number(row.total_tokens ?? 0)))
 	);
@@ -321,6 +328,10 @@
 		if (sessionToken) void loadProfile(true);
 	});
 
+	onDestroy(() => {
+		stopRealtimeStream();
+	});
+
 	async function loginAccount(fromStorage = false) {
 		if (!loginForm.username.trim() || !loginForm.password) {
 			pageError = '请输入用户名和密码。';
@@ -336,7 +347,9 @@
 				const authedApi = new AdminApiClient('', sessionToken);
 				diagnostics = await authedApi.get<Diagnostics>('/admin/diagnostics');
 				await refreshAll();
+				startRealtimeStream();
 			} else {
+				stopRealtimeStream();
 				await fetchOwnUsage();
 			}
 		});
@@ -371,13 +384,16 @@
 			if (profile.subject.is_admin) {
 				diagnostics = await api.get<Diagnostics>('/admin/diagnostics');
 				await refreshAll();
+				startRealtimeStream();
 			} else {
+				stopRealtimeStream();
 				await fetchOwnUsage();
 			}
 		});
 	}
 
 	function disconnect() {
+		stopRealtimeStream();
 		sessionToken = '';
 		profile = null;
 		connected = false;
@@ -386,6 +402,64 @@
 		pageError = '';
 		clearStoredSessionToken();
 		inventory = emptyInventory();
+	}
+
+	function startRealtimeStream() {
+		stopRealtimeStream();
+		if (!sessionToken || typeof window === 'undefined') return;
+		const controller = new AbortController();
+		realtimeAbort = controller;
+		realtimeStatus = '连接中';
+		void consumeRealtimeStream(controller);
+	}
+
+	function stopRealtimeStream() {
+		if (realtimeAbort) {
+			realtimeAbort.abort();
+			realtimeAbort = null;
+		}
+		realtimeStatus = '未连接';
+	}
+
+	async function consumeRealtimeStream(controller: AbortController) {
+		try {
+			const response = await fetch('/admin/realtime/stream?window_seconds=10&interval_seconds=1', {
+				headers: { 'x-session-token': sessionToken },
+				signal: controller.signal
+			});
+			if (!response.ok || !response.body) throw new Error(`实时指标连接失败: HTTP ${response.status}`);
+			realtimeStatus = '已连接';
+			const reader = response.body.getReader();
+			const decoder = new TextDecoder();
+			let buffer = '';
+			while (true) {
+				const { value, done } = await reader.read();
+				if (done) break;
+				buffer += decoder.decode(value, { stream: true });
+				let boundary = buffer.indexOf('\n\n');
+				while (boundary !== -1) {
+					const block = buffer.slice(0, boundary);
+					buffer = buffer.slice(boundary + 2);
+					consumeRealtimeEvent(block);
+					boundary = buffer.indexOf('\n\n');
+				}
+			}
+			if (!controller.signal.aborted) realtimeStatus = '已断开';
+		} catch (error) {
+			if (!controller.signal.aborted) realtimeStatus = errorMessage(error);
+		} finally {
+			if (realtimeAbort === controller) realtimeAbort = null;
+		}
+	}
+
+	function consumeRealtimeEvent(block: string) {
+		const data = block
+			.split('\n')
+			.filter((line) => line.startsWith('data:'))
+			.map((line) => line.slice(5).trimStart())
+			.join('\n');
+		if (!data) return;
+		realtime = JSON.parse(data) as RuntimeMetricsSnapshot;
 	}
 
 	async function refreshReady() {
@@ -721,6 +795,13 @@
 			pageError = urlCheck.message ?? '上游地址不合法';
 			return;
 		}
+		if (upstreamForm.metrics_url.trim()) {
+			const metricsUrlCheck = validateHttpUrl(upstreamForm.metrics_url, 'Metrics URL');
+			if (!metricsUrlCheck.ok) {
+				pageError = metricsUrlCheck.message ?? 'Metrics URL 不合法';
+				return;
+			}
+		}
 		if (!upstreamForm.health_path.startsWith('/')) {
 			pageError = '健康检查路径必须以 / 开头。';
 			return;
@@ -737,6 +818,7 @@
 				model_alias_id: '',
 				name: '',
 				base_url: '',
+				metrics_url: '',
 				api_key_ref: '',
 				api_key_value: '',
 				health_path: '/models',
@@ -1159,6 +1241,18 @@
 		return value === null || value === undefined ? '无数据' : `${Math.round(value * 100)}%`;
 	}
 
+	function tokenRateLabel(value: number | null | undefined): string {
+		const numeric = Number(value ?? 0);
+		const digits = numeric >= 100 ? 0 : 1;
+		return `${numeric.toFixed(digits)} token/s`;
+	}
+
+	function metricsKindLabel(value: string | null | undefined): string {
+		if (value === 'vllm') return 'vLLM';
+		if (value === 'vllm_router') return 'Router';
+		return '未知';
+	}
+
 	function bytesLabel(value: number): string {
 		if (value < 1024) return `${value} B`;
 		if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
@@ -1484,6 +1578,7 @@
 							<label>模型<select bind:value={upstreamForm.model_alias_id}><option value="">选择模型</option>{#each inventory.models as model}<option value={model.id}>{model.alias}</option>{/each}</select></label>
 							<label>名称<input bind:value={upstreamForm.name} /></label>
 							<label>Base URL<input bind:value={upstreamForm.base_url} placeholder="http://host:8000/v1" /></label>
+							<label>Metrics URL<input bind:value={upstreamForm.metrics_url} placeholder="可选，例如 http://router-host:29000/metrics" /></label>
 							<label>健康检查路径<input bind:value={upstreamForm.health_path} /></label>
 							<label>API key 引用<input bind:value={upstreamForm.api_key_ref} /></label>
 							<label>API key 明文<input type="password" bind:value={upstreamForm.api_key_value} /></label>
@@ -1583,6 +1678,51 @@
 							<div class="metric"><span>项目</span><strong>{inventory.projects.length}</strong></div>
 							<div class="metric"><span>密钥</span><strong>{inventory.keys.length}</strong></div>
 							<div class="metric"><span>模型</span><strong>{inventory.models.length}</strong></div>
+						</div>
+					</section>
+					<section class="panel">
+						<div class="section-head">
+							<div>
+								<h2>实时负载</h2>
+								<p>vLLM engine 压力和 vLLM Router 负载都来自上游 <code>/metrics</code>；多个浏览器共享 Redis 缓存。</p>
+							</div>
+							<div class="actions">
+								<StateBadge value={realtimeStatus} tone={realtimeStatus === '已连接' ? 'success' : 'neutral'} />
+								<button class="secondary" type="button" onclick={startRealtimeStream}>重连</button>
+							</div>
+						</div>
+						<div class="grid">
+							<div class="metric"><span>vLLM 指标 token/s</span><strong>{realtime?.vllm.tokens_per_second == null ? '等待样本' : tokenRateLabel(realtime.vllm.tokens_per_second)}</strong></div>
+							<div class="metric"><span>网关当前上游连接</span><strong>{realtime?.active_connections ?? 0}</strong></div>
+							<div class="metric"><span>vLLM running / waiting</span><strong>{realtime?.vllm.running ?? '无'} / {realtime?.vllm.waiting ?? '无'}</strong></div>
+							<div class="metric"><span>Router running / workers</span><strong>{realtime?.vllm.router.running_requests ?? '无'} / {realtime?.vllm.router.active_workers ?? '无'}</strong></div>
+							<div class="metric"><span>最高 KV cache</span><strong>{ratioLabel(realtime?.vllm.max_kv_cache_usage)}</strong></div>
+							<div class="metric"><span>metrics 可用上游</span><strong>{realtime?.vllm.ok_upstreams ?? 0} / {realtime?.vllm.configured_upstreams ?? realtime?.vllm.observed_upstreams ?? 0}</strong></div>
+							<div class="metric"><span>metrics 已忽略</span><strong>{realtime?.vllm.ignored_upstreams ?? 0}</strong></div>
+							<div class="metric"><span>上游抓取缓存</span><strong>{realtime?.metrics_cache_seconds ?? realtime?.window_seconds ?? 3} 秒</strong></div>
+							<div class="metric"><span>更新时间</span><strong>{realtimeUpdatedLabel}</strong></div>
+						</div>
+						<div class="table-wrap">
+							<table>
+								<thead><tr><th>上游</th><th>模型</th><th>类型</th><th>token/s</th><th>网关连接</th><th>vLLM running / waiting</th><th>Router 负载</th><th>KV / Prefix</th><th>metrics</th></tr></thead>
+								<tbody>
+									{#each realtimeTopUpstreams as upstream}
+										<tr>
+											<td>{upstream.upstream_name}<br /><span class="muted">{short(upstream.upstream_id)}</span></td>
+											<td>{upstream.model_alias || '未知'}</td>
+											<td>{metricsKindLabel(upstream.vllm?.kind)}</td>
+											<td>{upstream.vllm?.tokens_per_second == null ? '等待样本' : tokenRateLabel(upstream.vllm.tokens_per_second)}</td>
+											<td>{upstream.active_connections}</td>
+											<td>{upstream.vllm?.running ?? '无'} / {upstream.vllm?.waiting ?? '无'}</td>
+											<td>{upstream.vllm?.router?.running_requests ?? upstream.vllm?.router?.worker_load ?? '无'} / {upstream.vllm?.router?.active_workers ?? '无'}</td>
+											<td>{ratioLabel(upstream.vllm?.kv_cache_usage)} / {ratioLabel(upstream.vllm?.prefix_cache_hit_ratio)}</td>
+											<td>{upstream.vllm?.ok ? '正常' : upstream.vllm?.error ?? '未抓取'}<br /><span class="muted">{upstream.vllm?.metrics_url ?? ''}</span></td>
+										</tr>
+									{:else}
+										<tr><td colspan="9" class="empty">暂无实时负载数据。</td></tr>
+									{/each}
+								</tbody>
+							</table>
 						</div>
 					</section>
 					<section class="panel"><div class="actions"><button class="secondary" type="button" onclick={() => setUsageRange(1 / 24)}>最近 1 小时</button><button class="secondary" type="button" onclick={() => setUsageRange(1)}>最近 1 天</button><button class="secondary" type="button" onclick={() => setUsageRange(7)}>最近 1 周</button><button class="secondary" type="button" onclick={() => setUsageRange(30)}>最近 1 月</button></div><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>时间粒度<select bind:value={analyticsBucket}><option value="minute">分钟</option><option value="hour">小时</option><option value="day">天</option></select></label><label>分析维度<select bind:value={analyticsDimension}><option value="model">模型</option><option value="subject">用户</option><option value="project">项目</option><option value="endpoint">协议</option><option value="outcome">结果</option><option value="streaming">流式</option></select></label><label>模型筛选<select bind:value={modelFilter}><option value="">全部</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>搜索用户<input bind:value={usageSubjectSearch} placeholder="输入姓名或工号" /></label><label>用户筛选<select bind:value={subjectFilter}><option value="">全部</option>{#each subjectOptions(usageSubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>项目筛选<select bind:value={projectFilter}><option value="">全部</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><button type="button" onclick={refreshUsageAnalytics} disabled={loading}>{loading ? '查询中' : '查询'}</button></div></section>
@@ -1784,13 +1924,14 @@
 		<h2>上游端点</h2>
 		<div class="table-wrap">
 			<table>
-				<thead><tr><th>名称</th><th>模型</th><th>Base URL</th><th>状态</th><th>密钥</th><th>健康</th><th>操作</th></tr></thead>
+				<thead><tr><th>名称</th><th>模型</th><th>Base URL</th><th>Metrics URL</th><th>状态</th><th>密钥</th><th>健康</th><th>操作</th></tr></thead>
 				<tbody>
 					{#each rows as upstream}
 						<tr>
 							<td>{upstream.name}<br /><span class="muted">{short(upstream.id)}</span></td>
 							<td>{modelLabel(upstream.model_alias_id)}</td>
 							<td>{upstream.base_url}<br /><span class="muted">{upstream.health_path}</span></td>
+							<td>{upstream.metrics_url ?? '自动推导'}</td>
 							<td><StateBadge value={upstream.state} /></td>
 							<td><StateBadge value={upstream.has_api_key} tone="accent" /></td>
 							<td>
@@ -1812,6 +1953,10 @@
 									const next = prompt('健康检查路径', upstream.health_path);
 									if (next !== null) onPatch(upstream.id, { health_path: next });
 								}}>改健康路径</button>
+								<button class="secondary" type="button" onclick={() => {
+									const next = prompt('Metrics URL，留空则按 Base URL 自动推导 /metrics', upstream.metrics_url ?? '');
+									if (next !== null) onPatch(upstream.id, { metrics_url: next.trim() || null });
+								}}>改 metrics</button>
 								<button class="secondary" type="button" onclick={() => {
 									const next = prompt('上游名称', upstream.name);
 									if (next !== null) onPatch(upstream.id, { name: next });
@@ -1839,7 +1984,7 @@
 							</td>
 						</tr>
 					{:else}
-						<tr><td colspan="7" class="empty">还没有配置上游端点。</td></tr>
+						<tr><td colspan="8" class="empty">还没有配置上游端点。</td></tr>
 					{/each}
 				</tbody>
 			</table>

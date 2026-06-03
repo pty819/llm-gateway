@@ -176,6 +176,7 @@ class UpstreamTarget(TimestampMixin, table=True):
     model_alias_id: UUID = Field(foreign_key="model_aliases.id", index=True)
     name: str
     base_url: str
+    metrics_url: str | None = None
     api_key_ref: str | None = None
     api_key_value: str | None = None
     health_path: str = "/models"

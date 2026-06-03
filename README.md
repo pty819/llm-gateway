@@ -16,7 +16,8 @@ FastAPI + Svelte enterprise LLM gateway for internal model serving. It sits in f
 - Model-level IP allowlists.
 - Redis-backed RPM and concurrency limits.
 - PostgreSQL-backed audit and token/request usage facts.
-- Admin-only DuckDB mirror for manual heavy usage analytics.
+- Admin-only DuckDB PostgreSQL extension queries for manual heavy usage analytics.
+- Redis-backed realtime runtime metrics for active upstream connections plus cached direct-vLLM and vLLM Router `/metrics` pressure.
 - vLLM Router command generation for same-model endpoint pools.
 
 ## Stack
@@ -112,7 +113,10 @@ uv run python scripts/start_local.py --host 10.21.48.65
 ```
 
 This release adds analytics indexes through Alembic, so run the upgrade step before starting the new backend.
-The admin heavy analytics panel can refresh a local DuckDB mirror from PostgreSQL and query the mirror for longer time windows. Normal user self-usage stays PostgreSQL-backed so it remains fresh and subject-scoped.
+The admin heavy analytics panel uses DuckDB's PostgreSQL extension for longer time windows. Normal user self-usage stays PostgreSQL-backed so it remains fresh and subject-scoped.
+The usage page also opens an authenticated SSE stream over `fetch` to display realtime upstream load. Direct vLLM endpoints expose engine metrics such as token/s, running/waiting requests, KV cache usage, and prefix-cache signal. vLLM Router exposes a different `vllm_router_*` metrics family, so the page shows router workers, running requests, worker load, cache hit ratio, request count, and error count separately instead of treating router metrics as worker engine metrics. The gateway auto-detects the metric family from the Prometheus response; you do not need to manually label an upstream as vLLM or Router.
+
+For direct vLLM, leaving the upstream Metrics URL empty is usually enough because the gateway derives `<base-url-without-/v1>/metrics`. For vLLM Router, set the upstream Metrics URL to the Router Prometheus endpoint, for example `http://router-host:29000/metrics` or the address configured with `--prometheus-host/--prometheus-port`; Router metrics are commonly not served from the OpenAI API port. Each upstream metrics response is cached for 3 seconds in Redis. If an upstream has no metrics endpoint, returns 404/timeout, or exposes unrelated Prometheus metrics only, the realtime metrics scrape is ignored instead of adding a failed row to the dashboard.
 
 Optionally seed a development upstream/model:
 

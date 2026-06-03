@@ -110,6 +110,7 @@ export type UpstreamTarget = Timestamped & {
 	model_alias_id: string;
 	name: string;
 	base_url: string;
+	metrics_url: string | null;
 	api_key_ref: string | null;
 	api_key_value: null;
 	has_api_key: boolean;
@@ -125,6 +126,73 @@ export type UpstreamHealth = {
 		status_code: number;
 		url: string;
 	};
+};
+
+export type RuntimeMetricsUpstream = {
+	upstream_id: string;
+	upstream_name: string;
+	model_alias: string;
+	tokens_per_second: number | null;
+	recent_tokens: number | null;
+	active_connections: number;
+	vllm?: VllmMetricsSnapshot;
+};
+
+export type RuntimeMetricsSnapshot = {
+	generated_at: string;
+	window_seconds: number;
+	metrics_cache_seconds?: number;
+	total_tokens_per_second: number | null;
+	total_recent_tokens: number | null;
+	active_connections: number;
+	vllm: {
+		configured_upstreams: number;
+		observed_upstreams: number;
+		ok_upstreams: number;
+		ignored_upstreams: number;
+		running: number | null;
+		waiting: number | null;
+		swapped: number | null;
+		tokens_per_second: number | null;
+		max_kv_cache_usage: number | null;
+		router: VllmRouterMetricsSummary;
+	};
+	upstreams: RuntimeMetricsUpstream[];
+};
+
+export type VllmMetricsSnapshot = {
+	ok: boolean;
+	kind: 'vllm' | 'vllm_router' | 'unknown';
+	metrics_url: string;
+	scraped_at: string;
+	error?: string;
+	running: number | null;
+	waiting: number | null;
+	swapped: number | null;
+	kv_cache_usage: number | null;
+	cpu_cache_usage: number | null;
+	prefix_cache_hit_ratio: number | null;
+	prompt_tokens_total: number | null;
+	generation_tokens_total: number | null;
+	tokens_total: number | null;
+	tokens_per_second: number | null;
+	router: VllmRouterMetricsSummary | null;
+};
+
+export type VllmRouterMetricsSummary = {
+	observed_upstreams?: number;
+	requests_total?: number | null;
+	request_errors_total?: number | null;
+	processed_requests_total?: number | null;
+	active_workers?: number | null;
+	healthy_workers?: number | null;
+	worker_load?: number | null;
+	running_requests?: number | null;
+	max_load?: number | null;
+	min_load?: number | null;
+	cache_hits_total?: number | null;
+	cache_misses_total?: number | null;
+	cache_hit_ratio?: number | null;
 };
 
 export type RouterCommandConfig = Timestamped & {

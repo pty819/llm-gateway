@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -57,8 +58,15 @@ async def test_list_models_rejects_invalid_key(client):
     assert response.status_code == 401
 
 
-async def test_health_and_admin_diagnostics(client):
+async def test_health_and_admin_diagnostics(client, monkeypatch):
     from llm_gateway.core.config import get_settings
+
+    async def no_metric_targets():
+        return []
+
+    monkeypatch.setattr(
+        "llm_gateway.api.realtime._load_vllm_metric_targets", no_metric_targets
+    )
 
     ready = await client.get("/health/ready")
     assert ready.status_code == 200
@@ -69,6 +77,16 @@ async def test_health_and_admin_diagnostics(client):
     )
     assert diagnostics.status_code == 200
     assert diagnostics.json()["litellm_version"] != "unknown"
+
+    realtime = await client.get(
+        "/admin/realtime/snapshot",
+        headers={"x-admin-token": get_settings().admin_token},
+    )
+    assert realtime.status_code == 200
+    assert "total_tokens_per_second" in realtime.json()
+
+    unauthorized = await client.get("/admin/realtime/snapshot")
+    assert unauthorized.status_code == 401
 
 
 async def test_self_service_register_login_and_guest_team_model_access(client):
@@ -899,6 +917,140 @@ async def test_model_ip_allowlist_accepts_forwarded_client_from_trusted_vite_pro
     assert fact.outcome == RequestOutcome.SUCCESS
 
 
+async def test_openai_chat_completion_records_realtime_runtime_metrics(
+    client, gateway_fixture, monkeypatch
+):
+    from llm_gateway.core.config import get_settings
+    from llm_gateway.services.rate_limit import redis_client
+    from llm_gateway.services.runtime_metrics import ACTIVE_KEY, runtime_snapshot
+
+    async def no_metric_targets():
+        return []
+
+    monkeypatch.setattr(
+        "llm_gateway.api.realtime._load_vllm_metric_targets", no_metric_targets
+    )
+
+    observed_during_call: dict[str, object] = {}
+
+    async def fake_completion_once(*, model_alias, upstream, body):
+        observed_during_call.update(await runtime_snapshot(redis_client))
+        return LiteLLMCallResult(
+            response={
+                "id": "chatcmpl-runtime-metrics",
+                "object": "chat.completion",
+                "choices": [
+                    {"index": 0, "message": {"role": "assistant", "content": "ok"}}
+                ],
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 1,
+                    "total_tokens": 4,
+                },
+            },
+            usage={"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+        )
+
+    await redis_client.delete(ACTIVE_KEY)
+    monkeypatch.setattr("llm_gateway.api.proxy.completion_once", fake_completion_once)
+
+    request_id = f"pytest-runtime-metrics-{uuid4()}"
+    response = await client.post(
+        "/v1/chat/completions",
+        headers=_auth_headers(gateway_fixture.raw_key, request_id),
+        json={
+            "model": gateway_fixture.model_alias,
+            "messages": [{"role": "user", "content": "metrics"}],
+            "max_tokens": 16,
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert observed_during_call["active_connections"] == 1
+    active_rows = cast(list[dict[str, Any]], observed_during_call["upstreams"])
+    assert any(
+        item["upstream_id"] == str(gateway_fixture.upstream_id) for item in active_rows
+    )
+
+    snapshot = await client.get(
+        "/admin/realtime/snapshot",
+        headers={"x-admin-token": get_settings().admin_token},
+        params={"window_seconds": 60},
+    )
+    assert snapshot.status_code == 200, snapshot.text
+    payload = snapshot.json()
+    assert payload["total_recent_tokens"] is None
+    assert payload["total_tokens_per_second"] is None
+    assert payload["active_connections"] == 0
+    assert all(
+        item["upstream_id"] != str(gateway_fixture.upstream_id)
+        for item in payload["upstreams"]
+    )
+
+
+async def test_realtime_snapshot_includes_cached_vllm_metrics(
+    client, gateway_fixture, monkeypatch
+):
+    from llm_gateway.core.config import get_settings
+    from llm_gateway.services.rate_limit import redis_client
+    from llm_gateway.services.runtime_metrics import (
+        VLLM_METRICS_CACHE_PREFIX,
+        VLLM_METRICS_COUNTER_PREFIX,
+        VLLM_METRICS_LOCK_PREFIX,
+        VLLMMetricsTarget,
+    )
+
+    async def metric_targets():
+        return [
+            VLLMMetricsTarget(
+                upstream_id=str(gateway_fixture.upstream_id),
+                upstream_name="pytest-vllm",
+                model_alias=gateway_fixture.model_alias,
+                base_url="http://pytest-vllm:8000/v1",
+                extra_headers={},
+            )
+        ]
+
+    async def fake_metrics_text(target):
+        assert target.upstream_id == str(gateway_fixture.upstream_id)
+        return """
+vllm:num_requests_running 2
+vllm:num_requests_waiting 1
+vllm:kv_cache_usage_perc 0.8
+vllm:prefix_cache_queries 20
+vllm:prefix_cache_hits 15
+vllm:prompt_tokens_total 200
+vllm:generation_tokens_total 100
+"""
+
+    await redis_client.delete(
+        f"{VLLM_METRICS_CACHE_PREFIX}:{gateway_fixture.upstream_id}",
+        f"{VLLM_METRICS_LOCK_PREFIX}:{gateway_fixture.upstream_id}",
+        f"{VLLM_METRICS_COUNTER_PREFIX}:{gateway_fixture.upstream_id}",
+    )
+    monkeypatch.setattr(
+        "llm_gateway.api.realtime._load_vllm_metric_targets", metric_targets
+    )
+    monkeypatch.setattr(
+        "llm_gateway.services.runtime_metrics._fetch_vllm_metrics_text",
+        fake_metrics_text,
+    )
+
+    response = await client.get(
+        "/admin/realtime/snapshot",
+        headers={"x-admin-token": get_settings().admin_token},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["vllm"]["observed_upstreams"] == 1
+    assert payload["vllm"]["ok_upstreams"] == 1
+    assert payload["vllm"]["running"] == 2
+    assert payload["vllm"]["waiting"] == 1
+    assert payload["vllm"]["max_kv_cache_usage"] == 0.8
+    assert payload["upstreams"][0]["vllm"]["kind"] == "vllm"
+    assert payload["upstreams"][0]["vllm"]["prefix_cache_hit_ratio"] == 0.75
+
+
 async def test_key_scoped_rate_policy_blocks_before_upstream(client, gateway_fixture):
     from llm_gateway.db.models import RatePolicy
     from llm_gateway.db.session import AsyncSessionLocal
@@ -1006,12 +1158,14 @@ async def test_admin_can_edit_upstream_endpoint_after_launch(client, gateway_fix
 
     headers = {"x-admin-token": get_settings().admin_token}
     new_base_url = "https://example.internal/v1"
+    metrics_url = "https://example.internal:29000/metrics"
     patched = await client.patch(
         f"/admin/upstreams/{gateway_fixture.upstream_id}",
         headers=headers,
         json={
             "name": "patched-upstream",
             "base_url": new_base_url,
+            "metrics_url": metrics_url,
             "health_path": "/healthz",
             "api_key_ref": "patched-key-ref",
             "extra_headers": {"x-test": "patched"},
@@ -1022,6 +1176,7 @@ async def test_admin_can_edit_upstream_endpoint_after_launch(client, gateway_fix
     payload = patched.json()
     assert payload["name"] == "patched-upstream"
     assert payload["base_url"] == new_base_url
+    assert payload["metrics_url"] == metrics_url
     assert payload["health_path"] == "/healthz"
     assert payload["api_key_ref"] == "patched-key-ref"
     assert payload["extra_headers"] == {"x-test": "patched"}
