@@ -48,7 +48,7 @@ LLM_GATEWAY_ADMIN_TOKEN=dev-admin-token
 LLM_GATEWAY_BOOTSTRAP_ADMIN_USERNAME=admin
 LLM_GATEWAY_BOOTSTRAP_ADMIN_PASSWORD=dev-admin-password
 
-# Required when clients call the gateway through Vite or a reverse proxy.
+# Enabled by default so Vite/reverse-proxy calls preserve model IP allowlists.
 LLM_GATEWAY_TRUST_PROXY_HEADERS=true
 LLM_GATEWAY_TRUST_PROXY_CIDRS=127.0.0.0/8,::1/128
 ```
@@ -69,6 +69,17 @@ For local upgrades that should also sync Python and frontend dependencies:
 
 ```bash
 uv run python scripts/upgrade_local.py
+```
+
+DuckDB is pinned to `1.5.3` because DuckDB extensions are version/platform-bound. The repository vendors the PostgreSQL scanner extension under `vendor/duckdb/extensions/v1.5.3/<platform>/`. Runtime loads the matching local artifact first:
+
+- Linux x64 deployment: `linux_amd64`
+- Apple Silicon development: `osx_arm64`
+
+Refresh the bundled extension artifacts with:
+
+```bash
+uv run python scripts/fetch_duckdb_extensions.py
 ```
 
 Useful flags:

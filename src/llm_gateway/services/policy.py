@@ -58,14 +58,24 @@ async def resolve_route_context(
     route_cache_key = f"route:{auth.key.id}:{requested_model}"
     cached = route_cache.get(route_cache_key)
     if cached is not None:
+        model_alias_id, upstream_id = cached
+        model_alias = await session.get(ModelAlias, model_alias_id)
+        upstream = await session.get(UpstreamTarget, upstream_id)
+        if (
+            not model_alias
+            or model_alias.state != ResourceState.ACTIVE
+            or not upstream
+            or upstream.state != ResourceState.ACTIVE
+        ):
+            route_cache.invalidate(route_cache_key)
+            raise PolicyDenied("model_alias_not_found_or_inactive")
         if not await subject_can_use_model(
-            session, auth=auth, model_alias_id=cached.model_alias.id
+            session, auth=auth, model_alias_id=model_alias.id
         ):
             raise PolicyDenied("model_not_entitled")
-        model_alias = cached.model_alias
         if not client_ip_allowed(model_alias, client_ip):
             raise PolicyDenied("model_ip_denied")
-        return cached
+        return RouteContext(model_alias=model_alias, upstream=upstream)
     alias_result = await session.execute(
         select(ModelAlias).where(col(ModelAlias.alias) == requested_model)
     )
@@ -92,7 +102,7 @@ async def resolve_route_context(
         raise PolicyDenied("upstream_not_configured")
 
     ctx = RouteContext(model_alias=model_alias, upstream=upstream)
-    route_cache.set(route_cache_key, ctx)
+    route_cache.set(route_cache_key, (model_alias.id, upstream.id))
     return ctx
 
 

@@ -40,6 +40,15 @@ def test_client_ip_uses_forwarded_for_from_trusted_vite_proxy():
     assert client_ip_dep(request, settings) == "10.21.48.65"
 
 
+def test_client_ip_trusts_local_forwarded_proxy_by_default():
+    request = _request(
+        client_host="127.0.0.1",
+        headers={"x-forwarded-for": "10.21.48.65, 127.0.0.1"},
+    )
+
+    assert client_ip_dep(request, Settings()) == "10.21.48.65"
+
+
 def test_client_ip_ignores_spoofed_forwarded_for_from_untrusted_client():
     settings = _trusted_proxy_settings()
     request = _request(

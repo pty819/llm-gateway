@@ -1,9 +1,10 @@
 from datetime import datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
@@ -12,8 +13,13 @@ from llm_gateway.core.config import Settings
 from llm_gateway.db.models import (
     GatewayKey,
     Project,
+    ProjectMembership,
+    RequestFact,
+    RequestOutcome,
     ResourceState,
     Subject,
+    Team,
+    TeamMembership,
     utcnow,
 )
 from llm_gateway.services.duckdb_analytics import get_analytics
@@ -59,6 +65,16 @@ class PasswordChangeRequest(BaseModel):
 
 class ProfileUpdateRequest(BaseModel):
     full_name: str = Field(min_length=1, max_length=120)
+
+
+class ManagedMembershipCreate(BaseModel):
+    resource_id: UUID
+    subject_id: UUID
+    role: str = Field(default="member", min_length=1, max_length=64)
+
+
+class ManagedTeamMembershipPatch(BaseModel):
+    state: ResourceState
 
 
 @router.post("/register")
@@ -200,6 +216,293 @@ async def own_usage_summary(
     }
 
 
+@router.get("/managed/subjects")
+async def list_managed_candidate_subjects(
+    q: str | None = None,
+    limit: int = 20,
+    context: UserSessionContext = Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    await _require_any_managed_resource(session, context.subject.id)
+    stmt = select(Subject).where(col(Subject.state) == ResourceState.ACTIVE)
+    if q and q.strip():
+        needle = f"%{q.strip()}%"
+        stmt = stmt.where(
+            col(Subject.name).ilike(needle) | col(Subject.login_username).ilike(needle)
+        )
+    rows = (
+        (
+            await session.execute(
+                stmt.order_by(col(Subject.name)).limit(max(1, min(limit, 50)))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [_public_subject(subject) for subject in rows]
+
+
+@router.get("/managed/projects")
+async def list_managed_projects(
+    context: UserSessionContext = Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    return await _managed_projects_payload(session, context.subject.id)
+
+
+@router.get("/managed/teams")
+async def list_managed_teams(
+    context: UserSessionContext = Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    return await _managed_teams_payload(session, context.subject.id)
+
+
+@router.get("/managed/project-memberships")
+async def list_managed_project_memberships(
+    resource_id: UUID,
+    context: UserSessionContext = Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    await _require_project_manager(session, context.subject.id, resource_id)
+    rows = (
+        (
+            await session.execute(
+                select(ProjectMembership)
+                .where(col(ProjectMembership.project_id) == resource_id)
+                .order_by(col(ProjectMembership.created_at).desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return rows
+
+
+@router.get("/managed/team-memberships")
+async def list_managed_team_memberships(
+    resource_id: UUID,
+    context: UserSessionContext = Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    await _require_team_manager(session, context.subject.id, resource_id)
+    rows = (
+        (
+            await session.execute(
+                select(TeamMembership)
+                .where(col(TeamMembership.team_id) == resource_id)
+                .order_by(col(TeamMembership.created_at).desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return rows
+
+
+@router.get("/managed/usage/summary")
+async def managed_usage_summary(
+    scope: str,
+    resource_id: UUID | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    context: UserSessionContext = Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    if start and end and (end - start).days > 90:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="time_window_exceeds_90_days",
+        )
+    if start is None and end is None:
+        end = utcnow()
+        start = end - timedelta(days=30)
+
+    if scope == "project":
+        project_ids = await _managed_project_ids(session, context.subject.id)
+        if resource_id is not None:
+            if resource_id not in project_ids:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="not_project_manager",
+                )
+            project_ids = [resource_id]
+        row = await _usage_summary_from_postgres(
+            session,
+            start=start,
+            end=end,
+            project_ids=project_ids,
+        )
+    elif scope == "team":
+        team_ids = await _managed_team_ids(session, context.subject.id)
+        if resource_id is not None:
+            if resource_id not in team_ids:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="not_team_manager",
+                )
+            team_ids = [resource_id]
+        subject_ids = await _team_subject_ids(session, team_ids)
+        row = await _usage_summary_from_postgres(
+            session,
+            start=start,
+            end=end,
+            subject_ids=subject_ids,
+        )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid_managed_usage_scope",
+        )
+    return {
+        "start": start,
+        "end": end,
+        "scope": scope,
+        "resource_id": resource_id,
+        **row,
+    }
+
+
+@router.post("/managed/project-memberships")
+async def add_managed_project_member(
+    payload: ManagedMembershipCreate,
+    context: UserSessionContext = Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    await _require_project_manager(session, context.subject.id, payload.resource_id)
+    await _get_active_subject(session, payload.subject_id)
+    result = await session.execute(
+        select(ProjectMembership).where(
+            col(ProjectMembership.project_id) == payload.resource_id,
+            col(ProjectMembership.subject_id) == payload.subject_id,
+        )
+    )
+    membership = result.scalar_one_or_none()
+    if membership:
+        membership.role = payload.role
+        membership.updated_at = utcnow()
+    else:
+        membership = ProjectMembership(
+            project_id=payload.resource_id,
+            subject_id=payload.subject_id,
+            role=payload.role,
+        )
+        session.add(membership)
+        await session.flush()
+    await record_audit_event(
+        session,
+        actor_subject_id=context.subject.id,
+        action="managed.project_membership.upsert",
+        resource_type="project_membership",
+        resource_id=membership.id,
+        outcome="success",
+        detail={
+            "project_id": str(payload.resource_id),
+            "subject_id": str(payload.subject_id),
+        },
+    )
+    await session.commit()
+    await session.refresh(membership)
+    return membership
+
+
+@router.delete("/managed/project-memberships/{membership_id}")
+async def remove_managed_project_member(
+    membership_id: UUID,
+    context: UserSessionContext = Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    membership = await session.get(ProjectMembership, membership_id)
+    if not membership:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+    await _require_project_manager(session, context.subject.id, membership.project_id)
+    await record_audit_event(
+        session,
+        actor_subject_id=context.subject.id,
+        action="managed.project_membership.delete",
+        resource_type="project_membership",
+        resource_id=membership.id,
+        outcome="success",
+        detail={
+            "project_id": str(membership.project_id),
+            "subject_id": str(membership.subject_id),
+        },
+    )
+    await session.delete(membership)
+    await session.commit()
+    return {"ok": True}
+
+
+@router.post("/managed/team-memberships")
+async def add_managed_team_member(
+    payload: ManagedMembershipCreate,
+    context: UserSessionContext = Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    await _require_team_manager(session, context.subject.id, payload.resource_id)
+    await _get_active_subject(session, payload.subject_id)
+    result = await session.execute(
+        select(TeamMembership).where(
+            col(TeamMembership.team_id) == payload.resource_id,
+            col(TeamMembership.subject_id) == payload.subject_id,
+        )
+    )
+    membership = result.scalar_one_or_none()
+    if membership:
+        membership.role = payload.role
+        membership.state = ResourceState.ACTIVE
+        membership.updated_at = utcnow()
+    else:
+        membership = TeamMembership(
+            team_id=payload.resource_id,
+            subject_id=payload.subject_id,
+            role=payload.role,
+        )
+        session.add(membership)
+        await session.flush()
+    await record_audit_event(
+        session,
+        actor_subject_id=context.subject.id,
+        action="managed.team_membership.upsert",
+        resource_type="team_membership",
+        resource_id=membership.id,
+        outcome="success",
+        detail={
+            "team_id": str(payload.resource_id),
+            "subject_id": str(payload.subject_id),
+        },
+    )
+    await session.commit()
+    await session.refresh(membership)
+    return membership
+
+
+@router.patch("/managed/team-memberships/{membership_id}")
+async def set_managed_team_member_state(
+    membership_id: UUID,
+    payload: ManagedTeamMembershipPatch,
+    context: UserSessionContext = Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    membership = await session.get(TeamMembership, membership_id)
+    if not membership:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+    await _require_team_manager(session, context.subject.id, membership.team_id)
+    membership.state = payload.state
+    membership.updated_at = utcnow()
+    await record_audit_event(
+        session,
+        actor_subject_id=context.subject.id,
+        action="managed.team_membership.set_state",
+        resource_type="team_membership",
+        resource_id=membership.id,
+        outcome="success",
+        detail={"state": payload.state.value},
+    )
+    await session.commit()
+    return membership
+
+
 @router.patch("/password")
 async def change_password(
     payload: PasswordChangeRequest,
@@ -297,6 +600,179 @@ async def _profile_payload(session: AsyncSession, subject: Subject) -> dict[str,
             session, subject_id=subject.id
         ),
         "keys": [_redact_gateway_key(key) for key in keys],
+        "managed": {
+            "projects": await _managed_projects_payload(session, subject.id),
+            "teams": await _managed_teams_payload(session, subject.id),
+        },
+    }
+
+
+async def _managed_projects_payload(
+    session: AsyncSession, subject_id: UUID
+) -> list[dict[str, Any]]:
+    stmt = (
+        select(Project, ProjectMembership)
+        .join(ProjectMembership, col(ProjectMembership.project_id) == col(Project.id))
+        .where(
+            col(Project.state) == ResourceState.ACTIVE,
+            col(ProjectMembership.subject_id) == subject_id,
+            col(ProjectMembership.role) == "manager",
+        )
+        .order_by(col(Project.name))
+    )
+    rows = (await session.execute(stmt)).all()
+    return [
+        {"project": project, "membership": membership} for project, membership in rows
+    ]
+
+
+async def _managed_teams_payload(
+    session: AsyncSession, subject_id: UUID
+) -> list[dict[str, Any]]:
+    stmt = (
+        select(Team, TeamMembership)
+        .join(TeamMembership, col(TeamMembership.team_id) == col(Team.id))
+        .where(
+            col(Team.state) == ResourceState.ACTIVE,
+            col(TeamMembership.state) == ResourceState.ACTIVE,
+            col(TeamMembership.subject_id) == subject_id,
+            col(TeamMembership.role) == "manager",
+        )
+        .order_by(col(Team.name))
+    )
+    rows = (await session.execute(stmt)).all()
+    return [{"team": team, "membership": membership} for team, membership in rows]
+
+
+async def _managed_project_ids(session: AsyncSession, subject_id: UUID) -> list[UUID]:
+    rows = await _managed_projects_payload(session, subject_id)
+    return [row["project"].id for row in rows]
+
+
+async def _managed_team_ids(session: AsyncSession, subject_id: UUID) -> list[UUID]:
+    rows = await _managed_teams_payload(session, subject_id)
+    return [row["team"].id for row in rows]
+
+
+async def _require_any_managed_resource(
+    session: AsyncSession, subject_id: UUID
+) -> None:
+    if await _managed_project_ids(session, subject_id):
+        return
+    if await _managed_team_ids(session, subject_id):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="not_resource_manager",
+    )
+
+
+async def _require_project_manager(
+    session: AsyncSession, subject_id: UUID, project_id: UUID
+) -> None:
+    project_ids = await _managed_project_ids(session, subject_id)
+    if project_id not in project_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="not_project_manager",
+        )
+
+
+async def _require_team_manager(
+    session: AsyncSession, subject_id: UUID, team_id: UUID
+) -> None:
+    team_ids = await _managed_team_ids(session, subject_id)
+    if team_id not in team_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="not_team_manager",
+        )
+
+
+async def _get_active_subject(session: AsyncSession, subject_id: UUID) -> Subject:
+    subject = await session.get(Subject, subject_id)
+    if not subject or subject.state != ResourceState.ACTIVE:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+    return subject
+
+
+async def _team_subject_ids(session: AsyncSession, team_ids: list[UUID]) -> list[UUID]:
+    if not team_ids:
+        return []
+    result = await session.execute(
+        select(col(TeamMembership.subject_id)).where(
+            col(TeamMembership.team_id).in_(team_ids),
+            col(TeamMembership.state) == ResourceState.ACTIVE,
+        )
+    )
+    return list(result.scalars().all())
+
+
+async def _usage_summary_from_postgres(
+    session: AsyncSession,
+    *,
+    start: datetime | None,
+    end: datetime | None,
+    project_ids: list[UUID] | None = None,
+    subject_ids: list[UUID] | None = None,
+) -> dict[str, int]:
+    if project_ids is not None and not project_ids:
+        return _empty_usage_summary()
+    if subject_ids is not None and not subject_ids:
+        return _empty_usage_summary()
+
+    total_tokens_expr = func.coalesce(
+        RequestFact.total_tokens,
+        func.coalesce(RequestFact.prompt_tokens, 0)
+        + func.coalesce(RequestFact.completion_tokens, 0),
+        0,
+    )
+    stmt = select(
+        func.count(col(RequestFact.id)),
+        func.coalesce(func.sum(RequestFact.prompt_tokens), 0),
+        func.coalesce(func.sum(RequestFact.completion_tokens), 0),
+        func.coalesce(func.sum(total_tokens_expr), 0),
+        func.coalesce(
+            func.sum(
+                case((col(RequestFact.outcome) == RequestOutcome.SUCCESS, 1), else_=0)
+            ),
+            0,
+        ),
+        func.coalesce(
+            func.sum(
+                case((col(RequestFact.outcome) != RequestOutcome.SUCCESS, 1), else_=0)
+            ),
+            0,
+        ),
+    )
+    if start is not None:
+        stmt = stmt.where(col(RequestFact.started_at) >= start)
+    if end is not None:
+        stmt = stmt.where(col(RequestFact.started_at) < end)
+    if project_ids is not None:
+        stmt = stmt.where(col(RequestFact.project_id).in_(project_ids))
+    if subject_ids is not None:
+        stmt = stmt.where(col(RequestFact.subject_id).in_(subject_ids))
+
+    row = (await session.execute(stmt)).one()
+    return {
+        "request_count": int(row[0] or 0),
+        "prompt_tokens": int(row[1] or 0),
+        "completion_tokens": int(row[2] or 0),
+        "total_tokens": int(row[3] or 0),
+        "success_count": int(row[4] or 0),
+        "failure_count": int(row[5] or 0),
+    }
+
+
+def _empty_usage_summary() -> dict[str, int]:
+    return {
+        "request_count": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "success_count": 0,
+        "failure_count": 0,
     }
 
 

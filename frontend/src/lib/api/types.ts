@@ -263,6 +263,10 @@ export type AuthProfile = {
 	teams: string[];
 	models: string[];
 	keys: GatewayKey[];
+	managed: {
+		projects: Array<{ project: Project; membership: ProjectMembership }>;
+		teams: Array<{ team: Team; membership: TeamMembership }>;
+	};
 };
 
 export type LoginResponse = {

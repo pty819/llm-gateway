@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from uuid import uuid4
 
 import pytest
@@ -10,6 +11,7 @@ from llm_gateway.db.models import (
     RequestFact,
     RequestOutcome,
     UsageSource,
+    utcnow,
 )
 from llm_gateway.services.litellm_client import LiteLLMCallResult
 
@@ -477,6 +479,218 @@ async def test_self_service_usage_summary_is_scoped_to_current_user(client):
     assert summary["total_tokens"] == 38
     assert summary["success_count"] == 1
     assert summary["failure_count"] == 1
+
+
+async def test_delegated_project_manager_can_manage_members_and_usage(client):
+    from llm_gateway.db.models import Project, ProjectMembership, Subject, SubjectType
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.security import create_user_session
+
+    now = utcnow()
+    suffix = uuid4().hex
+    async with AsyncSessionLocal() as session:
+        manager = Subject(
+            name=f"Project Manager {suffix}",
+            type=SubjectType.USER,
+            login_username=f"l{uuid4().int % 100_000_000:08d}",
+        )
+        target = Subject(
+            name=f"Managed Target {suffix}",
+            type=SubjectType.USER,
+            login_username=f"l{uuid4().int % 100_000_000:08d}",
+        )
+        outsider = Subject(
+            name=f"Not Manager {suffix}",
+            type=SubjectType.USER,
+            login_username=f"l{uuid4().int % 100_000_000:08d}",
+        )
+        session.add_all([manager, target, outsider])
+        await session.flush()
+        project = Project(name=f"managed-project-{uuid4().hex}")
+        session.add(project)
+        await session.flush()
+        session.add(
+            ProjectMembership(
+                project_id=project.id, subject_id=manager.id, role="manager"
+            )
+        )
+        session.add(
+            RequestFact(
+                request_id=f"managed-project-usage-{uuid4()}",
+                started_at=now,
+                ended_at=now,
+                endpoint_family=EndpointFamily.OPENAI_CHAT,
+                subject_id=target.id,
+                subject_type=SubjectType.USER,
+                project_id=project.id,
+                model_alias="managed-model",
+                streaming=False,
+                outcome=RequestOutcome.SUCCESS,
+                usage_source=UsageSource.LITELLM,
+                prompt_tokens=10,
+                completion_tokens=5,
+                total_tokens=15,
+            )
+        )
+        manager_session, manager_token = await create_user_session(
+            session, subject_id=manager.id, ttl_hours=24
+        )
+        _, outsider_token = await create_user_session(
+            session, subject_id=outsider.id, ttl_hours=24
+        )
+        await session.commit()
+
+    headers = {"x-session-token": manager_token}
+    profile = await client.get("/auth/me", headers=headers)
+    assert profile.status_code == 200
+    assert profile.json()["managed"]["projects"][0]["project"]["id"] == str(project.id)
+
+    usage = await client.get(
+        "/auth/managed/usage/summary",
+        headers=headers,
+        params={
+            "scope": "project",
+            "resource_id": str(project.id),
+            "start": (now - timedelta(minutes=1)).isoformat(),
+            "end": (now + timedelta(minutes=1)).isoformat(),
+        },
+    )
+    assert usage.status_code == 200, usage.text
+    assert usage.json()["total_tokens"] == 15
+
+    candidates = await client.get(
+        "/auth/managed/subjects",
+        headers=headers,
+        params={"q": f"Managed Target {suffix}"},
+    )
+    assert candidates.status_code == 200
+    assert candidates.json()[0]["id"] == str(target.id)
+
+    created = await client.post(
+        "/auth/managed/project-memberships",
+        headers=headers,
+        json={
+            "resource_id": str(project.id),
+            "subject_id": str(target.id),
+            "role": "member",
+        },
+    )
+    assert created.status_code == 200, created.text
+    removed = await client.delete(
+        f"/auth/managed/project-memberships/{created.json()['id']}",
+        headers=headers,
+    )
+    assert removed.status_code == 200
+
+    denied = await client.get(
+        "/auth/managed/projects", headers={"x-session-token": outsider_token}
+    )
+    assert denied.status_code == 200
+    forbidden = await client.post(
+        "/auth/managed/project-memberships",
+        headers={"x-session-token": outsider_token},
+        json={
+            "resource_id": str(project.id),
+            "subject_id": str(target.id),
+            "role": "member",
+        },
+    )
+    assert forbidden.status_code == 403
+    assert manager_session.id
+
+
+async def test_delegated_team_manager_can_manage_members_and_usage(client):
+    from llm_gateway.db.models import (
+        Project,
+        Subject,
+        SubjectType,
+        Team,
+        TeamMembership,
+    )
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.security import create_user_session
+
+    now = utcnow()
+    async with AsyncSessionLocal() as session:
+        manager = Subject(
+            name="Team Manager",
+            type=SubjectType.USER,
+            login_username=f"l{uuid4().int % 100_000_000:08d}",
+        )
+        target = Subject(
+            name="Team Target",
+            type=SubjectType.USER,
+            login_username=f"l{uuid4().int % 100_000_000:08d}",
+        )
+        session.add_all([manager, target])
+        await session.flush()
+        project = Project(name=f"managed-team-project-{uuid4().hex}")
+        team = Team(name=f"managed-team-{uuid4().hex}")
+        session.add_all([project, team])
+        await session.flush()
+        manager_membership = TeamMembership(
+            team_id=team.id, subject_id=manager.id, role="manager"
+        )
+        session.add(manager_membership)
+        session.add(
+            RequestFact(
+                request_id=f"managed-team-usage-{uuid4()}",
+                started_at=now,
+                ended_at=now,
+                endpoint_family=EndpointFamily.OPENAI_RESPONSES,
+                subject_id=target.id,
+                subject_type=SubjectType.USER,
+                project_id=project.id,
+                model_alias="managed-model",
+                streaming=False,
+                outcome=RequestOutcome.SUCCESS,
+                usage_source=UsageSource.LITELLM,
+                prompt_tokens=7,
+                completion_tokens=4,
+                total_tokens=11,
+            )
+        )
+        _, manager_token = await create_user_session(
+            session, subject_id=manager.id, ttl_hours=24
+        )
+        await session.commit()
+
+    headers = {"x-session-token": manager_token}
+    teams = await client.get("/auth/managed/teams", headers=headers)
+    assert teams.status_code == 200
+    assert teams.json()[0]["team"]["id"] == str(team.id)
+
+    created = await client.post(
+        "/auth/managed/team-memberships",
+        headers=headers,
+        json={
+            "resource_id": str(team.id),
+            "subject_id": str(target.id),
+            "role": "member",
+        },
+    )
+    assert created.status_code == 200, created.text
+
+    usage = await client.get(
+        "/auth/managed/usage/summary",
+        headers=headers,
+        params={
+            "scope": "team",
+            "resource_id": str(team.id),
+            "start": (now - timedelta(minutes=1)).isoformat(),
+            "end": (now + timedelta(minutes=1)).isoformat(),
+        },
+    )
+    assert usage.status_code == 200, usage.text
+    assert usage.json()["total_tokens"] == 11
+
+    disabled = await client.patch(
+        f"/auth/managed/team-memberships/{created.json()['id']}",
+        headers=headers,
+        json={"state": "disabled"},
+    )
+    assert disabled.status_code == 200
+    assert disabled.json()["state"] == "disabled"
 
 
 async def test_openai_chat_completion_uses_real_upstream_and_records_usage(

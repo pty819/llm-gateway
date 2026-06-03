@@ -104,7 +104,16 @@ async def authenticate_gateway_key(
     if cached is not None:
         if cached is _CACHE_MISS:
             return None
-        return cached
+        key_id, subject_id, project_id = cached
+        context = await _load_auth_context(
+            session,
+            key_id=key_id,
+            subject_id=subject_id,
+            project_id=project_id,
+        )
+        if context is None:
+            auth_cache.set(cache_key, _CACHE_MISS)
+        return context
     prefix = key_prefix(raw_key)
     result = await session.execute(
         select(GatewayKey).where(col(GatewayKey.key_prefix) == prefix)
@@ -130,10 +139,32 @@ async def authenticate_gateway_key(
             auth_cache.set(cache_key, _CACHE_MISS)
             return None
         ctx = AuthContext(key=candidate, subject=subject, project=project)
-        auth_cache.set(cache_key, ctx)
+        auth_cache.set(cache_key, (candidate.id, subject.id, project.id))
         return ctx
     auth_cache.set(cache_key, _CACHE_MISS)
     return None
+
+
+async def _load_auth_context(
+    session: AsyncSession,
+    *,
+    key_id: UUID,
+    subject_id: UUID,
+    project_id: UUID,
+) -> AuthContext | None:
+    key = await session.get(GatewayKey, key_id)
+    subject = await session.get(Subject, subject_id)
+    project = await session.get(Project, project_id)
+    now = utcnow()
+    if not key or key.state != ResourceState.ACTIVE:
+        return None
+    if key.expires_at and key.expires_at <= now:
+        return None
+    if not subject or not project:
+        return None
+    if subject.state != ResourceState.ACTIVE or project.state != ResourceState.ACTIVE:
+        return None
+    return AuthContext(key=key, subject=subject, project=project)
 
 
 async def authenticate_user_session(

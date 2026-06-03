@@ -102,6 +102,13 @@
 	let ownUsageStart = $state('');
 	let ownUsageEnd = $state('');
 	let ownUsage = $state<OwnUsageSummary | null>(null);
+	let managedUsage = $state<OwnUsageSummary | null>(null);
+	let managedUsageScope = $state<'project' | 'team'>('project');
+	let managedUsageResourceId = $state('');
+	let managedSubjectSearch = $state('');
+	let managedSubjectCandidates = $state<Subject[]>([]);
+	let managedProjectMemberships = $state<ProjectMembership[]>([]);
+	let managedTeamMemberships = $state<TeamMembership[]>([]);
 	let rankingLimit = $state(50);
 	let rankingModel = $state('');
 	let gatewayBaseUrl = $state('');
@@ -141,6 +148,8 @@
 	let registerForm = $state({ username: '', full_name: '', password: '' });
 	let ownPasswordForm = $state({ current_password: '', new_password: '' });
 	let ownKeyForm = $state({ name: '个人密钥' });
+	let managedProjectMemberForm = $state({ resource_id: '', subject_id: '', role: 'member' });
+	let managedTeamMemberForm = $state({ resource_id: '', subject_id: '', role: 'member' });
 	let subjectPasswordForm = $state({ subject_id: '', new_password: '' });
 	let projectForm = $state({ name: '', owner_subject_id: '', notes: '' });
 	let membershipForm = $state({ project_id: '', subject_id: '', role: 'member' });
@@ -187,6 +196,9 @@
 	const api = $derived(new AdminApiClient('', sessionToken));
 	const isAdmin = $derived(Boolean(profile?.subject.is_admin));
 	const mustProvideRealName = $derived(Boolean(profile?.subject.requires_real_name));
+	const managedProjects = $derived(profile?.managed?.projects ?? []);
+	const managedTeams = $derived(profile?.managed?.teams ?? []);
+	const hasManagedResources = $derived(managedProjects.length > 0 || managedTeams.length > 0);
 	const gatewayOrigin = $derived((gatewayBaseUrl || '').replace(/\/+$/, ''));
 	const gatewayV1Base = $derived(`${gatewayOrigin}/v1`);
 	const responsesEndpoint = $derived(`${gatewayV1Base}/responses`);
@@ -929,6 +941,91 @@
 		});
 	}
 
+	async function refreshManagedSubjects() {
+		await run(async () => {
+			managedSubjectCandidates = await api.get<Subject[]>('/auth/managed/subjects', {
+				q: managedSubjectSearch,
+				limit: PAGE_SIZE.selectOptions
+			});
+		});
+	}
+
+	async function refreshManagedProjectMemberships(resourceId = managedProjectMemberForm.resource_id) {
+		if (!resourceId) {
+			managedProjectMemberships = [];
+			return;
+		}
+		managedProjectMemberships = await api.get<ProjectMembership[]>('/auth/managed/project-memberships', {
+			resource_id: resourceId
+		});
+	}
+
+	async function refreshManagedTeamMemberships(resourceId = managedTeamMemberForm.resource_id) {
+		if (!resourceId) {
+			managedTeamMemberships = [];
+			return;
+		}
+		managedTeamMemberships = await api.get<TeamMembership[]>('/auth/managed/team-memberships', {
+			resource_id: resourceId
+		});
+	}
+
+	async function refreshManagedUsage() {
+		await run(async () => {
+			managedUsage = await api.get<OwnUsageSummary>('/auth/managed/usage/summary', {
+				scope: managedUsageScope,
+				resource_id: managedUsageResourceId,
+				start: ownUsageStart,
+				end: ownUsageEnd
+			});
+		});
+	}
+
+	async function addManagedProjectMember() {
+		if (!managedProjectMemberForm.resource_id || !managedProjectMemberForm.subject_id) {
+			pageError = '请选择项目和用户。';
+			return;
+		}
+		await run(async () => {
+			await api.post('/auth/managed/project-memberships', {
+				resource_id: managedProjectMemberForm.resource_id,
+				subject_id: managedProjectMemberForm.subject_id,
+				role: managedProjectMemberForm.role || 'member'
+			});
+			await refreshManagedProjectMemberships();
+		});
+	}
+
+	async function removeManagedProjectMember(membership: ProjectMembership) {
+		if (!window.confirm(`确认从项目中移除 ${subjectLabel(membership.subject_id)}？`)) return;
+		await run(async () => {
+			await api.delete(`/auth/managed/project-memberships/${membership.id}`);
+			await refreshManagedProjectMemberships();
+		});
+	}
+
+	async function addManagedTeamMember() {
+		if (!managedTeamMemberForm.resource_id || !managedTeamMemberForm.subject_id) {
+			pageError = '请选择权限组和用户。';
+			return;
+		}
+		await run(async () => {
+			await api.post('/auth/managed/team-memberships', {
+				resource_id: managedTeamMemberForm.resource_id,
+				subject_id: managedTeamMemberForm.subject_id,
+				role: managedTeamMemberForm.role || 'member'
+			});
+			await refreshManagedTeamMemberships();
+		});
+	}
+
+	async function setManagedTeamMemberState(membership: TeamMembership, state: ResourceState) {
+		await run(async () => {
+			await api.patch(`/auth/managed/team-memberships/${membership.id}`, { state });
+			await refreshManagedTeamMemberships();
+		});
+	}
+
 	function defaultUsageRange() {
 		return usageRangeForDays(7);
 	}
@@ -1030,7 +1127,10 @@
 	}
 
 	function subjectLabel(id: string | null | undefined): string {
-		const subject = inventory.subjects.find((item) => item.id === id);
+		const subject =
+			inventory.subjects.find((item) => item.id === id) ??
+			managedSubjectCandidates.find((item) => item.id === id) ??
+			(profile && profile.subject.id === id ? profile.subject : undefined);
 		return subject ? subjectDisplay(subject) : short(id);
 	}
 
@@ -1251,6 +1351,46 @@
 							<div class="metric"><span>成功 / 失败</span><strong>{ownUsage?.success_count ?? 0} / {ownUsage?.failure_count ?? 0}</strong></div>
 						</div>
 					</section>
+					{#if hasManagedResources}
+						<section class="panel">
+							<h2>我管理的资源</h2>
+							<div class="grid">
+								<div class="metric"><span>管理项目</span><strong>{managedProjects.length}</strong></div>
+								<div class="metric"><span>管理权限组</span><strong>{managedTeams.length}</strong></div>
+								<div class="metric"><span>管理范围请求数</span><strong>{managedUsage?.request_count ?? 0}</strong></div>
+								<div class="metric"><span>管理范围总 token</span><strong>{managedUsage?.total_tokens ?? 0}</strong></div>
+							</div>
+							<div class="form-grid">
+								<label>范围<select bind:value={managedUsageScope}><option value="project">项目</option><option value="team">权限组</option></select></label>
+								<label>资源<select bind:value={managedUsageResourceId}><option value="">全部可管理资源</option>{#if managedUsageScope === 'project'}{#each managedProjects as item}<option value={item.project.id}>{item.project.name}</option>{/each}{:else}{#each managedTeams as item}<option value={item.team.id}>{item.team.name}</option>{/each}{/if}</select></label>
+								<button type="button" onclick={refreshManagedUsage}>查询管理范围用量</button>
+							</div>
+						</section>
+						<section class="panel">
+							<h2>项目成员管理</h2>
+							<div class="form-grid">
+								<label>项目<select bind:value={managedProjectMemberForm.resource_id} onchange={() => refreshManagedProjectMemberships()}><option value="">项目</option>{#each managedProjects as item}<option value={item.project.id}>{item.project.name}</option>{/each}</select></label>
+								<label>搜索用户<input bind:value={managedSubjectSearch} placeholder="姓名或工号" /></label>
+								<button class="secondary" type="button" onclick={refreshManagedSubjects}>搜索用户</button>
+								<label>用户<select bind:value={managedProjectMemberForm.subject_id}><option value="">用户</option>{#each managedSubjectCandidates as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label>
+								<label>角色<input bind:value={managedProjectMemberForm.role} /></label>
+								<button type="button" onclick={addManagedProjectMember}>加入项目</button>
+							</div>
+							<div class="table-wrap"><table><thead><tr><th>用户</th><th>角色</th><th>操作</th></tr></thead><tbody>{#each managedProjectMemberships as membership}<tr><td>{subjectLabel(membership.subject_id)}</td><td>{membership.role}</td><td><button class="secondary" type="button" onclick={() => removeManagedProjectMember(membership)}>移除</button></td></tr>{:else}<tr><td colspan="3" class="empty">请选择项目并加载成员。</td></tr>{/each}</tbody></table></div>
+						</section>
+						<section class="panel">
+							<h2>权限组成员管理</h2>
+							<div class="form-grid">
+								<label>权限组<select bind:value={managedTeamMemberForm.resource_id} onchange={() => refreshManagedTeamMemberships()}><option value="">权限组</option>{#each managedTeams as item}<option value={item.team.id}>{item.team.name}</option>{/each}</select></label>
+								<label>搜索用户<input bind:value={managedSubjectSearch} placeholder="姓名或工号" /></label>
+								<button class="secondary" type="button" onclick={refreshManagedSubjects}>搜索用户</button>
+								<label>用户<select bind:value={managedTeamMemberForm.subject_id}><option value="">用户</option>{#each managedSubjectCandidates as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label>
+								<label>角色<input bind:value={managedTeamMemberForm.role} /></label>
+								<button type="button" onclick={addManagedTeamMember}>加入权限组</button>
+							</div>
+							<div class="table-wrap"><table><thead><tr><th>用户</th><th>角色</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each managedTeamMemberships as membership}<tr><td>{subjectLabel(membership.subject_id)}</td><td>{membership.role}</td><td><StateBadge value={membership.state} /></td><td><button class="secondary" type="button" onclick={() => setManagedTeamMemberState(membership, membership.state === 'active' ? 'disabled' : 'active')}>{membership.state === 'active' ? '禁用' : '启用'}</button></td></tr>{:else}<tr><td colspan="4" class="empty">请选择权限组并加载成员。</td></tr>{/each}</tbody></table></div>
+						</section>
+					{/if}
 					<section class="panel">
 						<h2>可用模型</h2>
 						<div class="table-wrap"><table><thead><tr><th>模型别名</th></tr></thead><tbody>{#each profile?.models ?? [] as model}<tr><td>{model}</td></tr>{:else}<tr><td>还没有可用模型。</td></tr>{/each}</tbody></table></div>

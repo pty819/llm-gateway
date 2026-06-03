@@ -22,7 +22,7 @@ class Settings(BaseSettings):
         default="redis://localhost:6379/0", alias="LLM_GATEWAY_REDIS_URL"
     )
     trusted_proxy_headers: bool = Field(
-        default=False, alias="LLM_GATEWAY_TRUST_PROXY_HEADERS"
+        default=True, alias="LLM_GATEWAY_TRUST_PROXY_HEADERS"
     )
     trusted_proxy_cidrs: str = Field(
         default="127.0.0.0/8,::1/128", alias="LLM_GATEWAY_TRUST_PROXY_CIDRS"

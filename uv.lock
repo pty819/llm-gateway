@@ -624,7 +624,7 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.18.4" },
     { name = "asyncpg", specifier = ">=0.31.0" },
-    { name = "duckdb", specifier = ">=1.5.3" },
+    { name = "duckdb", specifier = "==1.5.3" },
     { name = "fastapi", specifier = ">=0.136.3" },
     { name = "greenlet", specifier = ">=3.5.1" },
     { name = "httpx", specifier = ">=0.28.1" },

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import logging
+import platform
+import shutil
 from datetime import datetime, timezone
+from pathlib import Path
 from threading import Lock
 from urllib.parse import urlparse
 from uuid import UUID
@@ -14,6 +18,10 @@ from llm_gateway.core.config import Settings
 logger = logging.getLogger(__name__)
 
 _TABLE = "pg.public.request_facts"
+_DUCKDB_VERSION = "v1.5.3"
+_POSTGRES_EXTENSION_NAME = "postgres_scanner"
+_ROOT = Path(__file__).resolve().parents[3]
+_VENDOR_EXTENSION_ROOT = _ROOT / "vendor" / "duckdb" / "extensions"
 
 _SUCCESS_CASE = "CASE WHEN LOWER(rf.outcome) = 'success' THEN 1 ELSE 0 END"
 
@@ -108,8 +116,7 @@ class DuckDBAnalytics:
         display = f"{host}:{port}/{database}"
         try:
             self._con = duckdb.connect()
-            self._con.execute("INSTALL postgres")
-            self._con.execute("LOAD postgres")
+            _load_postgres_extension(self._con)
             self._con.execute(
                 f"CREATE SECRET pg_secret (TYPE postgres,"
                 f" HOST '{_sql_escape(host)}',"
@@ -324,6 +331,61 @@ def _serialize_value(value: object) -> object:
     if isinstance(value, datetime):
         return _ensure_utc_iso(value)
     return value
+
+
+def _load_postgres_extension(connection) -> None:
+    local_extension = _ensure_local_postgres_extension()
+    if local_extension is not None:
+        connection.execute(f"LOAD '{_sql_escape(local_extension.as_posix())}'")
+        return
+    connection.execute("INSTALL postgres")
+    connection.execute("LOAD postgres")
+
+
+def _ensure_local_postgres_extension() -> Path | None:
+    duckdb_platform = _duckdb_platform()
+    if duckdb_platform is None:
+        return None
+
+    source = (
+        _VENDOR_EXTENSION_ROOT
+        / _DUCKDB_VERSION
+        / duckdb_platform
+        / f"{_POSTGRES_EXTENSION_NAME}.duckdb_extension.gz"
+    )
+    if not source.exists():
+        return None
+
+    target = _duckdb_extension_dir(duckdb_platform) / (
+        f"{_POSTGRES_EXTENSION_NAME}.duckdb_extension"
+    )
+    if target.exists() and target.stat().st_mtime >= source.stat().st_mtime:
+        return target
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_suffix(".duckdb_extension.tmp")
+    with gzip.open(source, "rb") as src, temp.open("wb") as dst:
+        shutil.copyfileobj(src, dst)
+    temp.replace(target)
+    return target
+
+
+def _duckdb_extension_dir(duckdb_platform: str) -> Path:
+    return Path.home() / ".duckdb" / "extensions" / _DUCKDB_VERSION / duckdb_platform
+
+
+def _duckdb_platform() -> str | None:
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    if system == "linux" and machine in {"x86_64", "amd64"}:
+        return "linux_amd64"
+    if system == "darwin" and machine in {"arm64", "aarch64"}:
+        return "osx_arm64"
+    if system == "darwin" and machine in {"x86_64", "amd64"}:
+        return "osx_amd64"
+    if system == "windows" and machine in {"amd64", "x86_64"}:
+        return "windows_amd64"
+    return None
 
 
 def _ensure_utc_iso(value: datetime | str) -> str:
