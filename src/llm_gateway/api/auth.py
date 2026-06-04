@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta
-from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
@@ -25,10 +24,17 @@ from llm_gateway.db.models import (
 )
 from llm_gateway.services.duckdb_analytics import get_analytics
 from llm_gateway.services.facts import record_audit_event
+from llm_gateway.services.managed_memberships import (
+    ManagedRole,
+    managed_role_options,
+    project_membership_payload,
+    team_membership_payload,
+)
 from llm_gateway.services.policy import (
     list_accessible_model_aliases_for_subject,
     list_subject_team_names,
 )
+from llm_gateway.services.resource_payloads import redact_gateway_key
 from llm_gateway.services.security import (
     UserSessionContext,
     create_gateway_key,
@@ -66,11 +72,6 @@ class PasswordChangeRequest(BaseModel):
 
 class ProfileUpdateRequest(BaseModel):
     full_name: str = Field(min_length=1, max_length=120)
-
-
-class ManagedRole(StrEnum):
-    MEMBER = "member"
-    MANAGER = "manager"
 
 
 class ManagedMembershipCreate(BaseModel):
@@ -121,7 +122,7 @@ async def register(
     return {
         "session_token": raw_session,
         "session_expires_at": user_session.expires_at,
-        "gateway_key": {"key": _redact_gateway_key(key), "plaintext_key": raw_key},
+        "gateway_key": {"key": redact_gateway_key(key), "plaintext_key": raw_key},
         "profile": await _profile_payload(session, subject),
         "project": project,
     }
@@ -254,7 +255,7 @@ async def list_managed_roles(
     session: AsyncSession = Depends(session_dep),
 ):
     await _require_any_managed_resource(session, context.subject.id)
-    return [{"value": role.value, "label": role.value} for role in ManagedRole]
+    return managed_role_options()
 
 
 @router.get("/managed/projects")
@@ -289,7 +290,7 @@ async def list_managed_project_memberships(
         )
     ).all()
     return [
-        _project_membership_payload(membership, subject) for membership, subject in rows
+        project_membership_payload(membership, subject) for membership, subject in rows
     ]
 
 
@@ -309,7 +310,7 @@ async def list_managed_team_memberships(
         )
     ).all()
     return [
-        _team_membership_payload(membership, subject) for membership, subject in rows
+        team_membership_payload(membership, subject) for membership, subject in rows
     ]
 
 
@@ -416,7 +417,7 @@ async def add_managed_project_member(
     )
     await session.commit()
     await session.refresh(membership)
-    return _project_membership_payload(membership, subject)
+    return project_membership_payload(membership, subject)
 
 
 @router.delete("/managed/project-memberships/{membership_id}")
@@ -487,7 +488,7 @@ async def add_managed_team_member(
     )
     await session.commit()
     await session.refresh(membership)
-    return _team_membership_payload(membership, subject)
+    return team_membership_payload(membership, subject)
 
 
 @router.patch("/managed/team-memberships/{membership_id}")
@@ -591,7 +592,7 @@ async def issue_own_key(
         detail={"key_prefix": key.key_prefix},
     )
     await session.commit()
-    return {"key": _redact_gateway_key(key), "plaintext_key": raw_key}
+    return {"key": redact_gateway_key(key), "plaintext_key": raw_key}
 
 
 async def _profile_payload(session: AsyncSession, subject: Subject) -> dict[str, Any]:
@@ -612,7 +613,7 @@ async def _profile_payload(session: AsyncSession, subject: Subject) -> dict[str,
         "models": await list_accessible_model_aliases_for_subject(
             session, subject_id=subject.id
         ),
-        "keys": [_redact_gateway_key(key) for key in keys],
+        "keys": [redact_gateway_key(key) for key in keys],
         "managed": {
             "projects": await _managed_projects_payload(session, subject.id),
             "teams": await _managed_teams_payload(session, subject.id),
@@ -823,46 +824,9 @@ def _public_subject(subject: Subject) -> dict[str, Any]:
     }
 
 
-def _project_membership_payload(
-    membership: ProjectMembership, subject: Subject
-) -> dict[str, Any]:
-    return {
-        "id": membership.id,
-        "created_at": membership.created_at,
-        "updated_at": membership.updated_at,
-        "project_id": membership.project_id,
-        "subject_id": membership.subject_id,
-        "subject_name": subject.name,
-        "subject_login_username": subject.login_username,
-        "role": membership.role,
-    }
-
-
-def _team_membership_payload(
-    membership: TeamMembership, subject: Subject
-) -> dict[str, Any]:
-    return {
-        "id": membership.id,
-        "created_at": membership.created_at,
-        "updated_at": membership.updated_at,
-        "team_id": membership.team_id,
-        "subject_id": membership.subject_id,
-        "subject_name": subject.name,
-        "subject_login_username": subject.login_username,
-        "role": membership.role,
-        "state": membership.state,
-    }
-
-
 def _requires_real_name(subject: Subject) -> bool:
     if subject.is_admin:
         return False
     name = subject.name.strip()
     username = normalize_username(subject.login_username or "")
     return not name or (bool(username) and normalize_username(name) == username)
-
-
-def _redact_gateway_key(key: GatewayKey) -> dict[str, Any]:
-    data = key.model_dump()
-    data["key_hash"] = None
-    return data

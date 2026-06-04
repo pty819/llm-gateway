@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -78,6 +79,23 @@ async def mark_connection_open(
 
 async def mark_connection_closed(redis: Redis, member: str) -> None:
     await redis.zrem(ACTIVE_KEY, member)
+
+
+@asynccontextmanager
+async def tracked_runtime_connection(redis: Redis, *, request_id: str, route):
+    member = None
+    with suppress(Exception):
+        member = await mark_connection_open(
+            redis,
+            request_id=request_id,
+            info=route_info(route.model_alias, route.upstream),
+        )
+    try:
+        yield
+    finally:
+        if member:
+            with suppress(Exception):
+                await mark_connection_closed(redis, member)
 
 
 async def runtime_snapshot(

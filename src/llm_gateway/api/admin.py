@@ -1,5 +1,4 @@
 from datetime import datetime
-from collections.abc import Sequence
 from typing import Any, Literal
 from uuid import UUID
 
@@ -31,6 +30,12 @@ from llm_gateway.db.models import (
     UpstreamTarget,
     UserSession,
     utcnow,
+)
+from llm_gateway.services.resource_payloads import (
+    apply_model_patch,
+    paginated,
+    redact_gateway_key,
+    redact_upstream,
 )
 from llm_gateway.services.duckdb_analytics import get_analytics
 from llm_gateway.services.facts import record_audit_event
@@ -263,7 +268,7 @@ async def list_subjects(
         .scalars()
         .all()
     )
-    return _paginated(rows, total, limit, offset)
+    return paginated(rows, total, limit, offset)
 
 
 @router.patch("/subjects/{subject_id}")
@@ -279,7 +284,7 @@ async def update_subject(
             await _ensure_login_username_available(
                 session, payload.login_username, subject_id=subject.id
             )
-    _apply_patch(subject, payload)
+    apply_model_patch(subject, payload)
     await _audit_update(session, "subject.update", "subject", subject.id, payload)
     await session.commit()
     await session.refresh(subject)
@@ -450,7 +455,7 @@ async def list_projects(
     stmt = select(Project).order_by(col(Project.created_at).desc())
     total = await _count_rows(session, select(func.count()).select_from(Project))
     rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
-    return _paginated(rows, total, limit, offset)
+    return paginated(rows, total, limit, offset)
 
 
 @router.patch("/projects/{project_id}")
@@ -462,7 +467,7 @@ async def update_project(
     project = await _get_or_404(session, Project, project_id)
     if payload.owner_subject_id:
         await _get_or_404(session, Subject, payload.owner_subject_id)
-    _apply_patch(project, payload)
+    apply_model_patch(project, payload)
     await _audit_update(session, "project.update", "project", project.id, payload)
     await session.commit()
     await session.refresh(project)
@@ -501,7 +506,7 @@ async def list_project_memberships(
         session, select(func.count()).select_from(ProjectMembership)
     )
     rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
-    return _paginated(rows, total, limit, offset)
+    return paginated(rows, total, limit, offset)
 
 
 @router.post("/gateway-keys")
@@ -526,7 +531,7 @@ async def issue_gateway_key(
     )
     await session.commit()
     await session.refresh(key)
-    return {"key": _redact_gateway_key(key), "plaintext_key": raw_key}
+    return {"key": redact_gateway_key(key), "plaintext_key": raw_key}
 
 
 @router.get("/gateway-keys")
@@ -538,9 +543,7 @@ async def list_gateway_keys(
     stmt = select(GatewayKey).order_by(col(GatewayKey.created_at).desc())
     total = await _count_rows(session, select(func.count()).select_from(GatewayKey))
     rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
-    return _paginated(
-        [_redact_gateway_key(item) for item in rows], total, limit, offset
-    )
+    return paginated([redact_gateway_key(item) for item in rows], total, limit, offset)
 
 
 @router.patch("/gateway-keys/{gateway_key_id}/state")
@@ -561,7 +564,7 @@ async def set_gateway_key_state(
         detail={"state": payload.state.value},
     )
     await session.commit()
-    return _redact_gateway_key(key)
+    return redact_gateway_key(key)
 
 
 @router.post("/model-aliases")
@@ -608,7 +611,7 @@ async def update_model_alias(
     session: AsyncSession = Depends(session_dep),
 ):
     model_alias = await _get_or_404(session, ModelAlias, model_alias_id)
-    _apply_patch(model_alias, payload)
+    apply_model_patch(model_alias, payload)
     await _audit_update(
         session, "model_alias.update", "model_alias", model_alias.id, payload
     )
@@ -759,7 +762,7 @@ async def list_teams(
     stmt = select(Team).order_by(col(Team.name))
     total = await _count_rows(session, select(func.count()).select_from(Team))
     rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
-    return _paginated(rows, total, limit, offset)
+    return paginated(rows, total, limit, offset)
 
 
 @router.patch("/teams/{team_id}")
@@ -767,7 +770,7 @@ async def update_team(
     team_id: UUID, payload: TeamUpdate, session: AsyncSession = Depends(session_dep)
 ):
     team = await _get_or_404(session, Team, team_id)
-    _apply_patch(team, payload)
+    apply_model_patch(team, payload)
     await _audit_update(session, "team.update", "team", team.id, payload)
     await session.commit()
     await session.refresh(team)
@@ -807,7 +810,7 @@ async def list_team_memberships(
     stmt = select(TeamMembership).order_by(col(TeamMembership.created_at).desc())
     total = await _count_rows(session, select(func.count()).select_from(TeamMembership))
     rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
-    return _paginated(rows, total, limit, offset)
+    return paginated(rows, total, limit, offset)
 
 
 @router.patch("/team-memberships/{membership_id}/state")
@@ -922,7 +925,7 @@ async def create_upstream(
     )
     await session.commit()
     await session.refresh(upstream)
-    return _redact_upstream(upstream)
+    return redact_upstream(upstream)
 
 
 @router.get("/upstreams")
@@ -930,7 +933,7 @@ async def list_upstreams(session: AsyncSession = Depends(session_dep)):
     result = await session.execute(
         select(UpstreamTarget).order_by(col(UpstreamTarget.created_at).desc())
     )
-    return [_redact_upstream(item) for item in result.scalars().all()]
+    return [redact_upstream(item) for item in result.scalars().all()]
 
 
 @router.get("/upstreams/{upstream_id}/health")
@@ -939,7 +942,7 @@ async def upstream_health(
 ):
     upstream = await _get_or_404(session, UpstreamTarget, upstream_id)
     result = await check_upstream_health(upstream)
-    return {"upstream": _redact_upstream(upstream), "health": result}
+    return {"upstream": redact_upstream(upstream), "health": result}
 
 
 @router.patch("/upstreams/{upstream_id}")
@@ -949,13 +952,13 @@ async def update_upstream(
     session: AsyncSession = Depends(session_dep),
 ):
     upstream = await _get_or_404(session, UpstreamTarget, upstream_id)
-    _apply_patch(upstream, payload)
+    apply_model_patch(upstream, payload)
     await _audit_update(
         session, "upstream.update", "upstream_target", upstream.id, payload
     )
     await session.commit()
     await session.refresh(upstream)
-    return _redact_upstream(upstream)
+    return redact_upstream(upstream)
 
 
 @router.delete("/upstreams/{upstream_id}")
@@ -1021,7 +1024,7 @@ async def update_router_command_config(
     session: AsyncSession = Depends(session_dep),
 ):
     config = await _get_or_404(session, RouterCommandConfig, config_id)
-    _apply_patch(config, payload)
+    apply_model_patch(config, payload)
     await _audit_update(
         session,
         "router_command_config.update",
@@ -1069,7 +1072,7 @@ async def update_rate_policy(
     session: AsyncSession = Depends(session_dep),
 ):
     policy = await _get_or_404(session, RatePolicy, policy_id)
-    _apply_patch(policy, payload)
+    apply_model_patch(policy, payload)
     await _audit_update(
         session, "rate_policy.update", "rate_policy", policy.id, payload
     )
@@ -1263,34 +1266,6 @@ async def _delete_project_without_usage(
         delete(GatewayKey).where(col(GatewayKey.project_id) == project.id)
     )
     await session.delete(project)
-
-
-def _redact_upstream(upstream: UpstreamTarget) -> dict[str, Any]:
-    data = upstream.model_dump()
-    data["api_key_value"] = None
-    data["has_api_key"] = bool(upstream.api_key_value or upstream.api_key_ref)
-    return data
-
-
-def _redact_gateway_key(key: GatewayKey) -> dict[str, Any]:
-    data = key.model_dump()
-    data["key_hash"] = None
-    return data
-
-
-def _apply_patch(target, payload: BaseModel) -> None:
-    for key, value in payload.model_dump(exclude_unset=True).items():
-        setattr(target, key, value)
-    target.updated_at = utcnow()
-
-
-def _paginated(items: Sequence, total: int, limit: int | None, offset: int) -> dict:
-    return {
-        "items": items,
-        "total": total,
-        "limit": limit if limit is not None else total,
-        "offset": offset,
-    }
 
 
 async def _audit_update(
