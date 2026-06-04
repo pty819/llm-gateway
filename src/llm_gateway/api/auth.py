@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
@@ -67,10 +68,15 @@ class ProfileUpdateRequest(BaseModel):
     full_name: str = Field(min_length=1, max_length=120)
 
 
+class ManagedRole(StrEnum):
+    MEMBER = "member"
+    MANAGER = "manager"
+
+
 class ManagedMembershipCreate(BaseModel):
     resource_id: UUID
     subject_id: UUID
-    role: str = Field(default="member", min_length=1, max_length=64)
+    role: ManagedRole = ManagedRole.MEMBER
 
 
 class ManagedTeamMembershipPatch(BaseModel):
@@ -242,6 +248,15 @@ async def list_managed_candidate_subjects(
     return [_public_subject(subject) for subject in rows]
 
 
+@router.get("/managed/roles")
+async def list_managed_roles(
+    context: UserSessionContext = Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    await _require_any_managed_resource(session, context.subject.id)
+    return [{"value": role.value, "label": role.value} for role in ManagedRole]
+
+
 @router.get("/managed/projects")
 async def list_managed_projects(
     context: UserSessionContext = Depends(user_session_dep),
@@ -266,17 +281,16 @@ async def list_managed_project_memberships(
 ):
     await _require_project_manager(session, context.subject.id, resource_id)
     rows = (
-        (
-            await session.execute(
-                select(ProjectMembership)
-                .where(col(ProjectMembership.project_id) == resource_id)
-                .order_by(col(ProjectMembership.created_at).desc())
-            )
+        await session.execute(
+            select(ProjectMembership, Subject)
+            .join(Subject, col(Subject.id) == col(ProjectMembership.subject_id))
+            .where(col(ProjectMembership.project_id) == resource_id)
+            .order_by(col(ProjectMembership.created_at).desc())
         )
-        .scalars()
-        .all()
-    )
-    return rows
+    ).all()
+    return [
+        _project_membership_payload(membership, subject) for membership, subject in rows
+    ]
 
 
 @router.get("/managed/team-memberships")
@@ -287,17 +301,16 @@ async def list_managed_team_memberships(
 ):
     await _require_team_manager(session, context.subject.id, resource_id)
     rows = (
-        (
-            await session.execute(
-                select(TeamMembership)
-                .where(col(TeamMembership.team_id) == resource_id)
-                .order_by(col(TeamMembership.created_at).desc())
-            )
+        await session.execute(
+            select(TeamMembership, Subject)
+            .join(Subject, col(Subject.id) == col(TeamMembership.subject_id))
+            .where(col(TeamMembership.team_id) == resource_id)
+            .order_by(col(TeamMembership.created_at).desc())
         )
-        .scalars()
-        .all()
-    )
-    return rows
+    ).all()
+    return [
+        _team_membership_payload(membership, subject) for membership, subject in rows
+    ]
 
 
 @router.get("/managed/usage/summary")
@@ -370,7 +383,7 @@ async def add_managed_project_member(
     session: AsyncSession = Depends(session_dep),
 ):
     await _require_project_manager(session, context.subject.id, payload.resource_id)
-    await _get_active_subject(session, payload.subject_id)
+    subject = await _get_active_subject(session, payload.subject_id)
     result = await session.execute(
         select(ProjectMembership).where(
             col(ProjectMembership.project_id) == payload.resource_id,
@@ -379,13 +392,13 @@ async def add_managed_project_member(
     )
     membership = result.scalar_one_or_none()
     if membership:
-        membership.role = payload.role
+        membership.role = payload.role.value
         membership.updated_at = utcnow()
     else:
         membership = ProjectMembership(
             project_id=payload.resource_id,
             subject_id=payload.subject_id,
-            role=payload.role,
+            role=payload.role.value,
         )
         session.add(membership)
         await session.flush()
@@ -403,7 +416,7 @@ async def add_managed_project_member(
     )
     await session.commit()
     await session.refresh(membership)
-    return membership
+    return _project_membership_payload(membership, subject)
 
 
 @router.delete("/managed/project-memberships/{membership_id}")
@@ -440,7 +453,7 @@ async def add_managed_team_member(
     session: AsyncSession = Depends(session_dep),
 ):
     await _require_team_manager(session, context.subject.id, payload.resource_id)
-    await _get_active_subject(session, payload.subject_id)
+    subject = await _get_active_subject(session, payload.subject_id)
     result = await session.execute(
         select(TeamMembership).where(
             col(TeamMembership.team_id) == payload.resource_id,
@@ -449,14 +462,14 @@ async def add_managed_team_member(
     )
     membership = result.scalar_one_or_none()
     if membership:
-        membership.role = payload.role
+        membership.role = payload.role.value
         membership.state = ResourceState.ACTIVE
         membership.updated_at = utcnow()
     else:
         membership = TeamMembership(
             team_id=payload.resource_id,
             subject_id=payload.subject_id,
-            role=payload.role,
+            role=payload.role.value,
         )
         session.add(membership)
         await session.flush()
@@ -474,7 +487,7 @@ async def add_managed_team_member(
     )
     await session.commit()
     await session.refresh(membership)
-    return membership
+    return _team_membership_payload(membership, subject)
 
 
 @router.patch("/managed/team-memberships/{membership_id}")
@@ -807,6 +820,37 @@ def _public_subject(subject: Subject) -> dict[str, Any]:
         "requires_real_name": _requires_real_name(subject),
         "created_at": subject.created_at,
         "updated_at": subject.updated_at,
+    }
+
+
+def _project_membership_payload(
+    membership: ProjectMembership, subject: Subject
+) -> dict[str, Any]:
+    return {
+        "id": membership.id,
+        "created_at": membership.created_at,
+        "updated_at": membership.updated_at,
+        "project_id": membership.project_id,
+        "subject_id": membership.subject_id,
+        "subject_name": subject.name,
+        "subject_login_username": subject.login_username,
+        "role": membership.role,
+    }
+
+
+def _team_membership_payload(
+    membership: TeamMembership, subject: Subject
+) -> dict[str, Any]:
+    return {
+        "id": membership.id,
+        "created_at": membership.created_at,
+        "updated_at": membership.updated_at,
+        "team_id": membership.team_id,
+        "subject_id": membership.subject_id,
+        "subject_name": subject.name,
+        "subject_login_username": subject.login_username,
+        "role": membership.role,
+        "state": membership.state,
     }
 
 

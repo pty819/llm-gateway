@@ -21,12 +21,8 @@ from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.db.models import EndpointFamily, RequestOutcome, utcnow
 from llm_gateway.services.facts_queue import enqueue_fact
 from llm_gateway.services.litellm_client import (
-    anthropic_messages_once,
-    anthropic_messages_stream,
-    completion_once,
-    completion_stream,
-    responses_once,
-    responses_stream,
+    upstream_request_once,
+    upstream_request_stream,
 )
 from llm_gateway.services.policy import (
     PolicyDenied,
@@ -231,8 +227,11 @@ async def openai_chat_completions(
                 redis=redis, request_id=request_id, route=route
             )
             try:
-                result = await completion_once(
-                    model_alias=route.model_alias, upstream=route.upstream, body=body
+                result = await upstream_request_once(
+                    endpoint_family=EndpointFamily.OPENAI_CHAT,
+                    model_alias=route.model_alias,
+                    upstream=route.upstream,
+                    body=body,
                 )
             finally:
                 await _mark_runtime_connection_closed(redis, metrics_member)
@@ -297,7 +296,8 @@ async def _stream_openai_response(
         redis=redis, request_id=request_id, route=route
     )
     try:
-        async for event, event_usage in completion_stream(
+        async for event, event_usage in upstream_request_stream(
+            endpoint_family=EndpointFamily.OPENAI_CHAT,
             model_alias=route.model_alias,
             upstream=route.upstream,
             body=body,
@@ -395,8 +395,11 @@ async def openai_responses(
                 redis=redis, request_id=request_id, route=route
             )
             try:
-                result = await responses_once(
-                    model_alias=route.model_alias, upstream=route.upstream, body=body
+                result = await upstream_request_once(
+                    endpoint_family=EndpointFamily.OPENAI_RESPONSES,
+                    model_alias=route.model_alias,
+                    upstream=route.upstream,
+                    body=body,
                 )
             finally:
                 await _mark_runtime_connection_closed(redis, metrics_member)
@@ -461,7 +464,8 @@ async def _stream_responses(
         redis=redis, request_id=request_id, route=route
     )
     try:
-        async for event, event_usage in responses_stream(
+        async for event, event_usage in upstream_request_stream(
+            endpoint_family=EndpointFamily.OPENAI_RESPONSES,
             model_alias=route.model_alias,
             upstream=route.upstream,
             body=body,
@@ -557,8 +561,11 @@ async def anthropic_messages(
                 redis=redis, request_id=request_id, route=route
             )
             try:
-                result = await anthropic_messages_once(
-                    model_alias=route.model_alias, upstream=route.upstream, body=body
+                result = await upstream_request_once(
+                    endpoint_family=EndpointFamily.ANTHROPIC_MESSAGES,
+                    model_alias=route.model_alias,
+                    upstream=route.upstream,
+                    body=body,
                 )
             finally:
                 await _mark_runtime_connection_closed(redis, metrics_member)
@@ -623,7 +630,8 @@ async def _stream_anthropic_response(
         redis=redis, request_id=request_id, route=route
     )
     try:
-        async for event, event_usage in anthropic_messages_stream(
+        async for event, event_usage in upstream_request_stream(
+            endpoint_family=EndpointFamily.ANTHROPIC_MESSAGES,
             model_alias=route.model_alias,
             upstream=route.upstream,
             body=body,

@@ -6,7 +6,7 @@ import httpx
 import litellm
 from litellm import acompletion, anthropic_messages, aresponses
 
-from llm_gateway.db.models import ModelAlias, UpstreamTarget
+from llm_gateway.db.models import EndpointFamily, ModelAlias, UpstreamTarget
 from llm_gateway.services.facts import extract_usage_dict
 
 
@@ -16,12 +16,34 @@ class LiteLLMCallResult:
         self.usage = usage
 
 
-litellm.use_chat_completions_url_for_anthropic_messages = True
 ANTHROPIC_DROP_PARAMS = True
+OPENAI_CHAT_COMPLETIONS_PREFIXES = {
+    "custom_openai",
+    "hosted_vllm",
+    "openai",
+    "openai_like",
+}
+
+
+def configure_litellm_routing() -> None:
+    # Claude Code sends Anthropic Messages while vLLM/vLLM-router expose OpenAI
+    # chat-completions. Keep this process-wide LiteLLM adapter behavior explicit.
+    litellm.use_chat_completions_url_for_anthropic_messages = True
+
+
+configure_litellm_routing()
 
 
 def _api_key(upstream: UpstreamTarget) -> str | None:
     return upstream.api_key_value or upstream.api_key_ref
+
+
+def litellm_model_prefix(model_alias: ModelAlias) -> str:
+    return model_alias.litellm_model.split("/", 1)[0].lower()
+
+
+def uses_openai_chat_completions_upstream(model_alias: ModelAlias) -> bool:
+    return litellm_model_prefix(model_alias) in OPENAI_CHAT_COMPLETIONS_PREFIXES
 
 
 async def check_upstream_health(
@@ -65,6 +87,28 @@ async def completion_once(
     return LiteLLMCallResult(response=response, usage=_usage_from_response(response))
 
 
+async def upstream_request_once(
+    *,
+    endpoint_family: EndpointFamily,
+    model_alias: ModelAlias,
+    upstream: UpstreamTarget,
+    body: dict[str, Any],
+) -> LiteLLMCallResult:
+    if endpoint_family == EndpointFamily.OPENAI_CHAT:
+        return await completion_once(
+            model_alias=model_alias, upstream=upstream, body=body
+        )
+    if endpoint_family == EndpointFamily.OPENAI_RESPONSES:
+        return await responses_once(
+            model_alias=model_alias, upstream=upstream, body=body
+        )
+    if endpoint_family == EndpointFamily.ANTHROPIC_MESSAGES:
+        return await anthropic_messages_once(
+            model_alias=model_alias, upstream=upstream, body=body
+        )
+    raise ValueError(f"unsupported endpoint family: {endpoint_family}")
+
+
 async def completion_stream(
     *,
     model_alias: ModelAlias,
@@ -86,6 +130,34 @@ async def completion_stream(
         yield f"data: {_json_dumps(_to_plain(chunk))}\n\n", usage
         await asyncio.sleep(0)
     yield "data: [DONE]\n\n", None
+
+
+async def upstream_request_stream(
+    *,
+    endpoint_family: EndpointFamily,
+    model_alias: ModelAlias,
+    upstream: UpstreamTarget,
+    body: dict[str, Any],
+) -> AsyncGenerator[tuple[str, dict[str, Any] | None], None]:
+    if endpoint_family == EndpointFamily.OPENAI_CHAT:
+        async for item in completion_stream(
+            model_alias=model_alias, upstream=upstream, body=body
+        ):
+            yield item
+        return
+    if endpoint_family == EndpointFamily.OPENAI_RESPONSES:
+        async for item in responses_stream(
+            model_alias=model_alias, upstream=upstream, body=body
+        ):
+            yield item
+        return
+    if endpoint_family == EndpointFamily.ANTHROPIC_MESSAGES:
+        async for item in anthropic_messages_stream(
+            model_alias=model_alias, upstream=upstream, body=body
+        ):
+            yield item
+        return
+    raise ValueError(f"unsupported endpoint family: {endpoint_family}")
 
 
 async def anthropic_messages_once(
@@ -143,6 +215,8 @@ async def responses_once(
 ) -> LiteLLMCallResult:
     payload = dict(body)
     payload["model"] = model_alias.litellm_model
+    if uses_openai_chat_completions_upstream(model_alias):
+        payload["use_chat_completions_api"] = True
     response = await aresponses(
         api_base=upstream.base_url,
         api_key=_api_key(upstream),
@@ -161,6 +235,8 @@ async def responses_stream(
     payload = dict(body)
     payload["model"] = model_alias.litellm_model
     payload["stream"] = True
+    if uses_openai_chat_completions_upstream(model_alias):
+        payload["use_chat_completions_api"] = True
     stream = await aresponses(
         api_base=upstream.base_url,
         api_key=_api_key(upstream),

@@ -40,6 +40,8 @@ export type ProjectMembership = Timestamped & {
 	id: string;
 	project_id: string;
 	subject_id: string;
+	subject_name?: string | null;
+	subject_login_username?: string | null;
 	role: string;
 };
 
@@ -94,6 +96,8 @@ export type TeamMembership = Timestamped & {
 	id: string;
 	team_id: string;
 	subject_id: string;
+	subject_name?: string | null;
+	subject_login_username?: string | null;
 	role: string;
 	state: ResourceState;
 };

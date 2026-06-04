@@ -563,6 +563,13 @@ async def test_delegated_project_manager_can_manage_members_and_usage(client):
     assert profile.status_code == 200
     assert profile.json()["managed"]["projects"][0]["project"]["id"] == str(project.id)
 
+    roles = await client.get("/auth/managed/roles", headers=headers)
+    assert roles.status_code == 200
+    assert roles.json() == [
+        {"value": "member", "label": "member"},
+        {"value": "manager", "label": "manager"},
+    ]
+
     usage = await client.get(
         "/auth/managed/usage/summary",
         headers=headers,
@@ -594,8 +601,37 @@ async def test_delegated_project_manager_can_manage_members_and_usage(client):
         },
     )
     assert created.status_code == 200, created.text
+    created_payload = created.json()
+    assert created_payload["subject_id"] == str(target.id)
+    assert created_payload["subject_name"] == target.name
+    assert created_payload["subject_login_username"] == target.login_username
+    assert created_payload["role"] == "member"
+
+    memberships = await client.get(
+        "/auth/managed/project-memberships",
+        headers=headers,
+        params={"resource_id": str(project.id)},
+    )
+    assert memberships.status_code == 200
+    assert any(
+        item["subject_name"] == target.name
+        and item["subject_login_username"] == target.login_username
+        for item in memberships.json()
+    )
+
+    invalid_role = await client.post(
+        "/auth/managed/project-memberships",
+        headers=headers,
+        json={
+            "resource_id": str(project.id),
+            "subject_id": str(target.id),
+            "role": "owner",
+        },
+    )
+    assert invalid_role.status_code == 422
+
     removed = await client.delete(
-        f"/auth/managed/project-memberships/{created.json()['id']}",
+        f"/auth/managed/project-memberships/{created_payload['id']}",
         headers=headers,
     )
     assert removed.status_code == 200
@@ -688,6 +724,34 @@ async def test_delegated_team_manager_can_manage_members_and_usage(client):
         },
     )
     assert created.status_code == 200, created.text
+    created_payload = created.json()
+    assert created_payload["subject_id"] == str(target.id)
+    assert created_payload["subject_name"] == target.name
+    assert created_payload["subject_login_username"] == target.login_username
+    assert created_payload["role"] == "member"
+
+    memberships = await client.get(
+        "/auth/managed/team-memberships",
+        headers=headers,
+        params={"resource_id": str(team.id)},
+    )
+    assert memberships.status_code == 200
+    assert any(
+        item["subject_name"] == target.name
+        and item["subject_login_username"] == target.login_username
+        for item in memberships.json()
+    )
+
+    invalid_role = await client.post(
+        "/auth/managed/team-memberships",
+        headers=headers,
+        json={
+            "resource_id": str(team.id),
+            "subject_id": str(target.id),
+            "role": "owner",
+        },
+    )
+    assert invalid_role.status_code == 422
 
     usage = await client.get(
         "/auth/managed/usage/summary",
@@ -703,7 +767,7 @@ async def test_delegated_team_manager_can_manage_members_and_usage(client):
     assert usage.json()["total_tokens"] == 11
 
     disabled = await client.patch(
-        f"/auth/managed/team-memberships/{created.json()['id']}",
+        f"/auth/managed/team-memberships/{created_payload['id']}",
         headers=headers,
         json={"state": "disabled"},
     )
@@ -861,7 +925,10 @@ async def test_model_ip_allowlist_accepts_forwarded_client_from_trusted_vite_pro
     from llm_gateway.db.session import AsyncSessionLocal
     from llm_gateway.main import app
 
-    async def fake_completion_once(*, model_alias, upstream, body):
+    async def fake_upstream_request_once(
+        *, endpoint_family, model_alias, upstream, body
+    ):
+        assert endpoint_family == EndpointFamily.OPENAI_CHAT
         return LiteLLMCallResult(
             response={
                 "id": "chatcmpl-test",
@@ -878,7 +945,9 @@ async def test_model_ip_allowlist_accepts_forwarded_client_from_trusted_vite_pro
             usage={"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
         )
 
-    monkeypatch.setattr("llm_gateway.api.proxy.completion_once", fake_completion_once)
+    monkeypatch.setattr(
+        "llm_gateway.api.proxy.upstream_request_once", fake_upstream_request_once
+    )
 
     def trusted_proxy_settings() -> Settings:
         settings = Settings()
@@ -933,7 +1002,10 @@ async def test_openai_chat_completion_records_realtime_runtime_metrics(
 
     observed_during_call: dict[str, object] = {}
 
-    async def fake_completion_once(*, model_alias, upstream, body):
+    async def fake_upstream_request_once(
+        *, endpoint_family, model_alias, upstream, body
+    ):
+        assert endpoint_family == EndpointFamily.OPENAI_CHAT
         observed_during_call.update(await runtime_snapshot(redis_client))
         return LiteLLMCallResult(
             response={
@@ -952,7 +1024,9 @@ async def test_openai_chat_completion_records_realtime_runtime_metrics(
         )
 
     await redis_client.delete(ACTIVE_KEY)
-    monkeypatch.setattr("llm_gateway.api.proxy.completion_once", fake_completion_once)
+    monkeypatch.setattr(
+        "llm_gateway.api.proxy.upstream_request_once", fake_upstream_request_once
+    )
 
     request_id = f"pytest-runtime-metrics-{uuid4()}"
     response = await client.post(

@@ -111,6 +111,10 @@
 	let managedUsageResourceId = $state('');
 	let managedSubjectSearch = $state('');
 	let managedSubjectCandidates = $state<Subject[]>([]);
+	let managedRoles = $state<{ value: string; label: string }[]>([
+		{ value: 'member', label: 'member' },
+		{ value: 'manager', label: 'manager' }
+	]);
 	let managedProjectMemberships = $state<ProjectMembership[]>([]);
 	let managedTeamMemberships = $state<TeamMembership[]>([]);
 	let rankingLimit = $state(50);
@@ -350,6 +354,7 @@
 				startRealtimeStream();
 			} else {
 				stopRealtimeStream();
+				await refreshManagedRoles();
 				await fetchOwnUsage();
 			}
 		});
@@ -372,6 +377,7 @@
 			connected = true;
 			persistSessionToken(sessionToken, rememberSession);
 			registerForm = { username: '', full_name: '', password: '' };
+			await refreshManagedRoles();
 			await fetchOwnUsage();
 		});
 	}
@@ -387,6 +393,7 @@
 				startRealtimeStream();
 			} else {
 				stopRealtimeStream();
+				await refreshManagedRoles();
 				await fetchOwnUsage();
 			}
 		});
@@ -476,6 +483,7 @@
 			await refreshReady();
 			if (!isAdmin) {
 				profile = await api.get<AuthProfile>('/auth/me');
+				await refreshManagedRoles();
 				await fetchOwnUsage();
 				return;
 			}
@@ -1032,6 +1040,11 @@
 		});
 	}
 
+	async function refreshManagedRoles() {
+		if (!hasManagedResources) return;
+		managedRoles = await api.get<{ value: string; label: string }[]>('/auth/managed/roles');
+	}
+
 	async function refreshManagedProjectMemberships(resourceId = managedProjectMemberForm.resource_id) {
 		if (!resourceId) {
 			managedProjectMemberships = [];
@@ -1079,7 +1092,7 @@
 	}
 
 	async function removeManagedProjectMember(membership: ProjectMembership) {
-		if (!window.confirm(`确认从项目中移除 ${subjectLabel(membership.subject_id)}？`)) return;
+		if (!window.confirm(`确认从项目中移除 ${membershipSubjectLabel(membership)}？`)) return;
 		await run(async () => {
 			await api.delete(`/auth/managed/project-memberships/${membership.id}`);
 			await refreshManagedProjectMemberships();
@@ -1214,6 +1227,16 @@
 			managedSubjectCandidates.find((item) => item.id === id) ??
 			(profile && profile.subject.id === id ? profile.subject : undefined);
 		return subject ? subjectDisplay(subject) : short(id);
+	}
+
+	function membershipSubjectLabel(membership: ProjectMembership | TeamMembership): string {
+		const directName = membership.subject_name?.trim();
+		if (directName) {
+			return membership.subject_login_username
+				? `${directName} / ${membership.subject_login_username}`
+				: directName;
+		}
+		return subjectLabel(membership.subject_id);
 	}
 
 	function projectLabel(id: string | null | undefined): string {
@@ -1467,10 +1490,10 @@
 								<label>搜索用户<input bind:value={managedSubjectSearch} placeholder="姓名或工号" /></label>
 								<button class="secondary" type="button" onclick={refreshManagedSubjects}>搜索用户</button>
 								<label>用户<select bind:value={managedProjectMemberForm.subject_id}><option value="">用户</option>{#each managedSubjectCandidates as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label>
-								<label>角色<input bind:value={managedProjectMemberForm.role} /></label>
+								<label>角色<select bind:value={managedProjectMemberForm.role}>{#each managedRoles as role}<option value={role.value}>{role.label}</option>{/each}</select></label>
 								<button type="button" onclick={addManagedProjectMember}>加入项目</button>
 							</div>
-							<div class="table-wrap"><table><thead><tr><th>用户</th><th>角色</th><th>操作</th></tr></thead><tbody>{#each managedProjectMemberships as membership}<tr><td>{subjectLabel(membership.subject_id)}</td><td>{membership.role}</td><td><button class="secondary" type="button" onclick={() => removeManagedProjectMember(membership)}>移除</button></td></tr>{:else}<tr><td colspan="3" class="empty">请选择项目并加载成员。</td></tr>{/each}</tbody></table></div>
+							<div class="table-wrap"><table><thead><tr><th>用户</th><th>角色</th><th>操作</th></tr></thead><tbody>{#each managedProjectMemberships as membership}<tr><td>{membershipSubjectLabel(membership)}</td><td>{membership.role}</td><td><button class="secondary" type="button" onclick={() => removeManagedProjectMember(membership)}>移除</button></td></tr>{:else}<tr><td colspan="3" class="empty">请选择项目并加载成员。</td></tr>{/each}</tbody></table></div>
 						</section>
 						<section class="panel">
 							<h2>权限组成员管理</h2>
@@ -1479,10 +1502,10 @@
 								<label>搜索用户<input bind:value={managedSubjectSearch} placeholder="姓名或工号" /></label>
 								<button class="secondary" type="button" onclick={refreshManagedSubjects}>搜索用户</button>
 								<label>用户<select bind:value={managedTeamMemberForm.subject_id}><option value="">用户</option>{#each managedSubjectCandidates as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label>
-								<label>角色<input bind:value={managedTeamMemberForm.role} /></label>
+								<label>角色<select bind:value={managedTeamMemberForm.role}>{#each managedRoles as role}<option value={role.value}>{role.label}</option>{/each}</select></label>
 								<button type="button" onclick={addManagedTeamMember}>加入权限组</button>
 							</div>
-							<div class="table-wrap"><table><thead><tr><th>用户</th><th>角色</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each managedTeamMemberships as membership}<tr><td>{subjectLabel(membership.subject_id)}</td><td>{membership.role}</td><td><StateBadge value={membership.state} /></td><td><button class="secondary" type="button" onclick={() => setManagedTeamMemberState(membership, membership.state === 'active' ? 'disabled' : 'active')}>{membership.state === 'active' ? '禁用' : '启用'}</button></td></tr>{:else}<tr><td colspan="4" class="empty">请选择权限组并加载成员。</td></tr>{/each}</tbody></table></div>
+							<div class="table-wrap"><table><thead><tr><th>用户</th><th>角色</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each managedTeamMemberships as membership}<tr><td>{membershipSubjectLabel(membership)}</td><td>{membership.role}</td><td><StateBadge value={membership.state} /></td><td><button class="secondary" type="button" onclick={() => setManagedTeamMemberState(membership, membership.state === 'active' ? 'disabled' : 'active')}>{membership.state === 'active' ? '禁用' : '启用'}</button></td></tr>{:else}<tr><td colspan="4" class="empty">请选择权限组并加载成员。</td></tr>{/each}</tbody></table></div>
 						</section>
 					{/if}
 					<section class="panel">
@@ -1634,7 +1657,7 @@
 								<label>项目<select bind:value={membershipForm.project_id}><option value="">项目</option>{#each dropdownProjects as project}<option value={project.id}>{project.name}</option>{/each}</select></label>
 								<label>搜索用户<input bind:value={projectMemberSearch} placeholder="输入姓名或工号" /></label>
 								<label>用户<select bind:value={membershipForm.subject_id}><option value="">用户</option>{#each subjectOptions(projectMemberSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label>
-								<label>角色<input bind:value={membershipForm.role} /></label>
+								<label>角色<select bind:value={membershipForm.role}>{#each managedRoles as role}<option value={role.value}>{role.label}</option>{/each}</select></label>
 								<button type="button" onclick={createMembership}>添加成员</button>
 							</div>
 						</section>
@@ -1649,7 +1672,7 @@
 					{@render PageTitle('权限组', '自助注册用户会继承其所有启用权限组的模型访问权限。')}
 					<div class="split">
 						<section class="panel"><h2>创建权限组</h2><div class="form-grid"><label>名称<input bind:value={teamForm.name} /></label><label>备注<input bind:value={teamForm.notes} /></label><button type="button" onclick={createTeam}>创建权限组</button></div></section>
-						<section class="panel"><h2>把用户加入权限组</h2><div class="form-grid"><label>搜索用户<input bind:value={teamSubjectSearch} placeholder="输入姓名或工号" /></label><label>权限组<select bind:value={teamMembershipForm.team_id}><option value="">权限组</option>{#each inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><label>用户<select bind:value={teamMembershipForm.subject_id}><option value="">用户</option>{#each subjectOptions(teamSubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>角色<input bind:value={teamMembershipForm.role} /></label><button type="button" onclick={createTeamMembership}>添加成员</button></div></section>
+						<section class="panel"><h2>把用户加入权限组</h2><div class="form-grid"><label>搜索用户<input bind:value={teamSubjectSearch} placeholder="输入姓名或工号" /></label><label>权限组<select bind:value={teamMembershipForm.team_id}><option value="">权限组</option>{#each inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><label>用户<select bind:value={teamMembershipForm.subject_id}><option value="">用户</option>{#each subjectOptions(teamSubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>角色<select bind:value={teamMembershipForm.role}>{#each managedRoles as role}<option value={role.value}>{role.label}</option>{/each}</select></label><button type="button" onclick={createTeamMembership}>添加成员</button></div></section>
 					</div>
 					<section class="panel"><h2>给权限组授权模型</h2><div class="form-grid"><label>模型<select bind:value={modelTeamGrantForm.model_alias_id}><option value="">模型</option>{#each inventory.models as model}<option value={model.id}>{model.alias}</option>{/each}</select></label><label>权限组<select bind:value={modelTeamGrantForm.team_id}><option value="">权限组</option>{#each inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><button type="button" onclick={createModelTeamGrant}>授权模型</button></div></section>
 					<section class="panel"><h2>权限组</h2><div class="table-wrap"><table><thead><tr><th>名称</th><th>状态</th><th>内置</th><th>备注</th><th>操作</th></tr></thead><tbody>{#each inventory.teams as team}<tr><td>{team.name}<br /><span class="muted">{short(team.id)}</span></td><td><StateBadge value={team.state} /></td><td><StateBadge value={team.is_builtin} tone="accent" /></td><td>{team.notes}</td><td><button class="secondary" type="button" onclick={() => patchTeam(team.id, { state: team.state === 'active' ? 'disabled' : 'active' })}>{team.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
