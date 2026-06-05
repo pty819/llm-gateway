@@ -135,16 +135,17 @@ async def _load_vllm_metric_targets() -> list[VLLMMetricsTarget]:
                 .order_by(col(UpstreamTarget.created_at).desc())
             )
         ).all()
+        targets = [
+            VLLMMetricsTarget(
+                upstream_id=str(upstream.id),
+                upstream_name=upstream.name,
+                model_alias=model.alias,
+                base_url=upstream.base_url,
+                extra_headers=dict(upstream.extra_headers or {}),
+                api_key=upstream.api_key_value or upstream.api_key_ref,
+                metrics_url=upstream.metrics_url,
+            )
+            for upstream, model in rows
+        ]
         await session.rollback()
-    return [
-        VLLMMetricsTarget(
-            upstream_id=str(upstream.id),
-            upstream_name=upstream.name,
-            model_alias=model.alias,
-            base_url=upstream.base_url,
-            extra_headers=dict(upstream.extra_headers or {}),
-            api_key=upstream.api_key_value or upstream.api_key_ref,
-            metrics_url=upstream.metrics_url,
-        )
-        for upstream, model in rows
-    ]
+    return targets

@@ -1125,6 +1125,52 @@ vllm:generation_tokens_total 100
     assert payload["upstreams"][0]["vllm"]["prefix_cache_hit_ratio"] == 0.75
 
 
+async def test_load_vllm_metric_targets_materializes_before_session_close():
+    from llm_gateway.api.realtime import _load_vllm_metric_targets
+    from llm_gateway.db.models import ModelAlias, UpstreamTarget
+    from llm_gateway.db.session import AsyncSessionLocal
+
+    suffix = uuid4().hex
+    model_alias = f"pytest-realtime-materialize-{suffix}"
+    upstream_name = f"pytest-realtime-upstream-{suffix}"
+    base_url = "http://pytest-vllm:8000/v1"
+    metrics_url = "http://pytest-vllm:29000/metrics"
+    api_key = "sk-pytest-realtime"
+    extra_headers = {"X-Pytest-Realtime": "1"}
+
+    async with AsyncSessionLocal() as session:
+        model = ModelAlias(
+            alias=model_alias,
+            upstream_model_name="pytest-upstream-model",
+            litellm_model="openai/pytest-upstream-model",
+        )
+        session.add(model)
+        await session.flush()
+
+        upstream = UpstreamTarget(
+            model_alias_id=model.id,
+            name=upstream_name,
+            base_url=base_url,
+            metrics_url=metrics_url,
+            api_key_value=api_key,
+            extra_headers=extra_headers,
+        )
+        session.add(upstream)
+        await session.flush()
+        upstream_id = str(upstream.id)
+        await session.commit()
+
+    targets = await _load_vllm_metric_targets()
+    target = next(item for item in targets if item.upstream_id == upstream_id)
+
+    assert target.upstream_name == upstream_name
+    assert target.model_alias == model_alias
+    assert target.base_url == base_url
+    assert target.metrics_url == metrics_url
+    assert target.api_key == api_key
+    assert target.extra_headers == extra_headers
+
+
 async def test_key_scoped_rate_policy_blocks_before_upstream(client, gateway_fixture):
     from llm_gateway.db.models import RatePolicy
     from llm_gateway.db.session import AsyncSessionLocal
