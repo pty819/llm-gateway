@@ -1303,6 +1303,71 @@ async def test_admin_can_edit_upstream_endpoint_after_launch(client, gateway_fix
     assert payload["api_key_value"] is None
 
 
+async def test_admin_enforces_homogeneous_upstream_replicas(client):
+    from llm_gateway.core.config import get_settings
+
+    headers = {"x-admin-token": get_settings().admin_token}
+    suffix = uuid4().hex
+    model = await client.post(
+        "/admin/model-aliases",
+        headers=headers,
+        json={
+            "alias": f"homogeneous-{suffix}",
+            "upstream_model_name": "homogeneous-upstream",
+            "litellm_model": "openai/homogeneous-upstream",
+            "sticky_ttl_seconds": 1800,
+        },
+    )
+    assert model.status_code == 200, model.text
+    model_payload = model.json()
+    assert model_payload["sticky_ttl_seconds"] == 1800
+
+    first = await client.post(
+        "/admin/upstreams",
+        headers=headers,
+        json={
+            "model_alias_id": model_payload["id"],
+            "name": "replica-a",
+            "base_url": "http://replica-a:8000/v1",
+            "api_key_value": "same-key",
+            "health_path": "/models",
+            "extra_headers": {"x-shared": "1"},
+        },
+    )
+    assert first.status_code == 200, first.text
+
+    second = await client.post(
+        "/admin/upstreams",
+        headers=headers,
+        json={
+            "model_alias_id": model_payload["id"],
+            "name": "replica-b",
+            "base_url": "http://replica-b:8000/v1",
+            "api_key_value": "same-key",
+            "health_path": "/models",
+            "extra_headers": {"x-shared": "1"},
+        },
+    )
+    assert second.status_code == 200, second.text
+
+    mismatched = await client.post(
+        "/admin/upstreams",
+        headers=headers,
+        json={
+            "model_alias_id": model_payload["id"],
+            "name": "replica-c",
+            "base_url": "http://replica-c:8000/v1",
+            "api_key_value": "different-key",
+            "health_path": "/models",
+            "extra_headers": {"x-shared": "1"},
+        },
+    )
+    assert mismatched.status_code == 409
+    assert mismatched.json()["detail"] == (
+        "upstream_replicas_must_share_key_headers_and_health_path"
+    )
+
+
 async def test_admin_can_delete_used_upstream_without_deleting_request_facts(
     client,
 ):

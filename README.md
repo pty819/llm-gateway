@@ -1,6 +1,6 @@
 # LLM Gateway
 
-FastAPI + Svelte enterprise LLM gateway for internal model serving. It sits in front of OpenAI-compatible vLLM Router or direct vLLM endpoints, uses LiteLLM for protocol conversion, and owns identity, access control, request limits, usage facts, and operator workflows.
+FastAPI + Svelte enterprise LLM gateway for internal model serving. It sits in front of OpenAI-compatible vLLM endpoints, uses LiteLLM for protocol conversion, and owns identity, access control, request limits, sticky multi-upstream routing, usage facts, and operator workflows.
 
 ## What It Does
 
@@ -8,7 +8,7 @@ FastAPI + Svelte enterprise LLM gateway for internal model serving. It sits in f
 - Automatic gateway key issuance for registered users.
 - Built-in `guest` and `admin` teams.
 - Team-based model permissions: a user can use the union of models granted to all of their active teams.
-- Admin account and admin console for users, teams, model grants, keys, upstreams, rate limits, router commands, usage, and audit.
+- Admin account and admin console for users, teams, model grants, keys, upstreams, rate limits, usage, and audit.
 - OpenAI-compatible `/v1/chat/completions` proxy.
 - OpenAI-compatible `/v1/responses` proxy (for Codex and other Responses API clients).
 - Anthropic-compatible `/v1/messages` proxy through LiteLLM.
@@ -17,8 +17,8 @@ FastAPI + Svelte enterprise LLM gateway for internal model serving. It sits in f
 - Redis-backed RPM and concurrency limits.
 - PostgreSQL-backed audit and token/request usage facts.
 - Admin-only DuckDB PostgreSQL extension queries for manual heavy usage analytics.
-- Redis-backed realtime runtime metrics for active upstream connections plus cached direct-vLLM and vLLM Router `/metrics` pressure.
-- vLLM Router command generation for same-model endpoint pools.
+- Redis-backed realtime runtime metrics for active upstream connections plus cached vLLM `/metrics` pressure.
+- Gateway-native multi-upstream routing for identical model replicas, with API-key stickiness and load-aware selection on sticky miss.
 
 ## Stack
 
@@ -114,9 +114,9 @@ uv run python scripts/start_local.py --host 10.21.48.65
 
 This release adds analytics indexes through Alembic, so run the upgrade step before starting the new backend.
 The admin heavy analytics panel uses DuckDB's PostgreSQL extension for longer time windows. Normal user self-usage stays PostgreSQL-backed so it remains fresh and subject-scoped.
-The usage page also opens an authenticated SSE stream over `fetch` to display realtime upstream load. Direct vLLM endpoints expose engine metrics such as token/s, running/waiting requests, KV cache usage, and prefix-cache signal. vLLM Router exposes a different `vllm_router_*` metrics family, so the page shows router workers, running requests, worker load, cache hit ratio, request count, and error count separately instead of treating router metrics as worker engine metrics. The gateway auto-detects the metric family from the Prometheus response; you do not need to manually label an upstream as vLLM or Router.
+The usage page also opens an authenticated SSE stream over `fetch` to display realtime upstream load. vLLM endpoints expose engine metrics such as token/s, running/waiting requests, KV cache usage, and prefix-cache signal. The gateway caches each upstream metrics response in Redis and uses the cached load table for sticky-route misses.
 
-For direct vLLM, leaving the upstream Metrics URL empty is usually enough because the gateway derives `<base-url-without-/v1>/metrics`. For vLLM Router, set the upstream Metrics URL to the Router Prometheus endpoint, for example `http://router-host:29000/metrics` or the address configured with `--prometheus-host/--prometheus-port`; Router metrics are commonly not served from the OpenAI API port. Each upstream metrics response is cached for 3 seconds in Redis. If an upstream has no metrics endpoint, returns 404/timeout, or exposes unrelated Prometheus metrics only, the realtime metrics scrape is ignored instead of adding a failed row to the dashboard.
+Leaving the upstream Metrics URL empty is usually enough because the gateway derives `<base-url-without-/v1>/metrics`. If an upstream exposes Prometheus metrics on a separate port, set the Metrics URL explicitly. Each upstream metrics response is cached for 3 seconds in Redis. If an upstream has no metrics endpoint, returns 404/timeout, or exposes unrelated Prometheus metrics only, the realtime metrics scrape is ignored instead of adding a failed row to the dashboard.
 
 Optionally seed a development upstream/model:
 
@@ -362,9 +362,9 @@ Each rate policy row has an Enable/Disable toggle. Disabling makes it inactive (
 | Cap usage for a project | Create a `project` policy to limit total project throughput. |
 | Temporary burst access | Create a policy, then disable it when no longer needed. |
 
-## Add A vLLM Router Aggregated Model
+## Add A Gateway-Native Multi-Upstream Model
 
-Suppose you have 3 vLLM endpoints all serving `qwen3` with API key `qwne4`:
+Suppose you have 3 vLLM endpoints all serving the same `qwen3` model with the same API key `qwne4`:
 
 ```text
 http://gpu-a:8000
@@ -380,45 +380,25 @@ This is the name clients will use in their requests.
 Alias:              qwen3
 Upstream model:     qwen3
 LiteLLM model:      openai/qwen3
+Sticky TTL seconds: 1200
 ```
 
-### Step 2 — Generate A Router Command (Router Commands page)
+### Step 2 — Create Upstream Replicas (Upstreams page)
 
-```text
-Model:   qwen3
-Name:    qwen3-pool
-Policy:  consistent_hash
-Port:    18001
-
-Worker URLs:
-http://gpu-a:8000
-http://gpu-b:8000
-http://gpu-c:8000
-```
-
-The UI generates a command like:
-
-```bash
-vllm-router --worker-urls http://gpu-a:8000 http://gpu-b:8000 http://gpu-c:8000 --policy consistent_hash --host 0.0.0.0 --port 18001
-```
-
-Run this command on a machine that can reach all 3 endpoints. The router listens on `:18001` and load-balances across the pool. The gateway does not start or supervise this process for you in the MVP.
-
-### Step 3 — Create An Upstream (Upstreams page)
-
-Point it at the **router**, not individual endpoints.
+Create one upstream row for each vLLM replica. Under a single model alias, active replicas must share API key, headers, and health path; only Base URL and Metrics URL should differ.
 
 ```text
 Model:       qwen3
-Name:        qwen3-router
-Base URL:    http://router-host:18001/v1
+Name:        qwen3-gpu-a
+Base URL:    http://gpu-a:8000/v1
 API Key:     qwne4
 Health path: /models
+Metrics URL: empty, or http://gpu-a:8000/metrics
 ```
 
-Use the **Check** button to verify the router is reachable.
+Repeat for `gpu-b` and `gpu-c`. Use the **Check** button to verify each replica is reachable.
 
-### Step 4 — Grant Access (Teams or Entitlements page)
+### Step 3 — Grant Access (Teams or Entitlements page)
 
 Team-based model access (recommended):
 
@@ -429,6 +409,13 @@ Team-based model access (recommended):
 Or use Entitlements to grant access to a specific subject, project, or individual gateway key.
 
 A user's available models are the union of all active grants from all their active teams plus any direct entitlements.
+
+Routing behavior:
+
+- Sticky identity is the gateway API key plus model alias.
+- Existing sticky routes stay on the same active upstream until the sticky TTL expires.
+- When no valid sticky route exists, the gateway uses cached runtime load and prefers the lowest `kv_cache_usage * (active_connections + 1)` score.
+- Request start and completion refresh sticky last-active state in Redis.
 
 ## Client Usage
 
@@ -499,7 +486,7 @@ npm run test:e2e
 
 ## Current MVP Boundaries
 
-- vLLM Router process management is not automatic yet; the UI generates commands only.
+- Heterogeneous fallback across different providers or different model names is intentionally out of scope for the native multi-upstream router.
 - SSO is intentionally out of scope; registration, login, self-service password change, and admin password reset are handled by the gateway.
 - Gateway keys are shown once when issued; existing keys are listed only by prefix.
 - ClickHouse or other heavyweight analytics stores are intentionally not used.

@@ -10,7 +10,6 @@
 		Network,
 		Route,
 		Shield,
-		Terminal,
 		Trophy,
 		UserPlus,
 		Users
@@ -33,7 +32,6 @@
 		RegisterResponse,
 		ResourceState,
 		RuntimeMetricsSnapshot,
-		RouterPolicy,
 		Subject,
 		SubjectType,
 		Team,
@@ -49,7 +47,7 @@
 		loadStoredSessionToken,
 		persistSessionToken
 	} from '$lib/state/admin-token';
-	import { parseCidrList, parseJsonObject, validateCidrList, validateHttpUrl, validatePort } from '$lib/validators';
+	import { parseCidrList, parseJsonObject, validateCidrList, validateHttpUrl } from '$lib/validators';
 
 	type Section = {
 		id: string;
@@ -70,7 +68,6 @@
 		{ id: 'diagnostics', label: '诊断', group: '运行', icon: Database },
 		{ id: 'models', label: '模型', group: '配置', icon: BookOpen },
 		{ id: 'upstreams', label: '上游', group: '配置', icon: Network },
-		{ id: 'router', label: 'Router 命令', group: '配置', icon: Terminal },
 		{ id: 'subjects', label: '用户', group: '访问', icon: Users },
 		{ id: 'projects', label: '项目', group: '访问', icon: Route },
 		{ id: 'keys', label: '网关密钥', group: '访问', icon: KeyRound },
@@ -122,7 +119,6 @@
 	let gatewayBaseUrl = $state('');
 	let copiedItem = $state('');
 	let auditDetail = $state<AuditEvent | null>(null);
-	let generatedRouterCommand = $state('');
 	let subjectSearch = $state('');
 	let subjectPasswordSearch = $state('');
 	let projectOwnerSearch = $state('');
@@ -172,6 +168,7 @@
 		supports_streaming: true,
 		supports_tools: true,
 		supports_reasoning: true,
+		sticky_ttl_seconds: 1200,
 		ip_policy_mode: 'all_pass' as IPPolicyMode,
 		ip_allowlist_cidrs: '',
 		notes: ''
@@ -193,15 +190,6 @@
 		requests_per_minute: '',
 		concurrency_limit: ''
 	});
-	let routerForm = $state({
-		model_alias_id: '',
-		worker_urls: '',
-		policy: 'consistent_hash' as RouterPolicy,
-		host: '0.0.0.0',
-		port: 18001,
-		extra_args: '{}'
-	});
-
 	const api = $derived(new AdminApiClient('', sessionToken));
 	const isAdmin = $derived(Boolean(profile?.subject.is_admin));
 	const mustProvideRealName = $derived(Boolean(profile?.subject.requires_real_name));
@@ -265,7 +253,7 @@
 	);
 	const visibleAnalyticsBuckets = $derived(inventory.analyticsBuckets.slice(0, PAGE_SIZE.usagePreview));
 	const visibleAnalyticsDrilldown = $derived(inventory.analyticsDrilldown.slice(0, PAGE_SIZE.usagePreview));
-	const realtimeTopUpstreams = $derived((realtime?.upstreams ?? []).slice(0, PAGE_SIZE.usagePreview));
+	const realtimeUpstreams = $derived(realtime?.upstreams ?? []);
 	const realtimeUpdatedLabel = $derived(realtime ? new Date(realtime.generated_at).toLocaleTimeString() : '无');
 	const analyticsMaxTokens = $derived(
 		Math.max(1, ...visibleAnalyticsBuckets.map((row) => Number(row.total_tokens ?? 0)))
@@ -525,7 +513,6 @@
 				teamMemberships: teamMembershipsPage.items,
 				modelTeamGrants,
 				upstreams,
-				routerConfigs: [],
 				ratePolicies,
 				usage: inventory.usage,
 				usageTotals: inventory.usageTotals,
@@ -728,6 +715,7 @@
 				supports_streaming: true,
 				supports_tools: true,
 				supports_reasoning: true,
+				sticky_ttl_seconds: 1200,
 				ip_policy_mode: 'all_pass',
 				ip_allowlist_cidrs: '',
 				notes: ''
@@ -950,76 +938,6 @@
 		});
 	}
 
-	async function createRouterConfig() {
-		pageError = '';
-		generatedRouterCommand = '';
-		const portCheck = validatePort(Number(routerForm.port));
-		if (!portCheck.ok) {
-			pageError = portCheck.message ?? '端口不合法';
-			return;
-		}
-		const worker_urls = routerForm.worker_urls
-			.split(/\n/)
-			.map((item) => item.trim())
-			.filter(Boolean);
-		if (!worker_urls.length || worker_urls.some((url) => !validateHttpUrl(url, 'Worker URL').ok)) {
-			pageError = '每个 Worker URL 都必须以 http:// 或 https:// 开头。';
-			return;
-		}
-		let extraArgs: Record<string, unknown>;
-		try {
-			extraArgs = parseJsonObject(routerForm.extra_args, '额外参数');
-		} catch (error) {
-			pageError = errorMessage(error);
-			return;
-		}
-		generatedRouterCommand = renderRouterCommand({
-			worker_urls,
-			policy: routerForm.policy,
-			host: routerForm.host,
-			port: Number(routerForm.port),
-			extra_args: extraArgs
-		});
-	}
-
-	function renderRouterCommand(config: {
-		worker_urls: string[];
-		policy: RouterPolicy;
-		host: string;
-		port: number;
-		extra_args: Record<string, unknown>;
-	}): string {
-		const args = [
-			'vllm-router',
-			'--worker-urls',
-			...config.worker_urls,
-			'--policy',
-			config.policy,
-			'--host',
-			config.host,
-			'--port',
-			String(config.port)
-		];
-		for (const key of Object.keys(config.extra_args).sort()) {
-			const value = config.extra_args[key];
-			const flag = `--${key.replaceAll('_', '-')}`;
-			if (typeof value === 'boolean') {
-				if (value) args.push(flag);
-				continue;
-			}
-			if (Array.isArray(value)) {
-				args.push(flag, ...value.map(String));
-				continue;
-			}
-			if (value !== null && value !== undefined) args.push(flag, String(value));
-		}
-		return args.map(shellQuote).join(' ');
-	}
-
-	function shellQuote(value: string): string {
-		return value && /^[A-Za-z0-9_\-./:=,]+$/.test(value) ? value : `'${value.replaceAll("'", "'\"'\"'")}'`;
-	}
-
 	async function refreshOwnUsage() {
 		await run(fetchOwnUsage);
 	}
@@ -1191,7 +1109,6 @@
 			teamMemberships: [],
 			modelTeamGrants: [],
 			upstreams: [],
-			routerConfigs: [],
 			ratePolicies: [],
 			usage: [],
 			usageTotals: null,
@@ -1560,6 +1477,7 @@
 							<label>别名<input bind:value={modelForm.alias} placeholder="dev-model" /></label>
 							<label>上游模型名<input bind:value={modelForm.upstream_model_name} /></label>
 							<label>LiteLLM 模型<input bind:value={modelForm.litellm_model} placeholder="openai/model-name" /></label>
+							<label>粘性生命周期秒数<input type="number" min="1" max="86400" bind:value={modelForm.sticky_ttl_seconds} /></label>
 							<label>IP 策略<select bind:value={modelForm.ip_policy_mode}><option value="all_pass">全部放行</option><option value="allowlist">白名单</option></select></label>
 							<label>CIDRs<textarea bind:value={modelForm.ip_allowlist_cidrs} placeholder="10.0.0.0/8"></textarea></label>
 							<label>备注<input bind:value={modelForm.notes} /></label>
@@ -1575,18 +1493,22 @@
 						<h2>模型别名</h2>
 						<div class="table-wrap">
 							<table>
-								<thead><tr><th>别名</th><th>LiteLLM</th><th>状态</th><th>IP 策略</th><th>Streaming</th><th>Tools</th><th>Reasoning</th><th>操作</th></tr></thead>
+								<thead><tr><th>别名</th><th>LiteLLM</th><th>状态</th><th>粘性 TTL</th><th>IP 策略</th><th>Streaming</th><th>Tools</th><th>Reasoning</th><th>操作</th></tr></thead>
 								<tbody>
 									{#each inventory.models as model}
 										<tr>
 											<td><strong>{model.alias}</strong><br /><span class="muted">{model.upstream_model_name}</span></td>
 											<td>{model.litellm_model}</td>
 											<td><StateBadge value={model.state} /></td>
+											<td>{model.sticky_ttl_seconds}s</td>
 											<td><StateBadge value={model.ip_policy_mode} /><br /><span class="muted">{model.ip_allowlist_cidrs.join(', ') || '未配置 CIDR'}</span></td>
 											<td><StateBadge value={model.supports_streaming} tone="accent" /></td>
 											<td><StateBadge value={model.supports_tools} tone="accent" /></td>
 											<td><StateBadge value={model.supports_reasoning} tone="accent" /></td>
-											<td class="actions"><button class="secondary" type="button" onclick={() => editModelCidrs(model)}>编辑 CIDR</button><button class="secondary" type="button" onclick={() => patchModel(model.id, { state: model.state === 'active' ? 'disabled' : 'active' })}>{model.state === 'active' ? '禁用' : '启用'}</button><button class="danger" type="button" onclick={() => deleteModel(model)}>删除</button></td>
+											<td class="actions"><button class="secondary" type="button" onclick={() => editModelCidrs(model)}>编辑 CIDR</button><button class="secondary" type="button" onclick={() => {
+												const next = prompt('粘性生命周期秒数', String(model.sticky_ttl_seconds));
+												if (next !== null) patchModel(model.id, { sticky_ttl_seconds: Number(next) });
+											}}>编辑 TTL</button><button class="secondary" type="button" onclick={() => patchModel(model.id, { state: model.state === 'active' ? 'disabled' : 'active' })}>{model.state === 'active' ? '禁用' : '启用'}</button><button class="danger" type="button" onclick={() => deleteModel(model)}>删除</button></td>
 										</tr>
 									{/each}
 								</tbody>
@@ -1594,7 +1516,7 @@
 						</div>
 					</section>
 				{:else if active === 'upstreams'}
-					{@render PageTitle('上游端点', '模型别名背后的 OpenAI 兼容上游或 vLLM Router 聚合池。')}
+					{@render PageTitle('上游端点', '模型别名背后的同构 OpenAI 兼容副本池。')}
 					<section class="panel">
 						<h2>创建上游</h2>
 						<div class="form-grid">
@@ -1686,12 +1608,6 @@
 					{@render PageTitle('限流策略', '基于数据库配置的每分钟请求数和并发限制。')}
 					<section class="panel"><h2>创建限流策略</h2><p>实际生效限制会取密钥、用户、项目和环境默认值中的最小启用策略。</p><div class="form-grid"><label>范围<select bind:value={rateForm.scope} onchange={() => (rateForm.scope_id = '')}><option value="key">密钥</option><option value="subject">用户</option><option value="project">项目</option></select></label>{#if rateForm.scope === 'subject'}<label>搜索用户<input bind:value={rateSubjectSearch} placeholder="输入姓名或工号" /></label>{/if}<label>对象<select bind:value={rateForm.scope_id}><option value="">对象</option>{#each scopeOptions(rateForm.scope, rateSubjectSearch) as option}<option value={option.id}>{option.label}</option>{/each}</select></label><label>每分钟请求数<input type="number" min="0" bind:value={rateForm.requests_per_minute} /></label><label>并发限制<input type="number" min="0" bind:value={rateForm.concurrency_limit} /></label><button type="button" onclick={createRatePolicy}>创建策略</button></div></section>
 					<section class="panel"><h2>策略</h2><div class="table-wrap"><table><thead><tr><th>范围</th><th>对象</th><th>RPM</th><th>并发</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each inventory.ratePolicies as policy}<tr><td>{scopeLabel(policy.scope)}</td><td>{policy.scope === 'subject' ? subjectLabel(policy.scope_id) : policy.scope === 'project' ? projectLabel(policy.scope_id) : keyLabel(policy.scope_id)}</td><td>{policy.requests_per_minute ?? '继承'}</td><td>{policy.concurrency_limit ?? '继承'}</td><td><StateBadge value={policy.state} /></td><td><button class="secondary" type="button" onclick={() => setRateState(policy.id, policy.state === 'active' ? 'disabled' : 'active')}>{policy.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
-				{:else if active === 'router'}
-					{@render PageTitle('Router 命令', '一次性生成 vLLM Router 启动命令；当前 MVP 不负责启动或托管 Router 进程。')}
-					<section class="panel"><h2>生成命令</h2><div class="form-grid"><label>模型<select bind:value={routerForm.model_alias_id}><option value="">模型</option>{#each inventory.models as model}<option value={model.id}>{model.alias}</option>{/each}</select></label><label>路由策略<select bind:value={routerForm.policy}><option value="consistent_hash">consistent_hash</option><option value="cache_aware">cache_aware</option></select></label><label>监听地址<input bind:value={routerForm.host} /></label><label>端口<input type="number" bind:value={routerForm.port} /></label><label>Worker URLs<textarea bind:value={routerForm.worker_urls} placeholder="http://gpu-a:8000&#10;http://gpu-b:8000"></textarea></label><label>额外参数<textarea bind:value={routerForm.extra_args}></textarea></label><button type="button" onclick={createRouterConfig}>生成命令</button></div></section>
-					{#if generatedRouterCommand}
-						<section class="panel"><h2>本次生成结果</h2><CommandBlock command={generatedRouterCommand} /></section>
-					{/if}
 				{:else if active === 'usage'}
 					{@render PageTitle('用量总览', '默认查看最近一周的推理压力；需要更细或更长窗口时直接调整时间范围。')}
 					<section class="panel">
@@ -1707,7 +1623,7 @@
 						<div class="section-head">
 							<div>
 								<h2>实时负载</h2>
-								<p>vLLM engine 压力和 vLLM Router 负载都来自上游 <code>/metrics</code>；多个浏览器共享 Redis 缓存。</p>
+								<p>每个上游副本的 vLLM 压力来自对应 <code>/metrics</code>；多个浏览器共享 Redis 缓存。</p>
 							</div>
 							<div class="actions">
 								<StateBadge value={realtimeStatus} tone={realtimeStatus === '已连接' ? 'success' : 'neutral'} />
@@ -1718,7 +1634,6 @@
 							<div class="metric"><span>vLLM 指标 token/s</span><strong>{realtime?.vllm.tokens_per_second == null ? '等待样本' : tokenRateLabel(realtime.vllm.tokens_per_second)}</strong></div>
 							<div class="metric"><span>网关当前上游连接</span><strong>{realtime?.active_connections ?? 0}</strong></div>
 							<div class="metric"><span>vLLM running / waiting</span><strong>{realtime?.vllm.running ?? '无'} / {realtime?.vllm.waiting ?? '无'}</strong></div>
-							<div class="metric"><span>Router running / workers</span><strong>{realtime?.vllm.router.running_requests ?? '无'} / {realtime?.vllm.router.active_workers ?? '无'}</strong></div>
 							<div class="metric"><span>最高 KV cache</span><strong>{ratioLabel(realtime?.vllm.max_kv_cache_usage)}</strong></div>
 							<div class="metric"><span>metrics 可用上游</span><strong>{realtime?.vllm.ok_upstreams ?? 0} / {realtime?.vllm.configured_upstreams ?? realtime?.vllm.observed_upstreams ?? 0}</strong></div>
 							<div class="metric"><span>metrics 已忽略</span><strong>{realtime?.vllm.ignored_upstreams ?? 0}</strong></div>
@@ -1729,7 +1644,7 @@
 							<table>
 								<thead><tr><th>上游</th><th>模型</th><th>类型</th><th>token/s</th><th>网关连接</th><th>vLLM running / waiting</th><th>Router 负载</th><th>KV / Prefix</th><th>metrics</th></tr></thead>
 								<tbody>
-									{#each realtimeTopUpstreams as upstream}
+									{#each realtimeUpstreams as upstream}
 										<tr>
 											<td>{upstream.upstream_name}<br /><span class="muted">{short(upstream.upstream_id)}</span></td>
 											<td>{upstream.model_alias || '未知'}</td>

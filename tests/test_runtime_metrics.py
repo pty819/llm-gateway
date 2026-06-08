@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from typing import Any, cast
+from uuid import uuid4
 
 import pytest
 
@@ -17,6 +18,10 @@ from llm_gateway.services.runtime_metrics import (
     parse_vllm_prometheus_metrics,
     runtime_snapshot,
 )
+from llm_gateway.services.upstream_routing import (
+    select_upstream_for_key,
+    sticky_route_key,
+)
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
@@ -31,6 +36,9 @@ class FakeRedis:
 
     async def get(self, name: str) -> str | None:
         return self.values.get(name)
+
+    async def mget(self, names: list[str]) -> list[str | None]:
+        return [self.values.get(name) for name in names]
 
     async def setex(self, name: str, seconds: int, value: str) -> None:
         del seconds
@@ -101,6 +109,12 @@ class FakeRedis:
             for stream_id, fields in self.streams.setdefault(name, [])
             if int(stream_id.split("-", 1)[0]) >= start_ms
         ]
+
+
+class FailingRedis(FakeRedis):
+    async def zremrangebyscore(self, name: str, minimum: Any, maximum: Any) -> None:
+        del name, minimum, maximum
+        raise ConnectionError("redis unavailable")
 
 
 async def test_runtime_snapshot_groups_active_connections():
@@ -340,3 +354,125 @@ python_info 1
     assert snapshot["vllm"]["configured_upstreams"] == 1
     assert snapshot["vllm"]["observed_upstreams"] == 0
     assert snapshot["vllm"]["ignored_upstreams"] == 1
+
+
+async def test_select_upstream_uses_load_score_then_sticky_route():
+    from llm_gateway.db.models import ModelAlias, UpstreamTarget
+
+    redis = cast(Any, FakeRedis())
+    model = ModelAlias(
+        alias="sticky-model",
+        upstream_model_name="sticky-upstream-model",
+        litellm_model="openai/sticky-upstream-model",
+        sticky_ttl_seconds=1200,
+    )
+    key_id = uuid4()
+    upstream_a = UpstreamTarget(
+        model_alias_id=model.id,
+        name="upstream-a",
+        base_url="http://a.example/v1",
+    )
+    upstream_b = UpstreamTarget(
+        model_alias_id=model.id,
+        name="upstream-b",
+        base_url="http://b.example/v1",
+    )
+    redis.values[f"{VLLM_METRICS_CACHE_PREFIX}:{upstream_a.id}"] = (
+        '{"ok":true,"kv_cache_usage":0.8}'
+    )
+    redis.values[f"{VLLM_METRICS_CACHE_PREFIX}:{upstream_b.id}"] = (
+        '{"ok":true,"kv_cache_usage":0.2}'
+    )
+
+    selected, loads = await select_upstream_for_key(
+        redis,
+        key_id=key_id,
+        model_alias=model,
+        upstreams=[upstream_a, upstream_b],
+        now=100.0,
+    )
+
+    assert selected.id == upstream_b.id
+    assert {load.upstream_id: load.score for load in loads} == {
+        str(upstream_a.id): 0.8,
+        str(upstream_b.id): 0.2,
+    }
+    sticky_payload = redis.values[
+        sticky_route_key(key_id=key_id, model_alias_id=model.id)
+    ]
+    assert str(upstream_b.id) in sticky_payload
+
+    redis.values[f"{VLLM_METRICS_CACHE_PREFIX}:{upstream_a.id}"] = (
+        '{"ok":true,"kv_cache_usage":0.1}'
+    )
+    redis.values[f"{VLLM_METRICS_CACHE_PREFIX}:{upstream_b.id}"] = (
+        '{"ok":true,"kv_cache_usage":0.9}'
+    )
+    selected_again, _loads = await select_upstream_for_key(
+        redis,
+        key_id=key_id,
+        model_alias=model,
+        upstreams=[upstream_a, upstream_b],
+        now=101.0,
+    )
+
+    assert selected_again.id == upstream_b.id
+
+
+async def test_select_upstream_ignores_sticky_route_not_in_active_candidates():
+    from llm_gateway.db.models import ModelAlias, UpstreamTarget
+
+    redis = cast(Any, FakeRedis())
+    model = ModelAlias(
+        alias="sticky-model-replace",
+        upstream_model_name="sticky-upstream-model",
+        litellm_model="openai/sticky-upstream-model",
+    )
+    key_id = uuid4()
+    stale_upstream_id = uuid4()
+    upstream = UpstreamTarget(
+        model_alias_id=model.id,
+        name="remaining-upstream",
+        base_url="http://remaining.example/v1",
+    )
+    redis.values[sticky_route_key(key_id=key_id, model_alias_id=model.id)] = (
+        f'{{"upstream_id":"{stale_upstream_id}","last_active_at":99}}'
+    )
+
+    selected, _loads = await select_upstream_for_key(
+        redis,
+        key_id=key_id,
+        model_alias=model,
+        upstreams=[upstream],
+        now=100.0,
+    )
+
+    assert selected.id == upstream.id
+    sticky_payload = redis.values[
+        sticky_route_key(key_id=key_id, model_alias_id=model.id)
+    ]
+    assert str(upstream.id) in sticky_payload
+
+
+async def test_select_upstream_surfaces_redis_failures():
+    from llm_gateway.db.models import ModelAlias, UpstreamTarget
+
+    model = ModelAlias(
+        alias="sticky-model-redis-failure",
+        upstream_model_name="sticky-upstream-model",
+        litellm_model="openai/sticky-upstream-model",
+    )
+    upstream = UpstreamTarget(
+        model_alias_id=model.id,
+        name="upstream",
+        base_url="http://upstream.example/v1",
+    )
+
+    with pytest.raises(ConnectionError, match="redis unavailable"):
+        await select_upstream_for_key(
+            cast(Any, FailingRedis()),
+            key_id=uuid4(),
+            model_alias=model,
+            upstreams=[upstream],
+            now=100.0,
+        )

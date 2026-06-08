@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from llm_gateway.db.session import AsyncSessionLocal
-from llm_gateway.services.cache import auth_cache, route_cache
+from llm_gateway.services.cache import auth_cache
 from llm_gateway.services.policy import resolve_route_context
 from llm_gateway.services.security import authenticate_gateway_key
 
@@ -27,9 +27,8 @@ async def test_auth_cache_hit_reloads_objects_in_current_session(gateway_fixture
         assert second.key in session
 
 
-async def test_route_cache_hit_reloads_objects_in_current_session(gateway_fixture):
+async def test_route_context_reloads_objects_in_current_session(gateway_fixture):
     auth_cache.invalidate()
-    route_cache.invalidate()
 
     async with AsyncSessionLocal() as session:
         auth = await authenticate_gateway_key(session, gateway_fixture.raw_key)
@@ -54,3 +53,33 @@ async def test_route_cache_hit_reloads_objects_in_current_session(gateway_fixtur
         assert second.model_alias.id == gateway_fixture.model_alias_id
         assert second.model_alias is not first_alias
         assert second.model_alias in session
+
+
+async def test_route_context_supports_multiple_active_upstreams(gateway_fixture):
+    from llm_gateway.db.models import UpstreamTarget
+    from llm_gateway.services.rate_limit import redis_client
+
+    async with AsyncSessionLocal() as session:
+        auth = await authenticate_gateway_key(session, gateway_fixture.raw_key)
+        assert auth is not None
+        sibling = UpstreamTarget(
+            model_alias_id=gateway_fixture.model_alias_id,
+            name="pytest-sibling-upstream",
+            base_url="http://pytest-sibling:8000/v1",
+        )
+        session.add(sibling)
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        auth = await authenticate_gateway_key(session, gateway_fixture.raw_key)
+        assert auth is not None
+        route = await resolve_route_context(
+            session,
+            redis=redis_client,
+            auth=auth,
+            requested_model=gateway_fixture.model_alias,
+            client_ip="127.0.0.1",
+        )
+
+    assert route.model_alias.id == gateway_fixture.model_alias_id
+    assert route.upstream.model_alias_id == gateway_fixture.model_alias_id

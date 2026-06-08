@@ -44,6 +44,7 @@ from llm_gateway.services.proxy_accounting import (
 )
 from llm_gateway.services.runtime_metrics import tracked_runtime_connection
 from llm_gateway.services.security import AuthContext, authenticate_gateway_key
+from llm_gateway.services.upstream_routing import touch_sticky_route
 
 
 router = APIRouter()
@@ -85,6 +86,7 @@ async def _prepare(
         )
         route = await resolve_route_context(
             session,
+            redis=redis,
             auth=auth,
             requested_model=_requested_model(body),
             client_ip=client_ip,
@@ -273,6 +275,8 @@ async def openai_chat_completions(
             exc=exc,
         )
         return _error_response(status.HTTP_502_BAD_GATEWAY, "adapter_failure", exc)
+    finally:
+        await _touch_route_sticky(redis, auth=auth, route=route)
 
 
 async def _stream_openai_response(
@@ -314,6 +318,7 @@ async def _stream_openai_response(
     finally:
         with suppress(Exception):
             await release_concurrency_slot(redis, concurrency_key)
+        await _touch_route_sticky(redis, auth=auth, route=route)
         await record_proxy_fact(
             request_id=request_id,
             started_at=started_at,
@@ -425,6 +430,8 @@ async def openai_responses(
             exc=exc,
         )
         return _error_response(status.HTTP_502_BAD_GATEWAY, "adapter_failure", exc)
+    finally:
+        await _touch_route_sticky(redis, auth=auth, route=route)
 
 
 async def _stream_responses(
@@ -466,6 +473,7 @@ async def _stream_responses(
     finally:
         with suppress(Exception):
             await release_concurrency_slot(redis, concurrency_key)
+        await _touch_route_sticky(redis, auth=auth, route=route)
         await record_proxy_fact(
             request_id=request_id,
             started_at=started_at,
@@ -575,6 +583,8 @@ async def anthropic_messages(
             exc=exc,
         )
         return _error_response(status.HTTP_502_BAD_GATEWAY, "adapter_failure", exc)
+    finally:
+        await _touch_route_sticky(redis, auth=auth, route=route)
 
 
 async def _stream_anthropic_response(
@@ -616,6 +626,7 @@ async def _stream_anthropic_response(
     finally:
         with suppress(Exception):
             await release_concurrency_slot(redis, concurrency_key)
+        await _touch_route_sticky(redis, auth=auth, route=route)
         await record_proxy_fact(
             request_id=request_id,
             started_at=started_at,
@@ -710,6 +721,17 @@ async def _raise_rate_limited_after_route(
     raise HTTPException(
         status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
     ) from exc
+
+
+async def _touch_route_sticky(redis: Redis, *, auth: AuthContext, route) -> None:
+    with suppress(Exception):
+        await touch_sticky_route(
+            redis,
+            key_id=auth.key.id,
+            model_alias_id=route.model_alias.id,
+            upstream_id=route.upstream.id,
+            ttl_seconds=route.model_alias.sticky_ttl_seconds,
+        )
 
 
 def _error_response(status_code: int, error_class: str, exc: Exception) -> JSONResponse:

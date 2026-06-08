@@ -111,6 +111,7 @@ class ModelAlias(TimestampMixin, table=True):
     supports_streaming: bool = True
     supports_tools: bool = True
     supports_reasoning: bool = True
+    sticky_ttl_seconds: int = 1200
     ip_policy_mode: IPPolicyMode = Field(default=IPPolicyMode.ALL_PASS)
     ip_allowlist_cidrs: list[str] = Field(default_factory=list, sa_column=Column(JSONB))
     notes: str | None = None

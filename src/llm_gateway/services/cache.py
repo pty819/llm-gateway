@@ -49,5 +49,4 @@ class TTLCache:
 
 
 auth_cache = TTLCache(ttl=30.0)
-route_cache = TTLCache(ttl=30.0)
 policy_cache = TTLCache(ttl=30.0)

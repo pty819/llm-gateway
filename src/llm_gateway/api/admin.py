@@ -101,6 +101,7 @@ class ModelAliasCreate(BaseModel):
     alias: str
     upstream_model_name: str
     litellm_model: str
+    sticky_ttl_seconds: int = Field(default=1200, ge=1, le=86400)
     supports_streaming: bool = True
     supports_tools: bool = True
     supports_reasoning: bool = True
@@ -112,6 +113,7 @@ class ModelAliasCreate(BaseModel):
 class ModelAliasUpdate(BaseModel):
     upstream_model_name: str | None = None
     litellm_model: str | None = None
+    sticky_ttl_seconds: int | None = Field(default=None, ge=1, le=86400)
     supports_streaming: bool | None = None
     supports_tools: bool | None = None
     supports_reasoning: bool | None = None
@@ -912,6 +914,7 @@ async def create_upstream(
     payload: UpstreamTargetCreate, session: AsyncSession = Depends(session_dep)
 ):
     await _get_or_404(session, ModelAlias, payload.model_alias_id)
+    await _validate_homogeneous_upstream_payload(session, payload=payload)
     upstream = UpstreamTarget(**payload.model_dump())
     session.add(upstream)
     await session.flush()
@@ -952,6 +955,9 @@ async def update_upstream(
     session: AsyncSession = Depends(session_dep),
 ):
     upstream = await _get_or_404(session, UpstreamTarget, upstream_id)
+    await _validate_homogeneous_upstream_payload(
+        session, payload=payload, existing=upstream
+    )
     apply_model_patch(upstream, payload)
     await _audit_update(
         session, "upstream.update", "upstream_target", upstream.id, payload
@@ -1246,6 +1252,63 @@ async def _detach_upstream_usage(
         .values(upstream_target_id=None)
     )
     return request_count
+
+
+async def _validate_homogeneous_upstream_payload(
+    session: AsyncSession,
+    *,
+    payload: UpstreamTargetCreate | UpstreamTargetUpdate,
+    existing: UpstreamTarget | None = None,
+) -> None:
+    model_alias_id = (
+        payload.model_alias_id
+        if isinstance(payload, UpstreamTargetCreate)
+        else existing.model_alias_id
+        if existing
+        else None
+    )
+    if model_alias_id is None:
+        return
+
+    incoming = payload.model_dump(exclude_unset=True)
+    merged = {
+        "api_key_ref": existing.api_key_ref if existing else None,
+        "api_key_value": existing.api_key_value if existing else None,
+        "health_path": existing.health_path if existing else "/models",
+        "extra_headers": dict(existing.extra_headers or {}) if existing else {},
+        "state": existing.state if existing else ResourceState.ACTIVE,
+    }
+    merged.update({key: incoming[key] for key in merged if key in incoming})
+    if merged["state"] != ResourceState.ACTIVE:
+        return
+
+    result = await session.execute(
+        select(UpstreamTarget).where(
+            col(UpstreamTarget.model_alias_id) == model_alias_id,
+            col(UpstreamTarget.state) == ResourceState.ACTIVE,
+        )
+    )
+    siblings = [
+        item
+        for item in result.scalars().all()
+        if existing is None or item.id != existing.id
+    ]
+    if not siblings:
+        return
+
+    sibling = siblings[0]
+    expected = {
+        "api_key_ref": sibling.api_key_ref,
+        "api_key_value": sibling.api_key_value,
+        "health_path": sibling.health_path,
+        "extra_headers": dict(sibling.extra_headers or {}),
+    }
+    actual = {key: merged[key] for key in expected}
+    if actual != expected:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="upstream_replicas_must_share_key_headers_and_health_path",
+        )
 
 
 async def _delete_project_without_usage(

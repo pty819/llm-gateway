@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from ipaddress import ip_address, ip_network
 
+from redis.asyncio import Redis
 from sqlalchemy import distinct, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
@@ -16,6 +17,7 @@ from llm_gateway.db.models import (
     UpstreamTarget,
 )
 from llm_gateway.services.security import AuthContext
+from llm_gateway.services.upstream_routing import select_upstream_for_key
 
 
 class PolicyDenied(Exception):
@@ -49,33 +51,11 @@ def client_ip_allowed(model_alias: ModelAlias, client_ip: str) -> bool:
 async def resolve_route_context(
     session: AsyncSession,
     *,
+    redis: Redis | None = None,
     auth: AuthContext,
     requested_model: str,
     client_ip: str,
 ) -> RouteContext:
-    from llm_gateway.services.cache import route_cache
-
-    route_cache_key = f"route:{auth.key.id}:{requested_model}"
-    cached = route_cache.get(route_cache_key)
-    if cached is not None:
-        model_alias_id, upstream_id = cached
-        model_alias = await session.get(ModelAlias, model_alias_id)
-        upstream = await session.get(UpstreamTarget, upstream_id)
-        if (
-            not model_alias
-            or model_alias.state != ResourceState.ACTIVE
-            or not upstream
-            or upstream.state != ResourceState.ACTIVE
-        ):
-            route_cache.invalidate(route_cache_key)
-            raise PolicyDenied("model_alias_not_found_or_inactive")
-        if not await subject_can_use_model(
-            session, auth=auth, model_alias_id=model_alias.id
-        ):
-            raise PolicyDenied("model_not_entitled")
-        if not client_ip_allowed(model_alias, client_ip):
-            raise PolicyDenied("model_ip_denied")
-        return RouteContext(model_alias=model_alias, upstream=upstream)
     alias_result = await session.execute(
         select(ModelAlias).where(col(ModelAlias.alias) == requested_model)
     )
@@ -92,17 +72,24 @@ async def resolve_route_context(
         raise PolicyDenied("model_ip_denied")
 
     upstream_result = await session.execute(
-        select(UpstreamTarget).where(
+        select(UpstreamTarget)
+        .where(
             col(UpstreamTarget.model_alias_id) == model_alias.id,
             col(UpstreamTarget.state) == ResourceState.ACTIVE,
         )
+        .order_by(col(UpstreamTarget.created_at).asc())
     )
-    upstream = upstream_result.scalar_one_or_none()
-    if not upstream:
+    upstreams = list(upstream_result.scalars().all())
+    if not upstreams:
         raise PolicyDenied("upstream_not_configured")
 
+    upstream, _loads = await select_upstream_for_key(
+        redis,
+        key_id=auth.key.id,
+        model_alias=model_alias,
+        upstreams=upstreams,
+    )
     ctx = RouteContext(model_alias=model_alias, upstream=upstream)
-    route_cache.set(route_cache_key, (model_alias.id, upstream.id))
     return ctx
 
 

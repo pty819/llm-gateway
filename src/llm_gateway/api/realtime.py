@@ -61,10 +61,10 @@ async def realtime_stream(
         x_admin_token=x_admin_token,
         x_session_token=x_session_token,
     )
-    targets = await _load_vllm_metric_targets()
 
     async def events():
         while not await request.is_disconnected():
+            targets = await _load_vllm_metric_targets()
             snapshot = await runtime_snapshot(
                 redis, window_seconds=window_seconds, vllm_targets=targets
             )

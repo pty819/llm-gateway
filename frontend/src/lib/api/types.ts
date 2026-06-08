@@ -1,7 +1,6 @@
 export type SubjectType = 'user' | 'service';
 export type ResourceState = 'active' | 'disabled';
 export type IPPolicyMode = 'all_pass' | 'allowlist';
-export type RouterPolicy = 'consistent_hash' | 'cache_aware';
 export type EndpointFamily = 'openai_chat' | 'openai_responses' | 'anthropic_messages';
 export type RequestOutcome =
 	| 'success'
@@ -70,6 +69,7 @@ export type ModelAlias = Timestamped & {
 	supports_streaming: boolean;
 	supports_tools: boolean;
 	supports_reasoning: boolean;
+	sticky_ttl_seconds: number;
 	ip_policy_mode: IPPolicyMode;
 	ip_allowlist_cidrs: string[];
 	notes: string | null;
@@ -197,22 +197,6 @@ export type VllmRouterMetricsSummary = {
 	cache_hits_total?: number | null;
 	cache_misses_total?: number | null;
 	cache_hit_ratio?: number | null;
-};
-
-export type RouterCommandConfig = Timestamped & {
-	id: string;
-	model_alias_id: string;
-	name: string;
-	worker_urls: string[];
-	policy: RouterPolicy;
-	host: string;
-	port: number;
-	extra_args: Record<string, unknown>;
-};
-
-export type RouterCommandConfigResponse = {
-	config: RouterCommandConfig;
-	command: string;
 };
 
 export type RatePolicy = Timestamped & {
@@ -376,7 +360,6 @@ export type Inventory = {
 	teamMemberships: TeamMembership[];
 	modelTeamGrants: ModelTeamGrant[];
 	upstreams: UpstreamTarget[];
-	routerConfigs: RouterCommandConfigResponse[];
 	ratePolicies: RatePolicy[];
 	usage: UsageSummaryRow[];
 	usageTotals: UsageTotalsRow | null;
