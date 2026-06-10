@@ -38,9 +38,7 @@ async def test_anthropic_messages_once_sets_drop_params(monkeypatch):
     assert result.usage == {"input_tokens": 3, "output_tokens": 2}
 
 
-async def test_responses_once_routes_openai_compatible_upstreams_to_chat_completions(
-    monkeypatch,
-):
+async def test_responses_once_uses_native_responses_for_hosted_vllm(monkeypatch):
     captured: dict[str, Any] = {}
 
     async def fake_aresponses(**kwargs):
@@ -50,12 +48,32 @@ async def test_responses_once_routes_openai_compatible_upstreams_to_chat_complet
     monkeypatch.setattr(litellm_client, "aresponses", fake_aresponses)
 
     result = await litellm_client.responses_once(
-        model_alias=_model_alias(),
+        model_alias=_model_alias(litellm_model="hosted_vllm/test-model"),
         upstream=_upstream(),
         body={"input": "hi", "max_output_tokens": 8},
     )
 
-    assert captured["model"] == "openai/test-model"
+    assert captured["model"] == "hosted_vllm/test-model"
+    assert "use_chat_completions_api" not in captured
+    assert result.usage == {"input_tokens": 9, "output_tokens": 1}
+
+
+async def test_responses_once_can_explicitly_bridge_chat_completions(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    async def fake_aresponses(**kwargs):
+        captured.update(kwargs)
+        return {"usage": {"input_tokens": 9, "output_tokens": 1}}
+
+    monkeypatch.setattr(litellm_client, "aresponses", fake_aresponses)
+
+    result = await litellm_client.responses_once(
+        model_alias=_model_alias(litellm_model="openai/chat_completions/test-model"),
+        upstream=_upstream(),
+        body={"input": "hi", "max_output_tokens": 8},
+    )
+
+    assert captured["model"] == "openai/chat_completions/test-model"
     assert captured["use_chat_completions_api"] is True
     assert result.usage == {"input_tokens": 9, "output_tokens": 1}
 

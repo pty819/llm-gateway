@@ -17,12 +17,7 @@ class LiteLLMCallResult:
 
 
 ANTHROPIC_DROP_PARAMS = True
-OPENAI_CHAT_COMPLETIONS_PREFIXES = {
-    "custom_openai",
-    "hosted_vllm",
-    "openai",
-    "openai_like",
-}
+OPENAI_CHAT_COMPLETIONS_RESPONSES_PREFIX = "openai/chat_completions/"
 
 
 def configure_litellm_routing() -> None:
@@ -38,12 +33,10 @@ def _api_key(upstream: UpstreamTarget) -> str | None:
     return upstream.api_key_value or upstream.api_key_ref
 
 
-def litellm_model_prefix(model_alias: ModelAlias) -> str:
-    return model_alias.litellm_model.split("/", 1)[0].lower()
-
-
 def uses_openai_chat_completions_upstream(model_alias: ModelAlias) -> bool:
-    return litellm_model_prefix(model_alias) in OPENAI_CHAT_COMPLETIONS_PREFIXES
+    return model_alias.litellm_model.lower().startswith(
+        OPENAI_CHAT_COMPLETIONS_RESPONSES_PREFIX
+    )
 
 
 async def check_upstream_health(
