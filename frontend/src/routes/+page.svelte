@@ -48,6 +48,13 @@
 		persistSessionToken
 	} from '$lib/state/admin-token';
 	import { parseCidrList, parseJsonObject, validateCidrList, validateHttpUrl } from '$lib/validators';
+	import {
+		UPSTREAM_FORMAT_LABEL,
+		UPSTREAM_FORMAT_SHORT_LABEL,
+		composeLitellmModel,
+		deriveUpstreamFormat,
+		type UpstreamFormat
+	} from '$lib/upstream-format';
 
 	type Section = {
 		id: string;
@@ -93,6 +100,7 @@
 	let realtime = $state<RuntimeMetricsSnapshot | null>(null);
 	let realtimeStatus = $state('未连接');
 	let realtimeAbort: AbortController | null = null;
+	let realtimeLocked = $state(false);
 	let profile = $state<AuthProfile | null>(null);
 	let inventory = $state<Inventory>(emptyInventory());
 	let healthResults = $state<Record<string, UpstreamHealth | string>>({});
@@ -164,7 +172,7 @@
 	let modelForm = $state({
 		alias: '',
 		upstream_model_name: '',
-		litellm_model: '',
+		upstream_format: 'openai' as UpstreamFormat,
 		supports_streaming: true,
 		supports_tools: true,
 		supports_reasoning: true,
@@ -253,7 +261,28 @@
 	);
 	const visibleAnalyticsBuckets = $derived(inventory.analyticsBuckets.slice(0, PAGE_SIZE.usagePreview));
 	const visibleAnalyticsDrilldown = $derived(inventory.analyticsDrilldown.slice(0, PAGE_SIZE.usagePreview));
-	const realtimeUpstreams = $derived(realtime?.upstreams ?? []);
+	const realtimeRows = $derived.by(() => {
+		const live = realtime?.upstreams ?? [];
+		if (!realtimeLocked) return live;
+		// 锁定:全部活动配置端点按名排序,合并 realtime 指标(无数据则填占位行)
+		return inventory.upstreams
+			.filter((u) => u.state === 'active')
+			.toSorted((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'))
+			.map((u) => {
+				const match = live.find((r) => r.upstream_id === u.id);
+				return (
+					match ?? {
+						upstream_id: u.id,
+						upstream_name: u.name,
+						model_alias: '', // inventory 无 model_alias 字段,留空,模板里用占位
+						tokens_per_second: null,
+						recent_tokens: null,
+						active_connections: 0
+						// vllm 缺省,模板里用可选链处理
+					}
+				);
+			});
+	});
 	const realtimeUpdatedLabel = $derived(realtime ? new Date(realtime.generated_at).toLocaleTimeString() : '无');
 	const analyticsMaxTokens = $derived(
 		Math.max(1, ...visibleAnalyticsBuckets.map((row) => Number(row.total_tokens ?? 0)))
@@ -703,15 +732,23 @@
 			await api.post(
 				'/admin/model-aliases',
 				clean({
-					...modelForm,
+					alias: modelForm.alias,
+					upstream_model_name: modelForm.upstream_model_name,
+					litellm_model: composeLitellmModel(modelForm.upstream_format, modelForm.upstream_model_name),
+					supports_streaming: modelForm.supports_streaming,
+					supports_tools: modelForm.supports_tools,
+					supports_reasoning: modelForm.supports_reasoning,
+					sticky_ttl_seconds: modelForm.sticky_ttl_seconds,
+					ip_policy_mode: modelForm.ip_policy_mode,
 					ip_allowlist_cidrs:
-						modelForm.ip_policy_mode === 'allowlist' ? parseCidrList(modelForm.ip_allowlist_cidrs) : []
+						modelForm.ip_policy_mode === 'allowlist' ? parseCidrList(modelForm.ip_allowlist_cidrs) : [],
+					notes: modelForm.notes
 				})
 			);
 			modelForm = {
 				alias: '',
 				upstream_model_name: '',
-				litellm_model: '',
+				upstream_format: 'openai',
 				supports_streaming: true,
 				supports_tools: true,
 				supports_reasoning: true,
@@ -1476,7 +1513,14 @@
 						<div class="form-grid">
 							<label>别名<input bind:value={modelForm.alias} placeholder="dev-model" /></label>
 							<label>上游模型名<input bind:value={modelForm.upstream_model_name} /></label>
-							<label>LiteLLM 模型<input bind:value={modelForm.litellm_model} placeholder="openai/model-name" /></label>
+							<label>上游格式
+								<select bind:value={modelForm.upstream_format}>
+									<option value="openai">{UPSTREAM_FORMAT_LABEL.openai}</option>
+									<option value="openai_chat_completions">{UPSTREAM_FORMAT_LABEL.openai_chat_completions}</option>
+									<option value="anthropic">{UPSTREAM_FORMAT_LABEL.anthropic}</option>
+									<option value="hosted_vllm">{UPSTREAM_FORMAT_LABEL.hosted_vllm}</option>
+								</select>
+							</label>
 							<label>粘性生命周期秒数<input type="number" min="1" max="86400" bind:value={modelForm.sticky_ttl_seconds} /></label>
 							<label>IP 策略<select bind:value={modelForm.ip_policy_mode}><option value="all_pass">全部放行</option><option value="allowlist">白名单</option></select></label>
 							<label>CIDRs<textarea bind:value={modelForm.ip_allowlist_cidrs} placeholder="10.0.0.0/8"></textarea></label>
@@ -1498,7 +1542,7 @@
 									{#each inventory.models as model}
 										<tr>
 											<td><strong>{model.alias}</strong><br /><span class="muted">{model.upstream_model_name}</span></td>
-											<td>{model.litellm_model}</td>
+											<td><span class="badge">{UPSTREAM_FORMAT_SHORT_LABEL[deriveUpstreamFormat(model.litellm_model)]}</span><br /><span class="muted">{model.litellm_model}</span></td>
 											<td><StateBadge value={model.state} /></td>
 											<td>{model.sticky_ttl_seconds}s</td>
 											<td><StateBadge value={model.ip_policy_mode} /><br /><span class="muted">{model.ip_allowlist_cidrs.join(', ') || '未配置 CIDR'}</span></td>
@@ -1627,6 +1671,7 @@
 							</div>
 							<div class="actions">
 								<StateBadge value={realtimeStatus} tone={realtimeStatus === '已连接' ? 'success' : 'neutral'} />
+								<button class={realtimeLocked ? '' : 'secondary'} type="button" onclick={() => (realtimeLocked = !realtimeLocked)}>{realtimeLocked ? '解锁排序' : '锁定顺序·显示全部'}</button>
 								<button class="secondary" type="button" onclick={startRealtimeStream}>重连</button>
 							</div>
 						</div>
@@ -1644,7 +1689,7 @@
 							<table>
 								<thead><tr><th>上游</th><th>模型</th><th>类型</th><th>token/s</th><th>网关连接</th><th>vLLM running / waiting</th><th>Router 负载</th><th>KV / Prefix</th><th>metrics</th></tr></thead>
 								<tbody>
-									{#each realtimeUpstreams as upstream}
+									{#each realtimeRows as upstream (upstream.upstream_id)}
 										<tr>
 											<td>{upstream.upstream_name}<br /><span class="muted">{short(upstream.upstream_id)}</span></td>
 											<td>{upstream.model_alias || '未知'}</td>

@@ -44,6 +44,7 @@ from llm_gateway.services.proxy_accounting import (
 )
 from llm_gateway.services.runtime_metrics import tracked_runtime_connection
 from llm_gateway.services.security import AuthContext, authenticate_gateway_key
+from llm_gateway.services.streaming import HEARTBEAT_FRAME, iter_with_heartbeat
 from llm_gateway.services.upstream_routing import touch_sticky_route
 
 
@@ -221,6 +222,7 @@ async def openai_chat_completions(
                 body=body,
                 started_at=started_at,
                 request_id=request_id,
+                keepalive_seconds=settings.stream_keepalive_seconds,
             ),
             media_type="text/event-stream",
         )
@@ -288,6 +290,7 @@ async def _stream_openai_response(
     body: dict[str, Any],
     started_at: datetime,
     request_id: str,
+    keepalive_seconds: float,
 ):
     usage = None
     first_token_at: datetime | None = None
@@ -297,12 +300,18 @@ async def _stream_openai_response(
         async with tracked_runtime_connection(
             redis, request_id=request_id, route=route
         ):
-            async for event, event_usage in upstream_request_stream(
-                endpoint_family=EndpointFamily.OPENAI_CHAT,
-                model_alias=route.model_alias,
-                upstream=route.upstream,
-                body=body,
+            async for event, event_usage in iter_with_heartbeat(
+                upstream_request_stream(
+                    endpoint_family=EndpointFamily.OPENAI_CHAT,
+                    model_alias=route.model_alias,
+                    upstream=route.upstream,
+                    body=body,
+                ),
+                interval_seconds=keepalive_seconds,
             ):
+                if event == HEARTBEAT_FRAME:
+                    yield event
+                    continue
                 if first_token_at is None:
                     first_token_at = utcnow()
                 usage = event_usage or usage
@@ -376,6 +385,7 @@ async def openai_responses(
                 body=body,
                 started_at=started_at,
                 request_id=request_id,
+                keepalive_seconds=settings.stream_keepalive_seconds,
             ),
             media_type="text/event-stream",
         )
@@ -443,6 +453,7 @@ async def _stream_responses(
     body: dict[str, Any],
     started_at: datetime,
     request_id: str,
+    keepalive_seconds: float,
 ):
     usage = None
     first_token_at: datetime | None = None
@@ -452,12 +463,18 @@ async def _stream_responses(
         async with tracked_runtime_connection(
             redis, request_id=request_id, route=route
         ):
-            async for event, event_usage in upstream_request_stream(
-                endpoint_family=EndpointFamily.OPENAI_RESPONSES,
-                model_alias=route.model_alias,
-                upstream=route.upstream,
-                body=body,
+            async for event, event_usage in iter_with_heartbeat(
+                upstream_request_stream(
+                    endpoint_family=EndpointFamily.OPENAI_RESPONSES,
+                    model_alias=route.model_alias,
+                    upstream=route.upstream,
+                    body=body,
+                ),
+                interval_seconds=keepalive_seconds,
             ):
+                if event == HEARTBEAT_FRAME:
+                    yield event
+                    continue
                 if first_token_at is None:
                     first_token_at = utcnow()
                 usage = event_usage or usage
@@ -531,6 +548,7 @@ async def anthropic_messages(
                 body=body,
                 started_at=started_at,
                 request_id=request_id,
+                keepalive_seconds=settings.stream_keepalive_seconds,
             ),
             media_type="text/event-stream",
         )
@@ -596,6 +614,7 @@ async def _stream_anthropic_response(
     body: dict[str, Any],
     started_at: datetime,
     request_id: str,
+    keepalive_seconds: float,
 ):
     usage = None
     first_token_at: datetime | None = None
@@ -605,12 +624,18 @@ async def _stream_anthropic_response(
         async with tracked_runtime_connection(
             redis, request_id=request_id, route=route
         ):
-            async for event, event_usage in upstream_request_stream(
-                endpoint_family=EndpointFamily.ANTHROPIC_MESSAGES,
-                model_alias=route.model_alias,
-                upstream=route.upstream,
-                body=body,
+            async for event, event_usage in iter_with_heartbeat(
+                upstream_request_stream(
+                    endpoint_family=EndpointFamily.ANTHROPIC_MESSAGES,
+                    model_alias=route.model_alias,
+                    upstream=route.upstream,
+                    body=body,
+                ),
+                interval_seconds=keepalive_seconds,
             ):
+                if event == HEARTBEAT_FRAME:
+                    yield event
+                    continue
                 if first_token_at is None:
                     first_token_at = utcnow()
                 usage = event_usage or usage

@@ -39,6 +39,16 @@ class Settings(BaseSettings):
     request_fact_timeout_seconds: int = Field(
         default=30, alias="LLM_GATEWAY_FACT_TIMEOUT_SECONDS"
     )
+    # Seconds between SSE keepalive comment frames sent to the client while the
+    # upstream is silent (e.g. during long reasoning). Keeps the gateway->client
+    # leg alive across proxies/dev servers that drop idle streaming connections.
+    stream_keepalive_seconds: float = Field(
+        default=15.0, alias="LLM_GATEWAY_STREAM_KEEPALIVE_SECONDS"
+    )
+    # Total timeout applied to upstream model calls (maps to litellm.request_timeout).
+    upstream_timeout_seconds: float = Field(
+        default=6000.0, alias="LLM_GATEWAY_UPSTREAM_TIMEOUT_SECONDS"
+    )
     admin_token: str = Field(default="dev-admin-token", alias="LLM_GATEWAY_ADMIN_TOKEN")
     bootstrap_admin_username: str = Field(
         default="admin", alias="LLM_GATEWAY_BOOTSTRAP_ADMIN_USERNAME"

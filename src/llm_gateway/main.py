@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 
+import litellm
 from fastapi import FastAPI
 
 from llm_gateway.api import admin, auth, health, proxy, realtime
@@ -17,6 +18,10 @@ def create_app() -> FastAPI:
         async with AsyncSessionLocal() as session:
             await ensure_builtin_identity(session, settings)
             await session.commit()
+        # Make the upstream model-call timeout explicit and tunable instead of
+        # relying on litellm's implicit default. litellm reads this module global
+        # at call time, so setting it once at startup governs every proxy call.
+        litellm.request_timeout = settings.upstream_timeout_seconds
         init_analytics(settings)
         yield
         close_analytics()
