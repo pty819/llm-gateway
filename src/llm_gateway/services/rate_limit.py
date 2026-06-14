@@ -117,6 +117,29 @@ async def check_request_rate(
         raise RateLimitExceeded("request_rate_exceeded")
 
 
+async def check_login_rate(
+    redis: Redis,
+    *,
+    client_ip: str,
+    limit: int = 20,
+    window_seconds: int = 60,
+) -> None:
+    """Cap login/register attempts per source IP to blunt username enumeration
+    and credential brute-force. Redis errors fail open: auth must not break if
+    the rate-limit backend is unavailable."""
+    if not client_ip:
+        return
+    counter_key = f"login:attempts:{client_ip}:{window_seconds}"
+    try:
+        current = await redis.incr(counter_key)
+        if current == 1:
+            await redis.expire(counter_key, window_seconds)
+    except RedisError:
+        return
+    if current > limit:
+        raise RateLimitExceeded("too_many_login_attempts")
+
+
 async def acquire_concurrency_slot(
     redis: Redis,
     *,
