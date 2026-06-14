@@ -112,7 +112,11 @@ class DuckDBAnalytics:
     def __init__(self, settings: Settings) -> None:
         self._lock = Lock()
         self._closed = False
-        host, database, port, user, password = _parse_pg_dsn(settings.database_url)
+        # Prefer a dedicated analytics DSN (e.g. a read replica) so heavy
+        # analytical scans do not compete with the data plane on the primary.
+        analytics_dsn = settings.analytics_database_url or settings.database_url
+        self._statement_timeout = settings.analytics_statement_timeout_seconds
+        host, database, port, user, password = _parse_pg_dsn(analytics_dsn)
         display = f"{host}:{port}/{database}"
         try:
             self._con = duckdb.connect()
@@ -152,7 +156,19 @@ class DuckDBAnalytics:
         return [{k: _serialize_value(v) for k, v in zip(columns, row)} for row in rows]
 
     async def query(self, sql: str, params: list[object] | None = None) -> list[dict]:
-        return await asyncio.to_thread(self._query, sql, params)
+        # Bound a runaway aggregate so one slow query cannot hang the analytics
+        # surface (the DuckDB connection is single/locked). On timeout we surface
+        # an error to the caller rather than waiting indefinitely.
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._query, sql, params),
+                timeout=self._statement_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "analytics query exceeded %.1fs and was cancelled", self._statement_timeout
+            )
+            raise
 
     async def usage_totals(
         self,

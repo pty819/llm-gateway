@@ -170,6 +170,38 @@ async def record_request_fact(
     return fact
 
 
+_AUDIT_SENSITIVE_KEYS = frozenset(
+    {
+        "api_key_value",
+        "api_key_ref",
+        "password",
+        "token_hash",
+        "key_hash",
+        "authorization",
+        "secret",
+    }
+)
+
+
+def _redact_audit_detail(value: Any) -> Any:
+    """Strip secret values from audit detail before persistence. Audit events are
+    append-only history readable by every admin, so an upstream API key or
+    password rotated via an update must never land in ``audit_events.detail``.
+    """
+    if isinstance(value, dict):
+        return {
+            key: (
+                "<redacted>"
+                if key.lower() in _AUDIT_SENSITIVE_KEYS
+                else _redact_audit_detail(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_audit_detail(item) for item in value]
+    return value
+
+
 async def record_audit_event(
     session: AsyncSession,
     *,
@@ -186,7 +218,7 @@ async def record_audit_event(
         resource_type=resource_type,
         resource_id=resource_id,
         outcome=outcome,
-        detail=detail or {},
+        detail=_redact_audit_detail(detail) or {},
     )
     session.add(event)
     await session.flush()

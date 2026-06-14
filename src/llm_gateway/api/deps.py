@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator
 from ipaddress import ip_address, ip_network
+import hmac
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from redis.asyncio import Redis
@@ -96,7 +97,10 @@ async def admin_dep(
     settings: Settings = Depends(settings_dep),
     session: AsyncSession = Depends(session_dep),
 ) -> None:
-    if not x_admin_token or x_admin_token != settings.admin_token:
+    token_matches = bool(x_admin_token) and hmac.compare_digest(
+        x_admin_token, settings.admin_token
+    )
+    if not token_matches:
         raw_token = x_session_token or _session_token(request)
         if not raw_token:
             raise HTTPException(

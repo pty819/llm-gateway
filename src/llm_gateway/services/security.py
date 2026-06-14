@@ -336,9 +336,11 @@ async def ensure_builtin_identity(session: AsyncSession, settings: Settings) -> 
         session.add(admin)
         await session.flush()
     else:
+        # Ensure the bootstrap admin stays flagged admin/active, but never silently
+        # (re)write its password to the configured default. Resetting an empty
+        # password hash to a known default is a takeover vector; an admin without
+        # a password must rely on the admin token until explicitly re-provisioned.
         admin.is_admin = True
-        if not admin.password_hash:
-            admin.password_hash = hash_password(settings.bootstrap_admin_password)
         if admin.state != ResourceState.ACTIVE:
             admin.state = ResourceState.ACTIVE
     await ensure_team_membership(

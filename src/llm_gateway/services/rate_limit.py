@@ -7,6 +7,7 @@ from uuid import UUID
 from uuid import uuid4
 
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
@@ -102,9 +103,16 @@ async def check_request_rate(
     window_seconds: int = 60,
 ) -> None:
     counter_key = f"rate:key:{key_id}:{window_seconds}"
-    current = await redis.incr(counter_key)
-    if current == 1:
-        await redis.expire(counter_key, window_seconds)
+    try:
+        current = await redis.incr(counter_key)
+        if current == 1:
+            await redis.expire(counter_key, window_seconds)
+    except RedisError:
+        # Redis unavailable: honor the configured fail-closed policy instead of
+        # relying on the exception to bubble up as a 500 by accident.
+        if get_settings().rate_limit_fail_closed:
+            raise RateLimitExceeded("rate_limit_unavailable")
+        return
     if current > limit:
         raise RateLimitExceeded("request_rate_exceeded")
 
@@ -120,14 +128,21 @@ async def acquire_concurrency_slot(
     now = now if now is not None else time.time()
     slot_key = _concurrency_slot_key(key_id)
     member = f"{uuid4()}:{now:.6f}"
-    acquired = await _try_acquire_slot(
-        redis,
-        slot_key=slot_key,
-        member=member,
-        ttl_seconds=ttl_seconds,
-        limit=limit,
-        now=now,
-    )
+    try:
+        acquired = await _try_acquire_slot(
+            redis,
+            slot_key=slot_key,
+            member=member,
+            ttl_seconds=ttl_seconds,
+            limit=limit,
+            now=now,
+        )
+    except RedisError:
+        if get_settings().rate_limit_fail_closed:
+            raise RateLimitExceeded("concurrency_unavailable")
+        # Fail open: return an empty token whose release is a no-op so the
+        # caller still gets a value to release later.
+        return ""
     if not acquired:
         raise RateLimitExceeded("concurrency_exceeded")
     return _encode_slot_token(slot_key=slot_key, member=member)

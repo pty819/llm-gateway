@@ -49,6 +49,22 @@ class Settings(BaseSettings):
     upstream_timeout_seconds: float = Field(
         default=6000.0, alias="LLM_GATEWAY_UPSTREAM_TIMEOUT_SECONDS"
     )
+    # DB connection pool sizing for the async engine.
+    db_pool_size: int = Field(default=20, alias="LLM_GATEWAY_DB_POOL_SIZE")
+    db_max_overflow: int = Field(default=40, alias="LLM_GATEWAY_DB_MAX_OVERFLOW")
+    db_pool_recycle_seconds: int = Field(
+        default=1800, alias="LLM_GATEWAY_DB_POOL_RECYCLE_SECONDS"
+    )
+    # Optional separate (read-only replica) DSN for heavy DuckDB analytics; falls
+    # back to the main database_url when unset.
+    analytics_database_url: str | None = Field(
+        default=None, alias="LLM_GATEWAY_ANALYTICS_DATABASE_URL"
+    )
+    # statement_timeout applied to analytics queries so a runaway aggregate
+    # cannot monopolize the analytics connection.
+    analytics_statement_timeout_seconds: float = Field(
+        default=15.0, alias="LLM_GATEWAY_ANALYTICS_STATEMENT_TIMEOUT_SECONDS"
+    )
     admin_token: str = Field(default="dev-admin-token", alias="LLM_GATEWAY_ADMIN_TOKEN")
     bootstrap_admin_username: str = Field(
         default="admin", alias="LLM_GATEWAY_BOOTSTRAP_ADMIN_USERNAME"
@@ -56,7 +72,17 @@ class Settings(BaseSettings):
     bootstrap_admin_password: str = Field(
         default="dev-admin-password", alias="LLM_GATEWAY_BOOTSTRAP_ADMIN_PASSWORD"
     )
+    # When True, the gateway refuses to start if admin_token / bootstrap admin
+    # password are still the shipped defaults. Defaults to environment != "local".
+    require_nondefault_admin_credentials: bool | None = Field(
+        default=None, alias="LLM_GATEWAY_REQUIRE_NONDEFAULT_ADMIN_CREDENTIALS"
+    )
     session_ttl_hours: int = Field(default=168, alias="LLM_GATEWAY_SESSION_TTL_HOURS")
+
+    def should_require_nondefault_admin_credentials(self) -> bool:
+        if self.require_nondefault_admin_credentials is not None:
+            return self.require_nondefault_admin_credentials
+        return self.environment != "local"
 
 
 @lru_cache

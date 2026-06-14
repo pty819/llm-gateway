@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
@@ -90,7 +91,7 @@ async def _require_admin(
     x_admin_token: str | None,
     x_session_token: str | None,
 ) -> None:
-    if x_admin_token and x_admin_token == settings.admin_token:
+    if x_admin_token and hmac.compare_digest(x_admin_token, settings.admin_token):
         return
 
     raw_token = x_session_token or _session_token(request)
