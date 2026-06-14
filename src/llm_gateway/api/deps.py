@@ -113,6 +113,12 @@ async def admin_dep(
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_admin_token"
             )
+        # Record the human operator behind session-based admin actions so audit
+        # events attribute changes to a real subject. Token-based admin actions
+        # (no subject) are recorded as system operations.
+        from llm_gateway.services.facts import admin_actor_subject_id
+
+        admin_actor_subject_id.set(context.subject.id)
 
 
 async def user_session_dep(

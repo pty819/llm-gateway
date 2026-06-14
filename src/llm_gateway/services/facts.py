@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Any
+import contextvars
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +11,15 @@ from llm_gateway.db.models import (
     RequestOutcome,
     SubjectType,
     UsageSource,
+)
+
+
+# Request-scoped actor for admin audit events. Set by the admin dependency
+# (session-based admin actions record the human subject; token-based system
+# actions leave it unset). Read as the default actor_subject_id so individual
+# record_audit_event call sites do not need to thread the actor manually.
+admin_actor_subject_id: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "admin_actor_subject_id", default=None
 )
 
 
@@ -212,6 +222,8 @@ async def record_audit_event(
     resource_id=None,
     detail: dict[str, Any] | None = None,
 ) -> AuditEvent:
+    if actor_subject_id is None:
+        actor_subject_id = admin_actor_subject_id.get()
     event = AuditEvent(
         actor_subject_id=actor_subject_id,
         action=action,
