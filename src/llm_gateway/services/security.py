@@ -80,6 +80,12 @@ def hash_password(password: str) -> str:
     return f"pbkdf2_sha256${iterations}${salt}${digest.hex()}"
 
 
+# A real, valid PBKDF2 hash used to keep the login path constant-time: when the
+# username does not exist we still run a full password verification against this
+# dummy so the response timing does not reveal which usernames are registered.
+DUMMY_PASSWORD_HASH = hash_password("constant-time-dummy-do-not-use")
+
+
 def verify_password(password: str, stored_hash: str) -> bool:
     try:
         algorithm, iterations_raw, salt, digest = stored_hash.split("$", 3)
@@ -336,9 +342,11 @@ async def ensure_builtin_identity(session: AsyncSession, settings: Settings) -> 
         session.add(admin)
         await session.flush()
     else:
+        # Ensure the bootstrap admin stays flagged admin/active, but never silently
+        # (re)write its password to the configured default. Resetting an empty
+        # password hash to a known default is a takeover vector; an admin without
+        # a password must rely on the admin token until explicitly re-provisioned.
         admin.is_admin = True
-        if not admin.password_hash:
-            admin.password_hash = hash_password(settings.bootstrap_admin_password)
         if admin.state != ResourceState.ACTIVE:
             admin.state = ResourceState.ACTIVE
     await ensure_team_membership(

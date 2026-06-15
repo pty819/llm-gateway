@@ -96,14 +96,11 @@ async def resolve_route_context(
 async def subject_can_use_model(
     session: AsyncSession, *, auth: AuthContext, model_alias_id
 ) -> bool:
-    from llm_gateway.services.cache import _CACHE_MISS, policy_cache
-
-    cache_key = (
-        f"entitle:{auth.key.id}:{auth.subject.id}:{auth.project.id}:{model_alias_id}"
-    )
-    cached = policy_cache.get(cache_key)
-    if cached is not None:
-        return cached is not _CACHE_MISS
+    # Access is re-evaluated on every request with no cache, so revoking a team
+    # membership or disabling an entitlement takes effect immediately rather
+    # than after a TTL window. The query is a couple of indexed point lookups,
+    # cheap next to the upstream model call; correctness of access revocation
+    # outweighs the small saving a short-lived cache would provide.
     entitlement_result = await session.execute(
         select(col(ModelEntitlement.id)).where(
             col(ModelEntitlement.model_alias_id) == model_alias_id,
@@ -116,7 +113,6 @@ async def subject_can_use_model(
         )
     )
     if entitlement_result.scalars().first():
-        policy_cache.set(cache_key, True)
         return True
 
     team_result = await session.execute(
@@ -131,12 +127,7 @@ async def subject_can_use_model(
             col(TeamMembership.subject_id) == auth.subject.id,
         )
     )
-    result = team_result.scalars().first() is not None
-    if result:
-        policy_cache.set(cache_key, True)
-    else:
-        policy_cache.set(cache_key, _CACHE_MISS)
-    return result
+    return team_result.scalars().first() is not None
 
 
 async def list_accessible_model_aliases(

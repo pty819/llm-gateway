@@ -4,11 +4,18 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
+from redis.asyncio import Redis
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
-from llm_gateway.api.deps import session_dep, settings_dep, user_session_dep
+from llm_gateway.api.deps import (
+    client_ip_dep,
+    redis_dep,
+    session_dep,
+    settings_dep,
+    user_session_dep,
+)
 from llm_gateway.core.config import Settings
 from llm_gateway.db.models import (
     GatewayKey,
@@ -35,7 +42,9 @@ from llm_gateway.services.policy import (
     list_subject_team_names,
 )
 from llm_gateway.services.resource_payloads import redact_gateway_key
+from llm_gateway.services.rate_limit import RateLimitExceeded, check_login_rate
 from llm_gateway.services.security import (
+    DUMMY_PASSWORD_HASH,
     UserSessionContext,
     create_gateway_key,
     create_registered_user,
@@ -89,7 +98,15 @@ async def register(
     payload: RegisterRequest,
     session: AsyncSession = Depends(session_dep),
     settings: Settings = Depends(settings_dep),
+    redis: Redis = Depends(redis_dep),
+    client_ip: str = Depends(client_ip_dep),
 ):
+    try:
+        await check_login_rate(redis, client_ip=client_ip)
+    except RateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
+        ) from exc
     try:
         subject, project, key, raw_key = await create_registered_user(
             session,
@@ -131,23 +148,34 @@ async def register(
 @router.post("/login")
 async def login(
     payload: LoginRequest,
+    request: Request,
     session: AsyncSession = Depends(session_dep),
     settings: Settings = Depends(settings_dep),
+    redis: Redis = Depends(redis_dep),
+    client_ip: str = Depends(client_ip_dep),
 ):
     username = normalize_username(payload.username)
+    try:
+        await check_login_rate(redis, client_ip=client_ip)
+    except RateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
+        ) from exc
+
     result = await session.execute(
         select(Subject).where(col(Subject.login_username) == username)
     )
     subject = result.scalar_one_or_none()
-    if (
-        not subject
-        or not subject.password_hash
-        or subject.state != ResourceState.ACTIVE
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_login"
-        )
-    if not verify_password(payload.password, subject.password_hash):
+    user_eligible = (
+        subject is not None
+        and subject.state == ResourceState.ACTIVE
+        and bool(subject.password_hash)
+    )
+    # Always run a full PBKDF2 verification so the response timing cannot reveal
+    # whether the username exists: unknown users verify against a dummy hash.
+    stored_hash = subject.password_hash if (subject and subject.password_hash) else DUMMY_PASSWORD_HASH
+    password_ok = verify_password(payload.password, stored_hash)
+    if not user_eligible or not password_ok:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_login"
         )
