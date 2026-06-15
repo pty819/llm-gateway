@@ -70,11 +70,15 @@
 - 涉及: `api/auth.py`、`services/security.py`、`services/rate_limit.py`。
 - 测试: 新增"不存在用户与错误密码耗时一致""连续失败触发限流"。
 
-### P1-10 FK ON DELETE 策略(Alembic 迁移)
+### P1-10 FK ON DELETE 策略(Alembic 迁移)→ ⚠️ 待审草案,本轮不自动落地
 - 现状: 几乎所有 FK 裸 `NO ACTION`,引用完整性靠应用层枚举。
-- 方案: 新增迁移:事实/审计表 FK(subject_id/project_id/upstream_target_id/actor_subject_id)改 `ON DELETE SET NULL`(保留历史);从属配置表(memberships/sessions/entitlements/grants/keys)按业务改 `ON DELETE CASCADE`。`delete_subject` 等应用层级联相应简化(保留 usage 历史保护)。
-- 涉及: 新 `alembic/versions/20260615_0009_fk_on_delete.py`、`db/models.py`(FK 声明对齐)、`api/admin.py`(简化级联)。
-- 风险: 生产库迁移,需 review 迁移 SQL。
+- **本轮不执行的理由(负责任的取舍)**: 测试 fixture `migrated_database` 在每次跑测试时对 `.env.local` 配置的数据库执行 `alembic upgrade head`。一旦把 FK ALTER 迁移推进到 head,下一次测试/部署就会对可能含有大量 `request_facts` 的库做 FK 重建(全表校验 + 短暂 ACCESS EXCLUSIVE 锁)——这是不易逆的 schema 变更,应在确认目标 DB 后单独、显式执行,而非随大批改动一起自动推送。
+- 当前应用层级联(`delete_subject` 等)仍正确工作且有测试守护,所以这是"加固/清债"而非活 bug,推迟不影响正确性。
+- **待审草案**(确认 DB 后再实现为新迁移 `20260615_0009_fk_on_delete.py`):
+  - `request_facts` 的 `subject_id`/`project_id`/`upstream_target_id`、`audit_events.actor_subject_id` → `ON DELETE SET NULL`(保留历史事实/审计)。
+  - 从属配置表(`team_memberships`/`user_sessions`/`model_entitlements`/`model_team_grants`/`gateway_keys` 等)→ `ON DELETE CASCADE`。
+  - 实现:`op.drop_constraint("<table>_<col>_fkey", "<table>")` 后 `op.create_foreign_key(..., ondelete="SET NULL"/"CASCADE")`,并对大表用 `NOT VALID` + 后台 `VALIDATE CONSTRAINT` 避免长锁。
+  - 同步更新 `db/models.py` 的 FK 声明加 `ondelete=`,并简化 `admin.py` 的 `delete_subject` 手动级联。
 
 ### P1-11 前端 +page.svelte 拆分
 - 现状: 1932 行 / 227 符号单组件,塞登录/注册/dashboard/admin 12 section/教程。
