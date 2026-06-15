@@ -98,7 +98,15 @@ async def register(
     payload: RegisterRequest,
     session: AsyncSession = Depends(session_dep),
     settings: Settings = Depends(settings_dep),
+    redis: Redis = Depends(redis_dep),
+    client_ip: str = Depends(client_ip_dep),
 ):
+    try:
+        await check_login_rate(redis, client_ip=client_ip)
+    except RateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
+        ) from exc
     try:
         subject, project, key, raw_key = await create_registered_user(
             session,

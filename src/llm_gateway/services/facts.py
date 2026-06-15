@@ -188,6 +188,11 @@ _AUDIT_SENSITIVE_KEYS = frozenset(
         "token_hash",
         "key_hash",
         "authorization",
+        "x-api-key",
+        "api-key",
+        "apikey",
+        "bearer",
+        "cookie",
         "secret",
     }
 )

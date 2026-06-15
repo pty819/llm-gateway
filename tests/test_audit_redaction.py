@@ -19,11 +19,20 @@ def test_redact_scrubs_sensitive_top_level_keys():
 def test_redact_descends_into_nested_dicts_and_lists():
     out = _redact_audit_detail(
         {
-            "extra_headers": {"Authorization": "Bearer sk-abc", "X-Trace": "ok"},
+            "extra_headers": {
+                "Authorization": "Bearer sk-abc",
+                "X-Api-Key": "sk-xyz",
+                "api-key": "sk-foo",
+                "Cookie": "sess=1",
+                "X-Trace": "ok",
+            },
             "rows": [{"password": "p", "keep": 1}],
         }
     )
     assert out["extra_headers"]["Authorization"] == "<redacted>"
+    assert out["extra_headers"]["X-Api-Key"] == "<redacted>"
+    assert out["extra_headers"]["api-key"] == "<redacted>"
+    assert out["extra_headers"]["Cookie"] == "<redacted>"
     assert out["extra_headers"]["X-Trace"] == "ok"
     assert out["rows"][0]["password"] == "<redacted>"
     assert out["rows"][0]["keep"] == 1
