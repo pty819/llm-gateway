@@ -34,15 +34,6 @@ def migrated_database() -> None:
 async def client():
     from llm_gateway.main import app
 
-    from llm_gateway.services.duckdb_analytics import _analytics, init_analytics
-    from llm_gateway.core.config import get_settings
-
-    if _analytics is None:
-        try:
-            init_analytics(get_settings())
-        except Exception:
-            pass
-
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver", timeout=90

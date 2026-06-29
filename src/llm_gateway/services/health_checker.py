@@ -182,7 +182,7 @@ async def start() -> None:
 
     Fire-and-forget: schedules _main_loop and returns immediately. Idempotent —
     a second call while a task is running is ignored. Wired into app lifespan
-    startup alongside ensure_builtin_identity / init_analytics.
+    startup alongside ensure_builtin_identity.
     """
     global _task
     if _task is not None:

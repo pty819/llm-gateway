@@ -29,7 +29,6 @@ from llm_gateway.db.models import (
     TeamMembership,
     utcnow,
 )
-from llm_gateway.services.duckdb_analytics import get_analytics
 from llm_gateway.services.facts import record_audit_event
 from llm_gateway.services.managed_memberships import (
     ManagedRole,
@@ -230,6 +229,7 @@ async def own_usage_summary(
     start: datetime | None = None,
     end: datetime | None = None,
     context: UserSessionContext = Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
 ):
     if start and end and (end - start).days > 90:
         raise HTTPException(
@@ -239,10 +239,11 @@ async def own_usage_summary(
     if start is None and end is None:
         end = utcnow()
         start = end - timedelta(days=30)
-    row = await get_analytics().own_usage_summary(
-        subject_id=context.subject.id,
+    row = await _usage_summary_from_postgres(
+        session,
         start=start,
         end=end,
+        subject_ids=[context.subject.id],
     )
     return {
         "start": start,
