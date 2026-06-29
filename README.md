@@ -398,6 +398,8 @@ Metrics URL: empty, or http://gpu-a:8000/metrics
 
 Repeat for `gpu-b` and `gpu-c`. Use the **Check** button to verify each replica is reachable.
 
+> **Automatic health checks:** A background loop probes each active upstream's `Health path` (`/models` by default) every few seconds. A replica that returns HTTP 5xx, a non-404 4xx, a network error, or a timeout is auto-disabled (set to `disabled` state, removed from routing, recorded in the audit log as `upstream.auto_disable`) so traffic drains to the healthy replicas. Recovery is manual: after restarting the replica, re-enable it from the Upstreams page. Tune the loop with `LLM_GATEWAY_HEALTH_CHECK_ENABLED`, `LLM_GATEWAY_HEALTH_CHECK_INTERVAL_SECONDS`, and `LLM_GATEWAY_HEALTH_CHECK_TIMEOUT_SECONDS`. The `/models` 404 from 昇腾 PD-separated deployments is treated as healthy.
+
 ### Step 3 — Grant Access (Teams or Entitlements page)
 
 Team-based model access (recommended):
