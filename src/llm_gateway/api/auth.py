@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 from sqlalchemy import case, desc, func, select, text
@@ -402,6 +402,45 @@ async def managed_usage_summary(
         "scope": scope,
         "resource_id": resource_id,
         **row,
+    }
+
+
+@router.get("/managed/usage/ranking")
+async def managed_usage_ranking(
+    project_id: UUID,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    model: str | None = None,
+    limit: int = Query(default=20, ge=1, le=100),
+    context: UserSessionContext = Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    if start and end and (end - start).days > 90:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="time_window_exceeds_90_days",
+        )
+    if start is None and end is None:
+        end = utcnow()
+        start = end - timedelta(days=30)
+
+    # 权限：必须是该 project 的 manager，否则 403。project_id 在 Python 端先校验，
+    # 传入 SQL 时已是安全值，不依赖 SQL 层过滤正确性。
+    await _require_project_manager(session, context.subject.id, project_id)
+
+    ranking = await _usage_ranking_from_postgres(
+        session,
+        start=start,
+        end=end,
+        project_id=project_id,
+        model=model,
+        limit=limit,
+    )
+    return {
+        "start": start,
+        "end": end,
+        "project_id": project_id,
+        "ranking": ranking,
     }
 
 
