@@ -145,3 +145,106 @@ async def test_probe_upstream_injects_authorization_header(monkeypatch):
     await health_checker._probe_upstream(upstream, timeout_seconds=3.0)
     assert captured["headers"]["Authorization"] == "Bearer secret-key"
     assert captured["url"] == "http://upstream.local/models"
+
+
+class _FakePersistedUpstream:
+    """Stand-in for an UpstreamTarget row loaded from DB.
+
+    Carries the fields _disable_upstream reads/writes after session.get(): the
+    identity + name + health_path for the audit detail, and `state` which the
+    function sets to DISABLED. _committed records whether commit() ran.
+    """
+
+    def __init__(self, *, state):
+        from uuid import uuid4
+
+        self.id = uuid4()
+        self.name = "fake-upstream"
+        self.health_path = "/models"
+        self.state = state
+        self._committed = False
+
+
+def _make_fake_session_local(upstream):
+    """Build a fake AsyncSessionLocal context manager that returns `upstream`
+    from .get() and flips upstream._committed on .commit()."""
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _fake_session_local():
+        class _Session:
+            async def get(self_inner, model, pk):
+                return upstream
+
+            async def commit(self_inner):
+                upstream._committed = True
+
+        yield _Session()
+
+    return _fake_session_local
+
+
+def _make_fake_record_audit(recorded):
+    async def _fake_record(session, **kwargs):
+        recorded.append(kwargs)
+        return None
+
+    return _fake_record
+
+
+async def test_disable_upstream_sets_state_and_writes_audit(monkeypatch):
+    """探测失败 → 双重确认仍 ACTIVE → 写 DISABLED + audit event。"""
+    from llm_gateway.db.models import ResourceState
+    from llm_gateway.services import health_checker
+
+    upstream = _FakePersistedUpstream(state=ResourceState.ACTIVE)
+    monkeypatch.setattr(
+        "llm_gateway.services.health_checker.AsyncSessionLocal",
+        _make_fake_session_local(upstream),
+    )
+    recorded = []
+    monkeypatch.setattr(
+        "llm_gateway.services.health_checker.record_audit_event",
+        _make_fake_record_audit(recorded),
+    )
+
+    verdict = HealthVerdict(False, 500, "http_5xx")
+    disabled = await health_checker._disable_upstream(
+        upstream_id=upstream.id, verdict=verdict
+    )
+
+    assert disabled is True
+    assert upstream.state == ResourceState.DISABLED
+    assert upstream._committed is True
+    assert len(recorded) == 1
+    assert recorded[0]["action"] == "upstream.auto_disable"
+    assert recorded[0]["resource_id"] == upstream.id
+    assert recorded[0]["outcome"] == "disabled"
+    assert recorded[0]["detail"]["verdict"] == "http_5xx"
+    assert recorded[0]["detail"]["status_code"] == 500
+
+
+async def test_disable_upstream_skips_when_already_disabled(monkeypatch):
+    """双重确认：探测后管理员已手动禁用 → 不重复写 audit。"""
+    from llm_gateway.db.models import ResourceState
+    from llm_gateway.services import health_checker
+
+    upstream = _FakePersistedUpstream(state=ResourceState.DISABLED)
+    monkeypatch.setattr(
+        "llm_gateway.services.health_checker.AsyncSessionLocal",
+        _make_fake_session_local(upstream),
+    )
+    recorded = []
+    monkeypatch.setattr(
+        "llm_gateway.services.health_checker.record_audit_event",
+        _make_fake_record_audit(recorded),
+    )
+
+    verdict = HealthVerdict(False, 500, "http_5xx")
+    disabled = await health_checker._disable_upstream(
+        upstream_id=upstream.id, verdict=verdict
+    )
+
+    assert disabled is False
+    assert upstream._committed is False
+    assert len(recorded) == 0  # 不重复审计

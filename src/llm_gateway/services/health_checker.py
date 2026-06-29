@@ -3,6 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import httpx
+from sqlalchemy import select
+from sqlmodel import col
+
+from llm_gateway.db.models import ResourceState, UpstreamTarget
+from llm_gateway.db.session import AsyncSessionLocal
+from llm_gateway.services.facts import record_audit_event
 
 
 HEALTHY_STATUSES = frozenset({200, 404})
@@ -57,3 +63,38 @@ async def _probe_upstream(upstream, *, timeout_seconds: float) -> HealthVerdict:
         return classify_health(response.status_code, exc=None)
     except Exception as exc:
         return classify_health(None, exc=exc)
+
+
+async def _disable_upstream(*, upstream_id, verdict: HealthVerdict) -> bool:
+    """Set an ACTIVE upstream to DISABLED after a failed probe.
+
+    Double-confirm state on read: if an admin disabled or restored the upstream
+    between probe and commit, do nothing (no state overwrite, no duplicate
+    audit). Returns True when the disable was applied.
+
+    The <50ms window between probe-failure and this re-read is a known, accepted
+    race: an admin who restores the node in that window may have their restore
+    overwritten once. They retry to recover; the next probe cycle (3s later)
+    will then re-evaluate. A version-based optimistic lock was judged not worth
+    the complexity for such a narrow, self-recovering window.
+    """
+    async with AsyncSessionLocal() as session:
+        upstream = await session.get(UpstreamTarget, upstream_id)
+        if upstream is None or upstream.state != ResourceState.ACTIVE:
+            return False
+        upstream.state = ResourceState.DISABLED
+        await record_audit_event(
+            session,
+            action="upstream.auto_disable",
+            resource_type="upstream_target",
+            resource_id=upstream.id,
+            outcome="disabled",
+            detail={
+                "name": upstream.name,
+                "health_path": upstream.health_path,
+                "verdict": verdict.reason,
+                "status_code": verdict.status_code,
+            },
+        )
+        await session.commit()
+        return True
