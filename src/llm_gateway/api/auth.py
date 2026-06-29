@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
-from sqlalchemy import case, func, select
+from sqlalchemy import case, desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
@@ -855,6 +855,84 @@ def _empty_usage_summary() -> dict[str, int]:
         "success_count": 0,
         "failure_count": 0,
     }
+
+
+async def _usage_ranking_from_postgres(
+    session: AsyncSession,
+    *,
+    start: datetime,
+    end: datetime,
+    project_id: UUID,
+    model: str | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Per-subject usage ranking within a single project, sorted by total_tokens desc.
+
+    Mirrors _usage_summary_from_postgres (same total_tokens coalesce expression,
+    same Postgres aggregation) but groups by subject and orders by usage. Used by
+    the manager-facing ranking endpoint; the manager permission check happens in
+    the route handler before this runs. subject_id IS NULL rows are excluded to
+    match the admin DuckDB ranking behavior.
+    """
+    total_tokens_expr = func.coalesce(
+        RequestFact.total_tokens,
+        func.coalesce(RequestFact.prompt_tokens, 0)
+        + func.coalesce(RequestFact.completion_tokens, 0),
+        0,
+    )
+    stmt = (
+        select(
+            Subject.id.label("subject_id"),
+            Subject.name.label("subject_name"),
+            Subject.login_username.label("login_username"),
+            func.count(col(RequestFact.id)).label("request_count"),
+            func.coalesce(func.sum(RequestFact.prompt_tokens), 0).label("prompt_tokens"),
+            func.coalesce(func.sum(RequestFact.completion_tokens), 0).label("completion_tokens"),
+            func.coalesce(func.sum(total_tokens_expr), 0).label("total_tokens"),
+            func.coalesce(
+                func.sum(
+                    case((col(RequestFact.outcome) == RequestOutcome.SUCCESS, 1), else_=0)
+                ),
+                0,
+            ).label("success_count"),
+            func.coalesce(
+                func.sum(
+                    case((col(RequestFact.outcome) != RequestOutcome.SUCCESS, 1), else_=0)
+                ),
+                0,
+            ).label("failure_count"),
+        )
+        .select_from(RequestFact)
+        .outerjoin(Subject, RequestFact.subject_id == Subject.id)
+        .where(
+            col(RequestFact.project_id) == project_id,
+            col(RequestFact.started_at) >= start,
+            col(RequestFact.started_at) < end,
+            col(RequestFact.subject_id).isnot(None),
+        )
+    )
+    if model is not None:
+        stmt = stmt.where(col(RequestFact.model_alias) == model)
+    stmt = stmt.group_by(
+        Subject.id, Subject.name, Subject.login_username
+    ).order_by(
+        desc(text("total_tokens")), desc(text("request_count"))
+    ).limit(limit)
+    rows = (await session.execute(stmt)).all()
+    return [
+        {
+            "subject_id": str(row.subject_id),
+            "subject_name": row.subject_name or "无用户",
+            "login_username": row.login_username,
+            "request_count": int(row.request_count),
+            "prompt_tokens": int(row.prompt_tokens),
+            "completion_tokens": int(row.completion_tokens),
+            "total_tokens": int(row.total_tokens),
+            "success_count": int(row.success_count),
+            "failure_count": int(row.failure_count),
+        }
+        for row in rows
+    ]
 
 
 async def _personal_project(session: AsyncSession, subject: Subject) -> Project:
