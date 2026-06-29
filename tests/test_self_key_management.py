@@ -9,21 +9,38 @@ pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
 async def _login_self_service_user(client):
-    """Register a fresh self-service user and return (session_headers, username)."""
+    """Create a fresh user with a personal project + key + session.
+
+    Bypasses /auth/register to avoid the per-IP login/register rate limit when
+    this module runs as part of the full suite (many tests register from the
+    same 127.0.0.1). The key-management endpoints under test only need a valid
+    session + a key on the user's personal project, which we build directly.
+    """
     from tests.test_backend_integration import _employee_username
 
+    from llm_gateway.core.config import get_settings
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.security import (
+        create_gateway_key,
+        create_registered_user,
+        create_user_session,
+    )
+
     username = _employee_username()
-    register = await client.post(
-        "/auth/register",
-        json={"username": username, "full_name": "自助用户", "password": "correct-horse-battery"},
-    )
-    assert register.status_code == 200, register.text
-    login = await client.post(
-        "/auth/login",
-        json={"username": username, "password": "correct-horse-battery"},
-    )
-    assert login.status_code == 200, login.text
-    headers = {"x-session-token": login.json()["session_token"]}
+    async with AsyncSessionLocal() as session:
+        subject, project, _key, _raw = await create_registered_user(
+            session,
+            username=username,
+            full_name="自助用户",
+            password="correct-horse-battery",
+        )
+        user_session, raw_session = await create_user_session(
+            session,
+            subject_id=subject.id,
+            ttl_hours=get_settings().session_ttl_hours,
+        )
+        await session.commit()
+        headers = {"x-session-token": raw_session}
     return headers, username
 
 
