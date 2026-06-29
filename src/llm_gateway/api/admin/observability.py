@@ -9,7 +9,7 @@ from sqlmodel import col
 
 from llm_gateway.api.deps import session_dep
 from llm_gateway.db.models import AuditEvent
-from llm_gateway.services.duckdb_analytics import get_analytics
+from llm_gateway.services import analytics
 
 
 router = APIRouter()
@@ -29,8 +29,10 @@ async def usage_summary(
     subject_id: UUID | None = None,
     project_id: UUID | None = None,
     limit: int | None = Query(default=None, ge=1, le=500),
+    session: AsyncSession = Depends(session_dep),
 ):
-    return await get_analytics().usage_summary(
+    return await analytics.usage_summary(
+        session,
         start=start,
         end=end,
         model=model,
@@ -47,8 +49,10 @@ async def usage_totals(
     model: str | None = None,
     subject_id: UUID | None = None,
     project_id: UUID | None = None,
+    session: AsyncSession = Depends(session_dep),
 ):
-    return await get_analytics().usage_totals(
+    return await analytics.usage_totals(
+        session,
         start=start,
         end=end,
         model=model,
@@ -63,8 +67,10 @@ async def usage_ranking(
     end: datetime | None = None,
     model: str | None = None,
     limit: int = Query(default=20, ge=1, le=100),
+    session: AsyncSession = Depends(session_dep),
 ):
-    return await get_analytics().usage_ranking(
+    return await analytics.usage_ranking(
+        session,
         start=start,
         end=end,
         model=model,
@@ -80,8 +86,10 @@ async def analytics_time_buckets(
     model: str | None = None,
     subject_id: UUID | None = None,
     project_id: UUID | None = None,
+    session: AsyncSession = Depends(session_dep),
 ):
-    return await get_analytics().time_buckets(
+    return await analytics.time_buckets(
+        session,
         bucket=bucket,
         start=start,
         end=end,
@@ -100,8 +108,10 @@ async def analytics_drilldown(
     subject_id: UUID | None = None,
     project_id: UUID | None = None,
     limit: int = Query(default=100, ge=1, le=500),
+    session: AsyncSession = Depends(session_dep),
 ):
-    return await get_analytics().drilldown(
+    return await analytics.drilldown(
+        session,
         dimension=dimension,
         start=start,
         end=end,

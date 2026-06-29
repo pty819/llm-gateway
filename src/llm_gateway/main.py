@@ -6,7 +6,6 @@ from fastapi import FastAPI
 from llm_gateway.api import admin, auth, health, proxy, realtime
 from llm_gateway.core.config import get_settings
 from llm_gateway.db.session import AsyncSessionLocal
-from llm_gateway.services.duckdb_analytics import close_analytics, init_analytics
 from llm_gateway.services.facts_queue import drain_now
 from llm_gateway.services import health_checker
 from llm_gateway.services.security import ensure_builtin_identity
@@ -47,14 +46,12 @@ def create_app() -> FastAPI:
         # relying on litellm's implicit default. litellm reads this module global
         # at call time, so setting it once at startup governs every proxy call.
         litellm.request_timeout = settings.upstream_timeout_seconds
-        init_analytics(settings)
         await health_checker.start()
         yield
         await health_checker.stop()
         # Flush any in-flight request facts before the process exits so a
         # restart/SIGTERM never silently drops accounting data.
         await drain_now()
-        close_analytics()
 
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
     app.include_router(health.router)
