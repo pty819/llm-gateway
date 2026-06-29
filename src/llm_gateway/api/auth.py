@@ -623,6 +623,45 @@ async def issue_own_key(
     return {"key": redact_gateway_key(key), "plaintext_key": raw_key}
 
 
+class OwnKeyStatePatch(BaseModel):
+    state: ResourceState
+
+
+@router.patch("/keys/{key_id}/state")
+async def set_own_key_state(
+    key_id: UUID,
+    payload: OwnKeyStatePatch,
+    context: UserSessionContext = Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    # 权限双重校验：key 必须属于当前用户的个人 project。
+    # issue_own_key 只往个人 project 发 key，这两条等价于"自己创建的 key"。
+    # 别人的 key 或跨 project 的 key，对当前用户而言"不存在"——404 而非 403，
+    # 避免向用户泄露其他 key 的存在性（最小信息泄露）。
+    key = await session.get(GatewayKey, key_id)
+    personal_project = await _personal_project(session, context.subject)
+    if (
+        key is None
+        or key.subject_id != context.subject.id
+        or key.project_id != personal_project.id
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="key_not_found")
+    key.state = payload.state
+    key.updated_at = utcnow()
+    await record_audit_event(
+        session,
+        actor_subject_id=context.subject.id,
+        action="auth.key.set_state",
+        resource_type="gateway_key",
+        resource_id=key.id,
+        outcome="success",
+        detail={"state": payload.state.value},
+    )
+    await session.commit()
+    await session.refresh(key)
+    return {"key": redact_gateway_key(key)}
+
+
 async def _profile_payload(session: AsyncSession, subject: Subject) -> dict[str, Any]:
     keys = (
         (
