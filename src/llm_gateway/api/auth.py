@@ -2,10 +2,10 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
-from sqlalchemy import case, func, select
+from sqlalchemy import case, desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
@@ -405,6 +405,45 @@ async def managed_usage_summary(
     }
 
 
+@router.get("/managed/usage/ranking")
+async def managed_usage_ranking(
+    project_id: UUID,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    model: str | None = None,
+    limit: int = Query(default=20, ge=1, le=100),
+    context: UserSessionContext = Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    if start and end and (end - start).days > 90:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="time_window_exceeds_90_days",
+        )
+    if start is None and end is None:
+        end = utcnow()
+        start = end - timedelta(days=30)
+
+    # 权限：必须是该 project 的 manager，否则 403。project_id 在 Python 端先校验，
+    # 传入 SQL 时已是安全值，不依赖 SQL 层过滤正确性。
+    await _require_project_manager(session, context.subject.id, project_id)
+
+    ranking = await _usage_ranking_from_postgres(
+        session,
+        start=start,
+        end=end,
+        project_id=project_id,
+        model=model,
+        limit=limit,
+    )
+    return {
+        "start": start,
+        "end": end,
+        "project_id": project_id,
+        "ranking": ranking,
+    }
+
+
 @router.post("/managed/project-memberships")
 async def add_managed_project_member(
     payload: ManagedMembershipCreate,
@@ -623,6 +662,45 @@ async def issue_own_key(
     return {"key": redact_gateway_key(key), "plaintext_key": raw_key}
 
 
+class OwnKeyStatePatch(BaseModel):
+    state: ResourceState
+
+
+@router.patch("/keys/{key_id}/state")
+async def set_own_key_state(
+    key_id: UUID,
+    payload: OwnKeyStatePatch,
+    context: UserSessionContext = Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    # 权限双重校验：key 必须属于当前用户的个人 project。
+    # issue_own_key 只往个人 project 发 key，这两条等价于"自己创建的 key"。
+    # 别人的 key 或跨 project 的 key，对当前用户而言"不存在"——404 而非 403，
+    # 避免向用户泄露其他 key 的存在性（最小信息泄露）。
+    key = await session.get(GatewayKey, key_id)
+    personal_project = await _personal_project(session, context.subject)
+    if (
+        key is None
+        or key.subject_id != context.subject.id
+        or key.project_id != personal_project.id
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="key_not_found")
+    key.state = payload.state
+    key.updated_at = utcnow()
+    await record_audit_event(
+        session,
+        actor_subject_id=context.subject.id,
+        action="auth.key.set_state",
+        resource_type="gateway_key",
+        resource_id=key.id,
+        outcome="success",
+        detail={"state": payload.state.value},
+    )
+    await session.commit()
+    await session.refresh(key)
+    return {"key": redact_gateway_key(key)}
+
+
 async def _profile_payload(session: AsyncSession, subject: Subject) -> dict[str, Any]:
     keys = (
         (
@@ -816,6 +894,89 @@ def _empty_usage_summary() -> dict[str, int]:
         "success_count": 0,
         "failure_count": 0,
     }
+
+
+async def _usage_ranking_from_postgres(
+    session: AsyncSession,
+    *,
+    start: datetime,
+    end: datetime,
+    project_id: UUID,
+    model: str | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Per-subject usage ranking within a single project, sorted by total_tokens desc.
+
+    Mirrors _usage_summary_from_postgres (same total_tokens coalesce expression,
+    same Postgres aggregation) but groups by subject and orders by usage. Used by
+    the manager-facing ranking endpoint; the manager permission check happens in
+    the route handler before this runs. subject_id IS NULL rows are excluded to
+    match the admin DuckDB ranking behavior.
+    """
+    total_tokens_expr = func.coalesce(
+        RequestFact.total_tokens,
+        func.coalesce(RequestFact.prompt_tokens, 0)
+        + func.coalesce(RequestFact.completion_tokens, 0),
+        0,
+    )
+    stmt = (
+        select(
+            Subject.id.label("subject_id"),
+            Subject.name.label("subject_name"),
+            Subject.login_username.label("login_username"),
+            func.count(col(RequestFact.id)).label("request_count"),
+            func.coalesce(func.sum(RequestFact.prompt_tokens), 0).label("prompt_tokens"),
+            func.coalesce(func.sum(RequestFact.completion_tokens), 0).label("completion_tokens"),
+            func.coalesce(func.sum(total_tokens_expr), 0).label("total_tokens"),
+            func.coalesce(
+                func.sum(
+                    case((col(RequestFact.outcome) == RequestOutcome.SUCCESS, 1), else_=0)
+                ),
+                0,
+            ).label("success_count"),
+            func.coalesce(
+                func.sum(
+                    case((col(RequestFact.outcome) != RequestOutcome.SUCCESS, 1), else_=0)
+                ),
+                0,
+            ).label("failure_count"),
+        )
+        .select_from(RequestFact)
+        .outerjoin(Subject, RequestFact.subject_id == Subject.id)
+        .where(
+            col(RequestFact.project_id) == project_id,
+            col(RequestFact.subject_id).isnot(None),
+        )
+    )
+    # Conditionally apply time bounds so a half-specified window (only start or
+    # only end) behaves like _usage_summary_from_postgres rather than silently
+    # returning [] because `started_at < NULL` is always false.
+    if start is not None:
+        stmt = stmt.where(col(RequestFact.started_at) >= start)
+    if end is not None:
+        stmt = stmt.where(col(RequestFact.started_at) < end)
+    if model is not None:
+        stmt = stmt.where(col(RequestFact.model_alias) == model)
+    stmt = stmt.group_by(
+        Subject.id, Subject.name, Subject.login_username
+    ).order_by(
+        desc(text("total_tokens")), desc(text("request_count"))
+    ).limit(limit)
+    rows = (await session.execute(stmt)).all()
+    return [
+        {
+            "subject_id": str(row.subject_id),
+            "subject_name": row.subject_name or "无用户",
+            "login_username": row.login_username,
+            "request_count": int(row.request_count),
+            "prompt_tokens": int(row.prompt_tokens),
+            "completion_tokens": int(row.completion_tokens),
+            "total_tokens": int(row.total_tokens),
+            "success_count": int(row.success_count),
+            "failure_count": int(row.failure_count),
+        }
+        for row in rows
+    ]
 
 
 async def _personal_project(session: AsyncSession, subject: Subject) -> Project:

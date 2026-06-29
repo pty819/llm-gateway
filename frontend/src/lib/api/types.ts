@@ -368,3 +368,15 @@ export type Inventory = {
 	analyticsDrilldown: AnalyticsDrilldownRow[];
 	audit: AuditEvent[];
 };
+
+export interface ManagedRankingRow {
+	subject_id: string;
+	subject_name: string;
+	login_username: string | null;
+	request_count: number;
+	prompt_tokens: number;
+	completion_tokens: number;
+	total_tokens: number;
+	success_count: number;
+	failure_count: number;
+}

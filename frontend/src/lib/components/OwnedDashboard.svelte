@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { OwnUsageSummary, ProjectMembership, Subject, TeamMembership } from '$lib/api/types';
+	import type { ManagedRankingRow, OwnUsageSummary, ProjectMembership, Subject, TeamMembership } from '$lib/api/types';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import CommandBlock from '$lib/components/CommandBlock.svelte';
 	import CopyValue from '$lib/components/CopyValue.svelte';
@@ -12,6 +12,12 @@
 		managedTeams,
 		hasManagedResources,
 		managedUsage,
+		managedRanking,
+		managedRankingStart = $bindable(),
+		managedRankingEnd = $bindable(),
+		managedRankingModel = $bindable(),
+		managedRankingLimit = $bindable(),
+		onRefreshManagedRanking,
 		managedSubjectCandidates,
 		managedRoles,
 		managedProjectMemberships,
@@ -48,15 +54,22 @@
 		onAddManagedTeamMember,
 		onSetManagedTeamMemberState,
 		onIssueOwnKey,
+		onSetOwnKeyState,
 		onChangeOwnPassword,
 		onCopy
 	}: {
-		profile: { subject: { login_username: string | null; name: string }; teams: string[]; models: string[]; keys: { name: string; key_prefix: string; state: string }[] } | null;
+		profile: { subject: { login_username: string | null; name: string }; teams: string[]; models: string[]; keys: { id: string; name: string; key_prefix: string; state: string }[] } | null;
 		ownUsage: OwnUsageSummary | null;
 		managedProjects: { project: { id: string; name: string } }[];
 		managedTeams: { team: { id: string; name: string } }[];
 		hasManagedResources: boolean;
 		managedUsage: OwnUsageSummary | null;
+		managedRanking: ManagedRankingRow[];
+		managedRankingStart: string;
+		managedRankingEnd: string;
+		managedRankingModel: string;
+		managedRankingLimit: number;
+		onRefreshManagedRanking: () => void | Promise<void>;
 		managedSubjectCandidates: Subject[];
 		managedRoles: { value: string; label: string }[];
 		managedProjectMemberships: ProjectMembership[];
@@ -93,6 +106,7 @@
 		onAddManagedTeamMember: () => void | Promise<void>;
 		onSetManagedTeamMemberState: (m: TeamMembership, state: 'active' | 'disabled') => void | Promise<void>;
 		onIssueOwnKey: () => void | Promise<void>;
+		onSetOwnKeyState: (key: { id: string; state: string }, state: 'active' | 'disabled') => void | Promise<void>;
 		onChangeOwnPassword: () => void | Promise<void>;
 		onCopy: (value: string, key: string) => void | Promise<void>;
 	} = $props();
@@ -135,6 +149,17 @@
 			<label>资源<select bind:value={managedUsageResourceId}><option value="">全部可管理资源</option>{#if managedUsageScope === 'project'}{#each managedProjects as item}<option value={item.project.id}>{item.project.name}</option>{/each}{:else}{#each managedTeams as item}<option value={item.team.id}>{item.team.name}</option>{/each}{/if}</select></label>
 			<button type="button" onclick={onRefreshManagedUsage}>查询管理范围用量</button>
 		</div>
+		{#if managedUsageScope === 'project' && managedUsageResourceId}
+			<h3>项目成员用量排名</h3>
+			<div class="form-grid">
+				<label>开始时间<input type="datetime-local" bind:value={managedRankingStart} /></label>
+				<label>结束时间<input type="datetime-local" bind:value={managedRankingEnd} /></label>
+				<label>模型筛选<select bind:value={managedRankingModel}><option value="">全部</option>{#each profile?.models ?? [] as model}<option value={model}>{model}</option>{/each}</select></label>
+				<label>Top N<input type="number" bind:value={managedRankingLimit} min="1" max="100" /></label>
+				<button type="button" onclick={onRefreshManagedRanking} disabled={loading}>{loading ? '查询中' : '查询排名'}</button>
+			</div>
+			<div class="table-wrap"><table><thead><tr><th>#</th><th>用户</th><th>请求数</th><th>输入 token</th><th>输出 token</th><th>总 token</th></tr></thead><tbody>{#each managedRanking as row, i}<tr><td>{i + 1}</td><td>{row.subject_name}{row.login_username ? ` / ${row.login_username}` : ''}</td><td>{row.request_count}</td><td>{row.prompt_tokens}</td><td>{row.completion_tokens}</td><td>{row.total_tokens}</td></tr>{:else}<tr><td colspan="6" class="empty">暂无用量数据，请选择项目并查询。</td></tr>{/each}</tbody></table></div>
+		{/if}
 	</section>
 	<section class="panel">
 		<h2>项目成员管理</h2>
@@ -168,7 +193,7 @@
 <section class="panel">
 	<h2>网关密钥</h2>
 	<div class="form-grid"><label>新密钥名称<input bind:value={ownKeyForm.name} /></label><button type="button" onclick={onIssueOwnKey}>签发密钥</button></div>
-	<div class="table-wrap"><table><thead><tr><th>名称</th><th>前缀</th><th>状态</th></tr></thead><tbody>{#each profile?.keys ?? [] as key}<tr><td>{key.name}</td><td><code>{key.key_prefix}</code></td><td><StateBadge value={key.state} /></td></tr>{:else}<tr><td colspan="3">还没有密钥。</td></tr>{/each}</tbody></table></div>
+	<div class="table-wrap"><table><thead><tr><th>名称</th><th>前缀</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each profile?.keys ?? [] as key}<tr><td>{key.name}</td><td><code>{key.key_prefix}</code></td><td><StateBadge value={key.state} /></td><td><button class="secondary" type="button" onclick={() => onSetOwnKeyState(key, key.state === 'active' ? 'disabled' : 'active')} disabled={loading}>{key.state === 'active' ? '禁用' : '启用'}</button></td></tr>{:else}<tr><td colspan="4">还没有密钥。</td></tr>{/each}</tbody></table></div>
 </section>
 <section class="panel">
 	<h2>工具接入</h2>
