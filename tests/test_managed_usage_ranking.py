@@ -141,23 +141,46 @@ async def _admin_headers(client):
     return {"x-session-token": login.json()["session_token"]}
 
 
-async def _login_plain_user(client):
+async def _create_user_with_session(full_name):
+    """Create a user + session directly via DB (bypasses /auth/register rate limit).
+
+    Mirrors the register endpoint minus the rate-limit check; used by helpers
+    below so the full suite doesn't trip the per-IP register cap.
+    """
     from tests.test_backend_integration import _employee_username
 
+    from llm_gateway.core.config import get_settings
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.security import (
+        create_registered_user,
+        create_user_session,
+    )
+
     username = _employee_username()
-    await client.post(
-        "/auth/register",
-        json={"username": username, "full_name": "普通用户", "password": "correct-horse-battery"},
-    )
-    login = await client.post(
-        "/auth/login", json={"username": username, "password": "correct-horse-battery"}
-    )
-    assert login.status_code == 200, login.text
-    return {"x-session-token": login.json()["session_token"]}, username
+    async with AsyncSessionLocal() as session:
+        subject, _project, _key, _raw = await create_registered_user(
+            session,
+            username=username,
+            full_name=full_name,
+            password="correct-horse-battery",
+        )
+        user_session, raw_session = await create_user_session(
+            session,
+            subject_id=subject.id,
+            ttl_hours=get_settings().session_ttl_hours,
+        )
+        await session.commit()
+        headers = {"x-session-token": raw_session}
+    return headers, username, subject.id
+
+
+async def _login_plain_user(client):
+    headers, username, _ = await _create_user_with_session("普通用户")
+    return headers, username
 
 
 async def _make_project_manager(client, project_name):
-    """Create a self-service user, then add them as manager of a fresh project.
+    """Create a user, then add them as manager of a fresh project.
 
     project_memberships.role is a plain str ("manager"); _managed_projects_payload
     filters role == "manager" AND project.state == ACTIVE. Returns
@@ -165,64 +188,34 @@ async def _make_project_manager(client, project_name):
     """
     from uuid import uuid4
 
-    from sqlalchemy import select
-    from sqlmodel import col
-
-    from tests.test_backend_integration import _employee_username
     from llm_gateway.db.session import AsyncSessionLocal
-    from llm_gateway.db.models import Project, ProjectMembership, Subject
+    from llm_gateway.db.models import Project, ProjectMembership
 
-    username = _employee_username()
-    await client.post(
-        "/auth/register",
-        json={"username": username, "full_name": project_name, "password": "correct-horse-battery"},
+    manager_headers, username, subject_id = await _create_user_with_session(
+        project_name
     )
-    login = await client.post(
-        "/auth/login", json={"username": username, "password": "correct-horse-battery"}
-    )
-    assert login.status_code == 200, login.text
-    manager_headers = {"x-session-token": login.json()["session_token"]}
 
     suffix = uuid4().hex
     async with AsyncSessionLocal() as session:
-        subject = (
-            await session.execute(
-                select(Subject).where(col(Subject.login_username) == username)
-            )
-        ).scalar_one()
-        project = Project(name=f"mgr-project-{suffix}", owner_subject_id=subject.id)
+        project = Project(name=f"mgr-project-{suffix}", owner_subject_id=subject_id)
         session.add(project)
         await session.flush()
         membership = ProjectMembership(
             project_id=project.id,
-            subject_id=subject.id,
+            subject_id=subject_id,
             role="manager",
         )
         session.add(membership)
         await session.commit()
         project_id = project.id
 
-    return manager_headers, project_id, username
+    return manager_headers, project_id, subject_id
 
 
 async def test_manager_can_query_ranking_for_managed_project(client):
-    from sqlalchemy import select
-    from sqlmodel import col
-
-    from llm_gateway.db.models import Subject
-    from llm_gateway.db.session import AsyncSessionLocal
-
-    manager_headers, project_id, manager_username = await _make_project_manager(
+    manager_headers, project_id, manager_subject_id = await _make_project_manager(
         client, "Manager1"
     )
-
-    async with AsyncSessionLocal() as session:
-        manager = (
-            await session.execute(
-                select(Subject).where(col(Subject.login_username) == manager_username)
-            )
-        ).scalar_one()
-        manager_subject_id = manager.id
 
     await _seed_request_fact(project_id=project_id, subject_id=manager_subject_id, total_tokens=200)
 

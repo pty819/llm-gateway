@@ -945,11 +945,16 @@ async def _usage_ranking_from_postgres(
         .outerjoin(Subject, RequestFact.subject_id == Subject.id)
         .where(
             col(RequestFact.project_id) == project_id,
-            col(RequestFact.started_at) >= start,
-            col(RequestFact.started_at) < end,
             col(RequestFact.subject_id).isnot(None),
         )
     )
+    # Conditionally apply time bounds so a half-specified window (only start or
+    # only end) behaves like _usage_summary_from_postgres rather than silently
+    # returning [] because `started_at < NULL` is always false.
+    if start is not None:
+        stmt = stmt.where(col(RequestFact.started_at) >= start)
+    if end is not None:
+        stmt = stmt.where(col(RequestFact.started_at) < end)
     if model is not None:
         stmt = stmt.where(col(RequestFact.model_alias) == model)
     stmt = stmt.group_by(
