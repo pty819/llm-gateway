@@ -42,6 +42,11 @@ def classify_health(
         return HealthVerdict(False, None, "unknown_error")
     if status_code in HEALTHY_STATUSES:
         return HealthVerdict(True, status_code, "ok")
+    if status_code is None:
+        # Defensive: a caller with neither an exception nor a status code gave
+        # us nothing to classify — treat as unhealthy rather than raising on
+        # the `>= 500` comparison below.
+        return HealthVerdict(False, None, "unknown_error")
     if status_code >= 500:
         return HealthVerdict(False, status_code, "http_5xx")
     return HealthVerdict(False, status_code, "unexpected_status")
@@ -218,12 +223,14 @@ async def _main_loop() -> None:
 
     CancelledError re-raises so stop()'s await sees it cleanly; any other
     exception from a single iteration is logged and the loop continues — a
-    transient DB hiccup must not kill the whole checker.
+    transient DB hiccup must not kill the whole checker. Both interval and
+    timeout are re-read each iteration (today both come from the lru_cached
+    Settings singleton, but reading them here keeps them symmetric and lets a
+    future hot-reloadable config take effect without a restart).
     """
-    timeout = _settings_timeout()
     while True:
         try:
-            await _run_once(timeout_seconds=timeout)
+            await _run_once(timeout_seconds=_settings_timeout())
         except asyncio.CancelledError:
             raise
         except Exception:

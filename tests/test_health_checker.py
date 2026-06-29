@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -484,3 +485,79 @@ def _noop_coro_factory():
         return None
 
     return _noop
+
+
+def test_classify_health_none_status_and_no_exception_is_unknown_error():
+    """M-1 regression guard: classify_health must not raise on (None, None).
+
+    The defensive branch keeps this public pure function total so a future
+    caller (or test) that supplies neither a status code nor an exception gets
+    a verdict instead of a TypeError on the `>= 500` comparison.
+    """
+    verdict = classify_health(None, exc=None)
+    assert verdict == HealthVerdict(healthy=False, status_code=None, reason="unknown_error")
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_run_once_integration_disables_real_upstream_via_real_db(
+    gateway_fixture, monkeypatch
+):
+    """I-1: integration test exercising the real DB → httpx → audit path.
+
+    Unlike the unit tests above (which mock _probe/_disable/session), this
+    drives the genuine _run_once against a real UpstreamTarget row in the test
+    DB. The httpx leg is intercepted by a MockTransport returning 500 so no
+    live vLLM is required; everything else — the ACTIVE-candidate SELECT, the
+    per-upstream session, _disable_upstream's state write, record_audit_event's
+    real row insert, and commit — runs for real. This is the only test that
+    would catch a regression in the SQLAlchemy/audit wiring.
+    """
+    from sqlalchemy import select
+
+    from llm_gateway.db.models import AuditEvent, ResourceState, UpstreamTarget
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services import health_checker
+
+    # Repoint the existing gateway_fixture upstream at a stub that returns 500.
+    # The fixture created it pointing at the real LLM_GATEWAY_UPSTREAM_BASE_URL;
+    # we only need a row whose probe will fail, so override base_url to a
+    # sentinel and route every request through a MockTransport returning 500.
+    async with AsyncSessionLocal() as session:
+        upstream = await session.get(UpstreamTarget, gateway_fixture.upstream_id)
+        upstream.base_url = "http://health-check-stub.local/v1"
+        await session.commit()
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="upstream error")
+
+    real_async_client = health_checker.httpx.AsyncClient
+
+    class _StubClient(real_async_client):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(_handler)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(health_checker.httpx, "AsyncClient", _StubClient)
+
+    await health_checker._run_once(timeout_seconds=3.0)
+
+    async with AsyncSessionLocal() as session:
+        upstream = await session.get(UpstreamTarget, gateway_fixture.upstream_id)
+        assert upstream.state == ResourceState.DISABLED
+
+        audit_rows = (
+            await session.execute(
+                select(AuditEvent)
+                .where(
+                    AuditEvent.resource_id == gateway_fixture.upstream_id,
+                    AuditEvent.action == "upstream.auto_disable",
+                )
+                .order_by(AuditEvent.created_at.desc())
+            )
+        ).scalars().all()
+        assert audit_rows, "expected an upstream.auto_disable audit row"
+        latest = audit_rows[0]
+        assert latest.outcome == "disabled"
+        assert latest.detail.get("verdict") == "http_5xx"
+        assert latest.detail.get("status_code") == 500
+        assert latest.actor_subject_id is None  # automatic, no human actor
