@@ -24,6 +24,7 @@
 		Inventory,
 		IPPolicyMode,
 		LoginResponse,
+		ManagedRankingRow,
 		OwnUsageSummary,
 		PaginatedResponse,
 		Project,
@@ -133,6 +134,11 @@
 	let managedUsage = $state<OwnUsageSummary | null>(null);
 	let managedUsageScope = $state<'project' | 'team'>('project');
 	let managedUsageResourceId = $state('');
+	let managedRanking = $state<ManagedRankingRow[]>([]);
+	let managedRankingStart = $state('');
+	let managedRankingEnd = $state('');
+	let managedRankingModel = $state('');
+	let managedRankingLimit = $state(20);
 	let managedSubjectSearch = $state('');
 	let managedSubjectCandidates = $state<Subject[]>([]);
 	let managedRoles = $state<{ value: string; label: string }[]>([
@@ -1066,6 +1072,24 @@
 		});
 	}
 
+	async function refreshManagedRanking() {
+		if (managedUsageScope !== 'project' || !managedUsageResourceId) return;
+		await run(async () => {
+			const params: Record<string, string> = {
+				project_id: managedUsageResourceId,
+				limit: String(managedRankingLimit)
+			};
+			if (managedRankingStart) params.start = managedRankingStart;
+			if (managedRankingEnd) params.end = managedRankingEnd;
+			if (managedRankingModel) params.model = managedRankingModel;
+			const data = await api.get<{ ranking: ManagedRankingRow[] }>(
+				'/auth/managed/usage/ranking',
+				params
+			);
+			managedRanking = data.ranking;
+		});
+	}
+
 	async function addManagedProjectMember() {
 		if (!managedProjectMemberForm.resource_id || !managedProjectMemberForm.subject_id) {
 			pageError = '请选择项目和用户。';
@@ -1302,6 +1326,12 @@
 						{loading}
 						onRefreshOwnUsage={refreshOwnUsage}
 						onRefreshManagedUsage={refreshManagedUsage}
+						managedRanking={managedRanking}
+						bind:managedRankingStart
+						bind:managedRankingEnd
+						bind:managedRankingModel
+						bind:managedRankingLimit
+						onRefreshManagedRanking={refreshManagedRanking}
 						onRefreshManagedSubjects={refreshManagedSubjects}
 						onRefreshManagedProjectMemberships={() => refreshManagedProjectMemberships()}
 						onRefreshManagedTeamMemberships={() => refreshManagedTeamMemberships()}
