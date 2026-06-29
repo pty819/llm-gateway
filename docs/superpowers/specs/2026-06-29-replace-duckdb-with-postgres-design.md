@@ -25,8 +25,45 @@
 
 - **`api/auth.py` 的 `_usage_ranking_from_postgres` / `_usage_summary_from_postgres`**：保持原位，不搬到 `analytics.py`。避免 scope 蔓延，等迁移稳定后未来可做独立的"统一查询函数"重构
 - **前端**：零改动。字段完全对齐
-- **数据库迁移**：无。索引已存在，纯查询改动
 - **功能精简**：不做。18 个 metric 全保留
+
+## 范围内（补充）：清理冗余索引
+
+既然彻底转向 Postgres 直查，顺手清理 `request_facts` 表上当前查询模式下无用的索引，减少每次插入 request_fact 时的写入开销。当前 22 个索引中大部分从不参与过滤/分组，或被复合索引覆盖。
+
+### 必须保留（6 个）
+
+| 索引 | 理由 |
+|---|---|
+| `request_facts_pkey` UNIQUE(id) | 主键 |
+| `ix_request_facts_request_id` (request_id) | 去重写入路径必需（UNIQUE 查找） |
+| `ix_request_facts_started_at` (started_at) | 单独按 started_at 范围查询（time_buckets/drilldown 不带其它过滤时） |
+| `ix_request_facts_model_started` (model_alias, started_at) | model + 时间过滤/排序 |
+| `ix_request_facts_subject_started` (subject_id, started_at) | subject + 时间 |
+| `ix_request_facts_project_started` (project_id, started_at) | project + 时间 |
+
+### 删除（16 个）
+
+| 索引 | 删除理由 |
+|---|---|
+| `ix_request_facts_started_model` (started_at, model_alias) | 被 `model_started` 替代（model 在前更优，等值过滤 + 范围） |
+| `ix_request_facts_started_subject` (started_at, subject_id) | 被 `subject_started` 替代 |
+| `ix_request_facts_started_project` (started_at, project_id) | 被 `project_started` 替代 |
+| `ix_request_facts_started_request` (started_at, request_id) | request_id 已有单列索引；查询从不组合 started_at + request_id 过滤 |
+| `ix_request_facts_started_at_brin` BRIN(started_at) | 被 `ix_request_facts_started_at`（B-tree）覆盖；BRIN 与 B-tree 重复 |
+| `ix_request_facts_subject_id` (subject_id) | 被 `subject_started` 复合索引前缀覆盖 |
+| `ix_request_facts_project_id` (project_id) | 被 `project_started` 复合索引前缀覆盖 |
+| `ix_request_facts_model_alias` (model_alias) | 被 `model_started` 复合索引前缀覆盖 |
+| `ix_request_facts_ended_at` (ended_at) | 查询从不按 ended_at 过滤（全用 started_at） |
+| `ix_request_facts_usage_source` (usage_source) | 从不用于过滤/分组 |
+| `ix_request_facts_outcome` (outcome) | 只在 CASE 聚合出现，从不作为 where 条件 |
+| `ix_request_facts_endpoint_family` (endpoint_family) | 只在 drilldown GROUP BY，PG GROUP BY 走 hash/sort 不走索引 |
+| `ix_request_facts_streaming` (streaming) | 同上，drilldown GROUP BY |
+| `ix_request_facts_error_class` (error_class) | 从不用于查询 |
+| `ix_request_facts_subject_type` (subject_type) | 从不用于查询 |
+| `ix_request_facts_upstream_target_id` (upstream_target_id) | 从不用于查询（runtime_metrics 用 Redis） |
+
+清理后：**22 → 6**。所有删除通过新 alembic migration `0010` 的 `drop_index` 完成，downgrade 可重建。未来需要时 alembic 加回成本极低。
 
 ## 索引覆盖确认
 
@@ -395,6 +432,12 @@ shutdown 顺序变为：`health_checker.stop()` → `drain_now()` → 完成（a
 - 现有 admin observability 相关测试（test_backend_integration 等）全量跑，验证端点行为不变
 - auth.py 的 `_usage_*_from_postgres` 测试不受影响（保持原位）
 
+### 索引清理验证
+
+- migration `0010` upgrade 后，用 `pg_indexes` 查询确认 `request_facts` 仅剩 6 个索引（pkey + request_id + started_at + model_started + subject_started + project_started）
+- migration `0010` downgrade 后，16 个索引重建
+- 跑一遍 analytics 的 12 个测试，确认删索引后查询结果和性能仍正常（聚合查询不依赖这些索引，删了不影响正确性，只影响某些全表场景的计划选择——但保留的 6 个已覆盖所有实际过滤组合）
+
 ## 改动文件清单
 
 | 文件 | 改动 |
@@ -407,6 +450,6 @@ shutdown 顺序变为：`health_checker.stop()` → `drain_now()` → 完成（a
 | `pyproject.toml` | 删除 duckdb 依赖 |
 | `uv.lock` | uv lock 更新 |
 | `vendor/duckdb/` | **删除整个目录** |
+| `alembic/versions/20260629_0010_drop_unused_request_fact_indexes.py` | **新增**：drop 16 个冗余索引（含对称 downgrade） |
 | `tests/test_analytics.py` | **新增**：12 个测试 |
-| 数据库迁移 | **无** |
 | 前端 | **无改动** |
