@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 
@@ -402,3 +404,83 @@ async def test_run_once_noop_when_no_active_upstreams(monkeypatch):
 
     await health_checker._run_once(timeout_seconds=3.0)
     assert probe_calls == []
+
+
+async def test_start_skips_loop_when_disabled(monkeypatch):
+    """health_check_enabled=False → start() 不进入循环。"""
+    from llm_gateway.services import health_checker
+
+    monkeypatch.setattr(health_checker, "_settings_enabled", lambda: False)
+    loop_calls = []
+
+    async def _fake_main_loop():
+        loop_calls.append("ran")
+
+    monkeypatch.setattr(health_checker, "_main_loop", _fake_main_loop)
+
+    # 重置模块级 task 状态，避免被前序测试污染
+    health_checker._task = None
+    await health_checker.start()
+
+    assert loop_calls == []  # 循环没跑
+    assert health_checker._task is None
+
+
+async def test_start_runs_loop_then_stop_terminates(monkeypatch):
+    """start() 起后台 task 并立即返回；stop() 取消并等待其退出。"""
+    from llm_gateway.services import health_checker
+
+    monkeypatch.setattr(health_checker, "_settings_enabled", lambda: True)
+    monkeypatch.setattr(health_checker, "_settings_interval", lambda: 0.01)
+    monkeypatch.setattr(health_checker, "_settings_timeout", lambda: 3.0)
+
+    iterations = []
+
+    async def _fake_run_once(*, timeout_seconds):
+        iterations.append(1)
+
+    monkeypatch.setattr(health_checker, "_run_once", _fake_run_once)
+
+    health_checker._task = None
+    await health_checker.start()
+    assert health_checker._task is not None  # 后台 task 已起
+    # 让循环跑几轮
+    await asyncio.sleep(0.05)
+    await health_checker.stop()
+    assert health_checker._task is None  # 已停止
+    assert len(iterations) >= 1
+
+
+async def test_start_is_idempotent(monkeypatch):
+    """重复 start() 在已有 task 时直接返回，不起新 task。"""
+    from llm_gateway.services import health_checker
+
+    monkeypatch.setattr(health_checker, "_settings_enabled", lambda: True)
+    monkeypatch.setattr(health_checker, "_settings_interval", lambda: 0.01)
+    monkeypatch.setattr(health_checker, "_settings_timeout", lambda: 3.0)
+    monkeypatch.setattr(
+        health_checker, "_run_once", _noop_coro_factory()
+    )
+
+    health_checker._task = None
+    await health_checker.start()
+    first_task = health_checker._task
+    await health_checker.start()  # 第二次应被忽略
+    assert health_checker._task is first_task
+    await health_checker.stop()
+
+
+async def test_stop_when_no_task_is_noop(monkeypatch):
+    """没有 task 在跑时 stop() 安全返回（幂等）。"""
+    from llm_gateway.services import health_checker
+
+    health_checker._task = None
+    await health_checker.stop()  # 不应抛异常
+    assert health_checker._task is None
+
+
+def _noop_coro_factory():
+    async def _noop(*, timeout_seconds):
+        return None
+
+    return _noop

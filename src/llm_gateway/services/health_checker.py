@@ -143,3 +143,89 @@ async def _run_once(*, timeout_seconds: float) -> None:
             logger.exception(
                 "health_check_disable_failed upstream_id=%s", upstream.id
             )
+
+
+# --- Settings accessors (lazy import to avoid module-import-time config load) ---
+
+
+def _settings_enabled() -> bool:
+    from llm_gateway.core.config import get_settings
+
+    return get_settings().health_check_enabled
+
+
+def _settings_interval() -> float:
+    from llm_gateway.core.config import get_settings
+
+    return get_settings().health_check_interval_seconds
+
+
+def _settings_timeout() -> float:
+    from llm_gateway.core.config import get_settings
+
+    return get_settings().health_check_timeout_seconds
+
+
+# --- Background task lifecycle ---
+
+
+_task: asyncio.Task | None = None
+
+
+async def start() -> None:
+    """Start the background health-check loop (no-op if disabled).
+
+    Fire-and-forget: schedules _main_loop and returns immediately. Idempotent —
+    a second call while a task is running is ignored. Wired into app lifespan
+    startup alongside ensure_builtin_identity / init_analytics.
+    """
+    global _task
+    if _task is not None:
+        return
+    if not _settings_enabled():
+        logger.info("health_check_disabled_by_config")
+        return
+    _task = asyncio.create_task(_main_loop())
+    logger.info(
+        "health_check_started interval=%.1fs timeout=%.1fs",
+        _settings_interval(),
+        _settings_timeout(),
+    )
+
+
+async def stop() -> None:
+    """Cancel the background loop and wait for it to wind down.
+
+    Safe to call when no task is running. Used by lifespan shutdown so a restart
+    never leaves a dangling task probing /models.
+    """
+    global _task
+    if _task is None:
+        return
+    _task.cancel()
+    try:
+        await _task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.exception("health_check_loop_error")
+    _task = None
+    logger.info("health_check_stopped")
+
+
+async def _main_loop() -> None:
+    """Run _run_once every interval until cancelled.
+
+    CancelledError re-raises so stop()'s await sees it cleanly; any other
+    exception from a single iteration is logged and the loop continues — a
+    transient DB hiccup must not kill the whole checker.
+    """
+    timeout = _settings_timeout()
+    while True:
+        try:
+            await _run_once(timeout_seconds=timeout)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("health_check_iteration_failed")
+        await asyncio.sleep(_settings_interval())
