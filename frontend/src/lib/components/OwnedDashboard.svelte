@@ -48,10 +48,11 @@
 		onAddManagedTeamMember,
 		onSetManagedTeamMemberState,
 		onIssueOwnKey,
+		onSetOwnKeyState,
 		onChangeOwnPassword,
 		onCopy
 	}: {
-		profile: { subject: { login_username: string | null; name: string }; teams: string[]; models: string[]; keys: { name: string; key_prefix: string; state: string }[] } | null;
+		profile: { subject: { login_username: string | null; name: string }; teams: string[]; models: string[]; keys: { id: string; name: string; key_prefix: string; state: string }[] } | null;
 		ownUsage: OwnUsageSummary | null;
 		managedProjects: { project: { id: string; name: string } }[];
 		managedTeams: { team: { id: string; name: string } }[];
@@ -93,6 +94,7 @@
 		onAddManagedTeamMember: () => void | Promise<void>;
 		onSetManagedTeamMemberState: (m: TeamMembership, state: 'active' | 'disabled') => void | Promise<void>;
 		onIssueOwnKey: () => void | Promise<void>;
+		onSetOwnKeyState: (key: { id: string; state: string }, state: 'active' | 'disabled') => void | Promise<void>;
 		onChangeOwnPassword: () => void | Promise<void>;
 		onCopy: (value: string, key: string) => void | Promise<void>;
 	} = $props();
@@ -168,7 +170,7 @@
 <section class="panel">
 	<h2>网关密钥</h2>
 	<div class="form-grid"><label>新密钥名称<input bind:value={ownKeyForm.name} /></label><button type="button" onclick={onIssueOwnKey}>签发密钥</button></div>
-	<div class="table-wrap"><table><thead><tr><th>名称</th><th>前缀</th><th>状态</th></tr></thead><tbody>{#each profile?.keys ?? [] as key}<tr><td>{key.name}</td><td><code>{key.key_prefix}</code></td><td><StateBadge value={key.state} /></td></tr>{:else}<tr><td colspan="3">还没有密钥。</td></tr>{/each}</tbody></table></div>
+	<div class="table-wrap"><table><thead><tr><th>名称</th><th>前缀</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each profile?.keys ?? [] as key}<tr><td>{key.name}</td><td><code>{key.key_prefix}</code></td><td><StateBadge value={key.state} /></td><td><button class="secondary" type="button" onclick={() => onSetOwnKeyState(key, key.state === 'active' ? 'disabled' : 'active')} disabled={loading}>{key.state === 'active' ? '禁用' : '启用'}</button></td></tr>{:else}<tr><td colspan="4">还没有密钥。</td></tr>{/each}</tbody></table></div>
 </section>
 <section class="panel">
 	<h2>工具接入</h2>

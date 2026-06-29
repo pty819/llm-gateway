@@ -712,6 +712,13 @@
 		});
 	}
 
+	async function setOwnKeyState(key: { id: string; state: string }, newState: 'active' | 'disabled') {
+		await run(async () => {
+			await api.patch(`/auth/keys/${key.id}/state`, { state: newState });
+			profile = await api.get<AuthProfile>('/auth/me');
+		});
+	}
+
 	async function changeOwnPassword() {
 		if (!ownPasswordForm.current_password || ownPasswordForm.new_password.length < 8) {
 			pageError = '请输入当前密码，新密码至少 8 个字符。';
@@ -1303,6 +1310,7 @@
 						onAddManagedTeamMember={addManagedTeamMember}
 						onSetManagedTeamMemberState={setManagedTeamMemberState}
 						onIssueOwnKey={issueOwnKey}
+						onSetOwnKeyState={setOwnKeyState}
 						onChangeOwnPassword={changeOwnPassword}
 						onCopy={copyText}
 					/>
