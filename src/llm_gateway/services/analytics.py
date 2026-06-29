@@ -129,3 +129,46 @@ async def usage_totals(session, *, start=None, end=None, model=None,
     row = (await session.execute(stmt)).one()
     d = _row_to_dict(row)
     return None if d["request_count"] == 0 else d
+
+
+async def usage_summary(session, *, start=None, end=None, model=None,
+                        subject_id=None, project_id=None, limit=None) -> list[dict]:
+    """按 (model_alias, subject_id, project_id) 分组，full 18-metric。
+    排序 total_tokens DESC, request_count DESC。limit 可选（None=不限制）。"""
+    stmt = _apply_filters(
+        select(
+            col(RequestFact.model_alias),
+            col(RequestFact.subject_id),
+            col(RequestFact.project_id),
+            *_full_metric_columns(),
+        ).select_from(RequestFact),
+        start=start, end=end, model=model, subject_id=subject_id, project_id=project_id,
+    )
+    stmt = stmt.group_by(
+        col(RequestFact.model_alias), col(RequestFact.subject_id), col(RequestFact.project_id)
+    ).order_by(desc(text("total_tokens")), desc(text("request_count")))
+    if limit is not None:
+        stmt = stmt.limit(int(limit))
+    rows = (await session.execute(stmt)).all()
+    return [_row_to_dict(row) for row in rows]
+
+
+async def usage_ranking(session, *, start=None, end=None, model=None,
+                        limit=20) -> list[dict]:
+    """按 subject 分组排名。core 6 metric（不含 cached_tokens/延迟/vllm），
+    JOIN subjects 取 name/login_username。固定过滤 subject_id IS NOT NULL（对齐 DuckDB）。"""
+    stmt = _apply_filters(
+        select(
+            col(RequestFact.subject_id).label("subject_id"),
+            col(Subject.login_username).label("login_username"),
+            func.coalesce(col(Subject.name), "无用户").label("subject_name"),
+            *_core_metric_columns(),
+        ).select_from(RequestFact)
+        .outerjoin(Subject, RequestFact.subject_id == Subject.id),
+        start=start, end=end, model=model, subject_id=None, project_id=None,
+    )
+    stmt = stmt.where(col(RequestFact.subject_id).isnot(None)).group_by(
+        col(RequestFact.subject_id), col(Subject.login_username), col(Subject.name)
+    ).order_by(desc(text("total_tokens")), desc(text("request_count"))).limit(int(limit))
+    rows = (await session.execute(stmt)).all()
+    return [_row_to_dict(row) for row in rows]

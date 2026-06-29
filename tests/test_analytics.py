@@ -103,3 +103,115 @@ async def test_usage_totals_returns_none_when_no_data():
             project_id=uuid4(),
         )
     assert result is None
+
+
+async def test_usage_summary_groups_by_model_subject_project():
+    """usage_summary 按 (model, subject, project) 分组，full 18 metric，total_tokens DESC。"""
+    from uuid import uuid4
+
+    from llm_gateway.db.models import Project, Subject, SubjectType, utcnow
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.analytics import usage_summary
+
+    async with AsyncSessionLocal() as session:
+        project = Project(name=f"summary-{uuid4().hex}", owner_subject_id=None)
+        session.add(project)
+        await session.flush()
+        alice = Subject(name="SummaryAlice", type=SubjectType.USER)
+        bob = Subject(name="SummaryBob", type=SubjectType.USER)
+        session.add_all([alice, bob])
+        await session.flush()
+        await session.commit()
+        project_id = project.id
+        alice_id = alice.id
+        bob_id = bob.id
+
+    await _seed_request_fact(subject_id=alice_id, project_id=project_id, model_alias="m1", total_tokens=500)
+    await _seed_request_fact(subject_id=alice_id, project_id=project_id, model_alias="m2", total_tokens=100)
+    await _seed_request_fact(subject_id=bob_id, project_id=project_id, model_alias="m1", total_tokens=300)
+
+    now = utcnow()
+    async with AsyncSessionLocal() as session:
+        rows = await usage_summary(
+            session, start=now - timedelta(days=1), end=now + timedelta(hours=1),
+            project_id=project_id,
+        )
+
+    # 按 total_tokens DESC：alice/m1(500) > bob/m1(300) > alice/m2(100)
+    assert len(rows) == 3
+    assert rows[0]["model_alias"] == "m1"
+    assert rows[0]["subject_id"] == alice_id
+    assert rows[0]["total_tokens"] == 500
+    assert rows[1]["subject_id"] == bob_id
+    assert rows[2]["model_alias"] == "m2"
+    # 含全部 18 个 metric
+    assert _FULL_METRIC_KEYS <= set(rows[0].keys())
+
+
+async def test_usage_summary_respects_limit():
+    from uuid import uuid4
+
+    from llm_gateway.db.models import Project, Subject, SubjectType, utcnow
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.analytics import usage_summary
+
+    async with AsyncSessionLocal() as session:
+        project = Project(name=f"sumlimit-{uuid4().hex}", owner_subject_id=None)
+        session.add(project)
+        await session.flush()
+        subject = Subject(name="SumLimitUser", type=SubjectType.USER)
+        session.add(subject)
+        await session.flush()
+        await session.commit()
+        project_id = project.id
+        subject_id = subject.id
+
+    for i in range(5):
+        await _seed_request_fact(subject_id=subject_id, project_id=project_id, model_alias=f"m{i}", total_tokens=100 * (i + 1))
+
+    now = utcnow()
+    async with AsyncSessionLocal() as session:
+        rows = await usage_summary(
+            session, start=now - timedelta(days=1), end=now + timedelta(hours=1),
+            project_id=project_id, limit=2,
+        )
+    assert len(rows) == 2
+
+
+async def test_usage_ranking_uses_core_metrics_excludes_cached():
+    """ranking 用 core 6 metric（不含 cached_tokens/avg_*）。关键等价性测试。"""
+    from uuid import uuid4
+
+    from llm_gateway.db.models import Project, Subject, SubjectType, utcnow
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.analytics import usage_ranking
+
+    async with AsyncSessionLocal() as session:
+        project = Project(name=f"rank-{uuid4().hex}", owner_subject_id=None)
+        session.add(project)
+        await session.flush()
+        alice = Subject(name="RankAlice", type=SubjectType.USER)
+        session.add(alice)
+        await session.flush()
+        await session.commit()
+        alice_id = alice.id
+        project_id = project.id
+
+    # 用大 token 数确保 alice 排进 top N（跨测试 DB 有大量历史数据）
+    await _seed_request_fact(subject_id=alice_id, project_id=project_id, total_tokens=999999)
+
+    now = utcnow()
+    async with AsyncSessionLocal() as session:
+        rows = await usage_ranking(
+            session, start=now - timedelta(days=1), end=now + timedelta(hours=1),
+            limit=20,
+        )
+
+    alice_row = next(r for r in rows if r["subject_id"] == alice_id)
+    # core 6 metric，不含 cached_tokens/avg_*
+    assert "cached_tokens" not in alice_row
+    assert "avg_latency_ms" not in alice_row
+    assert "vllm_metrics_count" not in alice_row
+    assert alice_row["total_tokens"] == 999999
+    assert alice_row["subject_name"] == "RankAlice"
+    assert "login_username" in alice_row
