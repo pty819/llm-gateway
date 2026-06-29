@@ -400,3 +400,60 @@ async def test_drilldown_by_outcome():
     # RequestOutcome enum 值
     assert "success" in labels
     assert "upstream_failure" in labels
+
+
+async def test_usage_ranking_excludes_null_subject():
+    """subject_id IS NULL 的行不应进入排名（对齐 DuckDB 的关键等价性分支）。"""
+    from uuid import uuid4
+
+    from llm_gateway.db.models import Project, Subject, SubjectType, utcnow
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.analytics import usage_ranking
+
+    async with AsyncSessionLocal() as session:
+        project = Project(name=f"nullsubj-{uuid4().hex}", owner_subject_id=None)
+        session.add(project)
+        await session.flush()
+        alice = Subject(name="NullSubjAlice", type=SubjectType.USER)
+        session.add(alice)
+        await session.flush()
+        await session.commit()
+        alice_id = alice.id
+        project_id = project.id
+
+    # alice 有 subject_id（大 token 确保进 top）
+    await _seed_request_fact(subject_id=alice_id, project_id=project_id, total_tokens=999999)
+
+    # 直接造一行 subject_id=NULL 的 fact（_seed_request_fact 不支持 NULL）
+    from llm_gateway.db.models import EndpointFamily, RequestOutcome, utcnow
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.facts import record_request_fact
+
+    now = utcnow()
+    async with AsyncSessionLocal() as session:
+        await record_request_fact(
+            session,
+            request_id=f"nullsubj-{now.isoformat()}",
+            started_at=now,
+            ended_at=now,
+            endpoint_family=EndpointFamily.OPENAI_CHAT,
+            subject_id=None,
+            subject_type="service",
+            project_id=project_id,
+            model_alias="test-model",
+            upstream_target_id=None,
+            streaming=False,
+            outcome=RequestOutcome.SUCCESS,
+            usage={"prompt_tokens": 10, "completion_tokens": 90, "total_tokens": 100},
+        )
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        rows = await usage_ranking(
+            session, start=now - timedelta(days=1), end=now + timedelta(hours=1),
+            limit=100,
+        )
+
+    # alice 在，NULL subject 不在
+    assert any(r["subject_id"] == alice_id for r in rows)
+    assert all(r["subject_id"] is not None for r in rows)

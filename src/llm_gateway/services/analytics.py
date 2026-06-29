@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import case, cast, desc, func, select, text
 from sqlalchemy import Numeric, Text
@@ -102,8 +103,25 @@ def _apply_filters(stmt, *, start, end, model, subject_id, project_id):
 
 
 def _row_to_dict(row) -> dict:
-    """把 SQLAlchemy Row 转 dict，键用 label 名。"""
-    return dict(row._mapping)
+    """把 SQLAlchemy Row 转 dict，键用 label 名。
+
+    Decimal（来自 round(numeric, 2)）转 float，对齐 DuckDB ROUND(AVG(double),2)
+    的 float 输出——否则 FastAPI 会把 Decimal 序列化成 JSON 字符串，前端拿到
+    "12.30" 而非 12.3。
+    """
+    return {k: (float(v) if isinstance(v, Decimal) else v) for k, v in row._mapping.items()}
+
+
+async def _apply_statement_timeout(session) -> None:
+    """Set a per-transaction statement_timeout so a runaway aggregate cannot
+    monopolize the shared primary connection. 对齐 DuckDB 的 wait_for(timeout=15s)
+    守卫——DuckDB 删除后必须保留这个保护，否则大窗口聚合会压垮数据面。
+    SET LOCAL 只影响当前事务，session_dep 的请求级事务正好覆盖一次查询。
+    """
+    from llm_gateway.core.config import get_settings
+
+    seconds = get_settings().analytics_statement_timeout_seconds
+    await session.execute(text(f"SET LOCAL statement_timeout = {int(seconds * 1000)}"))
 
 
 def _ensure_utc_iso(value) -> str:
@@ -122,6 +140,7 @@ def _ensure_utc_iso(value) -> str:
 async def usage_totals(session, *, start=None, end=None, model=None,
                        subject_id=None, project_id=None) -> dict | None:
     """全量 18-metric 单行聚合。无数据返回 None（对齐 DuckDB：request_count==0→None）。"""
+    await _apply_statement_timeout(session)
     stmt = _apply_filters(
         select(*_full_metric_columns()).select_from(RequestFact),
         start=start, end=end, model=model, subject_id=subject_id, project_id=project_id,
@@ -135,6 +154,7 @@ async def usage_summary(session, *, start=None, end=None, model=None,
                         subject_id=None, project_id=None, limit=None) -> list[dict]:
     """按 (model_alias, subject_id, project_id) 分组，full 18-metric。
     排序 total_tokens DESC, request_count DESC。limit 可选（None=不限制）。"""
+    await _apply_statement_timeout(session)
     stmt = _apply_filters(
         select(
             col(RequestFact.model_alias),
@@ -157,6 +177,7 @@ async def usage_ranking(session, *, start=None, end=None, model=None,
                         limit=20) -> list[dict]:
     """按 subject 分组排名。core 6 metric（不含 cached_tokens/延迟/vllm），
     JOIN subjects 取 name/login_username。固定过滤 subject_id IS NOT NULL（对齐 DuckDB）。"""
+    await _apply_statement_timeout(session)
     stmt = _apply_filters(
         select(
             col(RequestFact.subject_id).label("subject_id"),
@@ -226,6 +247,7 @@ async def time_buckets(session, *, bucket="hour", start=None, end=None,
     bucket∈{minute,hour,day}。返回的 bucket_start 统一转 ISO 字符串（对齐 DuckDB）。"""
     if bucket not in _VALID_BUCKETS:
         raise ValueError(f"Invalid bucket: {bucket!r}")
+    await _apply_statement_timeout(session)
     stmt = _apply_filters(
         select(
             func.date_trunc(bucket, col(RequestFact.started_at)).label("bucket_start"),
@@ -247,6 +269,7 @@ async def drilldown(session, *, dimension="model", start=None, end=None,
     """按 dimension 分组，full 18-metric。dimension_id 转 str（对齐 DuckDB）。
     维度：model/subject/project/endpoint/outcome/streaming。"""
     dim_selects, join_target, group_by = _dimension_columns(dimension)
+    await _apply_statement_timeout(session)
     stmt = _apply_filters(
         select(*dim_selects, *_full_metric_columns()).select_from(RequestFact),
         start=start, end=end, model=model, subject_id=subject_id, project_id=project_id,
