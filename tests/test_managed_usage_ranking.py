@@ -29,7 +29,7 @@ async def _seed_request_fact(*, project_id, subject_id, model_alias="test-model"
             model_alias=model_alias,
             upstream_target_id=None,
             streaming=False,
-            outcome=RequestOutcome.SUCCESS if outcome == "success" else RequestOutcome.ERROR,
+            outcome=RequestOutcome.SUCCESS if outcome == "success" else RequestOutcome.UPSTREAM_FAILURE,
             usage={"prompt_tokens": 10, "completion_tokens": total_tokens - 10, "total_tokens": total_tokens},
         )
         await session.commit()

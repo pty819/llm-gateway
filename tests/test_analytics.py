@@ -42,7 +42,7 @@ async def _seed_request_fact(*, subject_id, project_id=None, model_alias="test-m
             model_alias=model_alias,
             upstream_target_id=None,
             streaming=False,
-            outcome=RequestOutcome.SUCCESS if outcome == "success" else RequestOutcome.ERROR,
+            outcome=RequestOutcome.SUCCESS if outcome == "success" else RequestOutcome.UPSTREAM_FAILURE,
             usage={
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
@@ -215,3 +215,188 @@ async def test_usage_ranking_uses_core_metrics_excludes_cached():
     assert alice_row["total_tokens"] == 999999
     assert alice_row["subject_name"] == "RankAlice"
     assert "login_username" in alice_row
+
+
+async def test_time_buckets_groups_by_hour_and_returns_iso():
+    """time_buckets 按 date_trunc 桶分组，full 18 metric，bucket_start 是 ISO 字符串。"""
+    from uuid import uuid4
+
+    from llm_gateway.db.models import Project, Subject, SubjectType, utcnow
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.analytics import time_buckets
+
+    async with AsyncSessionLocal() as session:
+        project = Project(name=f"bucket-{uuid4().hex}", owner_subject_id=None)
+        session.add(project)
+        await session.flush()
+        subject = Subject(name="BucketUser", type=SubjectType.USER)
+        session.add(subject)
+        await session.flush()
+        await session.commit()
+        project_id = project.id
+        subject_id = subject.id
+
+    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=100)
+    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=200)
+
+    now = utcnow()
+    async with AsyncSessionLocal() as session:
+        rows = await time_buckets(
+            session, bucket="hour", start=now - timedelta(days=1), end=now + timedelta(hours=1),
+            project_id=project_id,
+        )
+
+    assert len(rows) >= 1
+    bucket = rows[0]
+    # bucket_start 是字符串（ISO），不是 datetime 对象
+    assert isinstance(bucket["bucket_start"], str)
+    assert "+" in bucket["bucket_start"] or bucket["bucket_start"].endswith("Z")
+    assert bucket["total_tokens"] == 300
+    assert _FULL_METRIC_KEYS <= set(bucket.keys())
+
+
+async def test_time_buckets_invalid_bucket_raises():
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.analytics import time_buckets
+
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(ValueError):
+            await time_buckets(session, bucket="fortnight")
+
+
+async def test_drilldown_by_model():
+    from uuid import uuid4
+
+    from llm_gateway.db.models import Project, Subject, SubjectType, utcnow
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.analytics import drilldown
+
+    async with AsyncSessionLocal() as session:
+        project = Project(name=f"dd-model-{uuid4().hex}", owner_subject_id=None)
+        session.add(project)
+        await session.flush()
+        subject = Subject(name="DdModelUser", type=SubjectType.USER)
+        session.add(subject)
+        await session.flush()
+        await session.commit()
+        project_id = project.id
+        subject_id = subject.id
+
+    await _seed_request_fact(subject_id=subject_id, project_id=project_id, model_alias="m1", total_tokens=100)
+    await _seed_request_fact(subject_id=subject_id, project_id=project_id, model_alias="m2", total_tokens=200)
+
+    now = utcnow()
+    async with AsyncSessionLocal() as session:
+        rows = await drilldown(
+            session, dimension="model",
+            start=now - timedelta(days=1), end=now + timedelta(hours=1),
+            project_id=project_id,
+        )
+
+    assert len(rows) == 2
+    # 按 request_count DESC
+    assert {"dimension_id", "dimension_label"} <= set(rows[0].keys())
+    labels = {r["dimension_label"] for r in rows}
+    assert labels == {"m1", "m2"}
+    assert _FULL_METRIC_KEYS <= set(rows[0].keys())
+
+
+async def test_drilldown_by_subject_joins_subjects_and_str_id():
+    from uuid import uuid4
+
+    from llm_gateway.db.models import Project, Subject, SubjectType, utcnow
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.analytics import drilldown
+
+    async with AsyncSessionLocal() as session:
+        project = Project(name=f"dd-subj-{uuid4().hex}", owner_subject_id=None)
+        session.add(project)
+        await session.flush()
+        subject = Subject(name="DdSubjUser", type=SubjectType.USER)
+        session.add(subject)
+        await session.flush()
+        await session.commit()
+        project_id = project.id
+        subject_id = subject.id
+
+    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=100)
+
+    now = utcnow()
+    async with AsyncSessionLocal() as session:
+        rows = await drilldown(
+            session, dimension="subject",
+            start=now - timedelta(days=1), end=now + timedelta(hours=1),
+            project_id=project_id,
+        )
+
+    assert len(rows) >= 1
+    row = next(r for r in rows if r["dimension_label"] == "DdSubjUser")
+    # dimension_id 是 str（对齐 DuckDB），不是 UUID
+    assert isinstance(row["dimension_id"], str)
+
+
+async def test_drilldown_by_project_joins_projects():
+    from uuid import uuid4
+
+    from llm_gateway.db.models import Project, Subject, SubjectType, utcnow
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.analytics import drilldown
+
+    async with AsyncSessionLocal() as session:
+        project = Project(name=f"dd-proj-{uuid4().hex}", owner_subject_id=None)
+        session.add(project)
+        await session.flush()
+        subject = Subject(name="DdProjUser", type=SubjectType.USER)
+        session.add(subject)
+        await session.flush()
+        await session.commit()
+        project_id = project.id
+        subject_id = subject.id
+
+    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=100)
+
+    now = utcnow()
+    async with AsyncSessionLocal() as session:
+        rows = await drilldown(
+            session, dimension="project",
+            start=now - timedelta(days=1), end=now + timedelta(hours=1),
+            project_id=project_id,
+        )
+
+    assert len(rows) >= 1
+    assert any(r["dimension_label"] == project.name for r in rows)
+
+
+async def test_drilldown_by_outcome():
+    from uuid import uuid4
+
+    from llm_gateway.db.models import Project, Subject, SubjectType, utcnow
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.analytics import drilldown
+
+    async with AsyncSessionLocal() as session:
+        project = Project(name=f"dd-out-{uuid4().hex}", owner_subject_id=None)
+        session.add(project)
+        await session.flush()
+        subject = Subject(name="DdOutUser", type=SubjectType.USER)
+        session.add(subject)
+        await session.flush()
+        await session.commit()
+        project_id = project.id
+        subject_id = subject.id
+
+    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=100)
+    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=50, outcome="upstream_failure")
+
+    now = utcnow()
+    async with AsyncSessionLocal() as session:
+        rows = await drilldown(
+            session, dimension="outcome",
+            start=now - timedelta(days=1), end=now + timedelta(hours=1),
+            project_id=project_id,
+        )
+
+    labels = {r["dimension_label"] for r in rows}
+    # RequestOutcome enum 值
+    assert "success" in labels
+    assert "upstream_failure" in labels

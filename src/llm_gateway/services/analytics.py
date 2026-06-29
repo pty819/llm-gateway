@@ -172,3 +172,93 @@ async def usage_ranking(session, *, start=None, end=None, model=None,
     ).order_by(desc(text("total_tokens")), desc(text("request_count"))).limit(int(limit))
     rows = (await session.execute(stmt)).all()
     return [_row_to_dict(row) for row in rows]
+
+
+def _dimension_columns(dimension: str):
+    """对齐 DuckDB _dimension_sql。返回 (dim_selects, join_target_or_None, group_by_columns)。"""
+    if dimension == "subject":
+        return (
+            [col(RequestFact.subject_id).label("dimension_id"),
+             func.coalesce(col(Subject.name), col(Subject.login_username), "无用户").label("dimension_label")],
+            Subject,
+            [col(RequestFact.subject_id), col(Subject.name), col(Subject.login_username)],
+        )
+    if dimension == "project":
+        return (
+            [col(RequestFact.project_id).label("dimension_id"),
+             func.coalesce(col(Project.name), "无项目").label("dimension_label")],
+            Project,
+            [col(RequestFact.project_id), col(Project.name)],
+        )
+    if dimension == "endpoint":
+        return (
+            [col(RequestFact.endpoint_family).label("dimension_id"),
+             col(RequestFact.endpoint_family).label("dimension_label")],
+            None,
+            [col(RequestFact.endpoint_family)],
+        )
+    if dimension == "outcome":
+        return (
+            [col(RequestFact.outcome).label("dimension_id"),
+             col(RequestFact.outcome).label("dimension_label")],
+            None,
+            [col(RequestFact.outcome)],
+        )
+    if dimension == "streaming":
+        return (
+            [col(RequestFact.streaming).label("dimension_id"),
+             case((col(RequestFact.streaming) == True, "流式"), else_="非流式").label("dimension_label")],
+            None,
+            [col(RequestFact.streaming)],
+        )
+    # default: model
+    return (
+        [col(RequestFact.model_alias).label("dimension_id"),
+         func.coalesce(col(RequestFact.model_alias), "无模型").label("dimension_label")],
+        None,
+        [col(RequestFact.model_alias)],
+    )
+
+
+async def time_buckets(session, *, bucket="hour", start=None, end=None,
+                       model=None, subject_id=None, project_id=None) -> list[dict]:
+    """按 date_trunc(bucket, started_at) 分组，full 18-metric。
+    bucket∈{minute,hour,day}。返回的 bucket_start 统一转 ISO 字符串（对齐 DuckDB）。"""
+    if bucket not in _VALID_BUCKETS:
+        raise ValueError(f"Invalid bucket: {bucket!r}")
+    stmt = _apply_filters(
+        select(
+            func.date_trunc(bucket, col(RequestFact.started_at)).label("bucket_start"),
+            *_full_metric_columns(),
+        ).select_from(RequestFact),
+        start=start, end=end, model=model, subject_id=subject_id, project_id=project_id,
+    )
+    stmt = stmt.group_by(text("bucket_start")).order_by(desc(text("bucket_start")))
+    rows = (await session.execute(stmt)).all()
+    result = [_row_to_dict(row) for row in rows]
+    for row in result:
+        if row.get("bucket_start") is not None:
+            row["bucket_start"] = _ensure_utc_iso(row["bucket_start"])
+    return result
+
+
+async def drilldown(session, *, dimension="model", start=None, end=None,
+                    model=None, subject_id=None, project_id=None, limit=100) -> list[dict]:
+    """按 dimension 分组，full 18-metric。dimension_id 转 str（对齐 DuckDB）。
+    维度：model/subject/project/endpoint/outcome/streaming。"""
+    dim_selects, join_target, group_by = _dimension_columns(dimension)
+    stmt = _apply_filters(
+        select(*dim_selects, *_full_metric_columns()).select_from(RequestFact),
+        start=start, end=end, model=model, subject_id=subject_id, project_id=project_id,
+    )
+    if join_target is Subject:
+        stmt = stmt.outerjoin(Subject, RequestFact.subject_id == Subject.id)
+    elif join_target is Project:
+        stmt = stmt.outerjoin(Project, RequestFact.project_id == Project.id)
+    stmt = stmt.group_by(*group_by).order_by(desc(text("request_count"))).limit(int(limit))
+    rows = (await session.execute(stmt)).all()
+    result = [_row_to_dict(row) for row in rows]
+    for row in result:
+        if row.get("dimension_id") is not None:
+            row["dimension_id"] = str(row["dimension_id"])
+    return result
