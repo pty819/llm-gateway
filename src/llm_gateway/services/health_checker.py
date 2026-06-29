@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass
 
 import httpx
@@ -10,6 +12,8 @@ from llm_gateway.db.models import ResourceState, UpstreamTarget
 from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.services.facts import record_audit_event
 
+
+logger = logging.getLogger(__name__)
 
 HEALTHY_STATUSES = frozenset({200, 404})
 
@@ -98,3 +102,44 @@ async def _disable_upstream(*, upstream_id, verdict: HealthVerdict) -> bool:
         )
         await session.commit()
         return True
+
+
+async def _collect_active_upstreams(session) -> list:
+    result = await session.execute(
+        select(UpstreamTarget).where(
+            col(UpstreamTarget.state) == ResourceState.ACTIVE
+        )
+    )
+    return list(result.scalars().all())
+
+
+async def _run_once(*, timeout_seconds: float) -> None:
+    """Probe every ACTIVE upstream concurrently; disable the failures.
+
+    Probes run concurrently (asyncio.gather) so N replicas finish within one
+    timeout window. Disables are serial with per-upstream sessions so one
+    failure cannot poison another — a RuntimeError in _disable_upstream is
+    logged and swallowed so the remaining upstreams are still processed.
+    """
+    async with AsyncSessionLocal() as session:
+        upstreams = await _collect_active_upstreams(session)
+
+    if not upstreams:
+        return
+
+    verdicts = await asyncio.gather(
+        *[
+            _probe_upstream(upstream, timeout_seconds=timeout_seconds)
+            for upstream in upstreams
+        ]
+    )
+
+    for upstream, verdict in zip(upstreams, verdicts, strict=True):
+        if verdict.healthy:
+            continue
+        try:
+            await _disable_upstream(upstream_id=upstream.id, verdict=verdict)
+        except Exception:
+            logger.exception(
+                "health_check_disable_failed upstream_id=%s", upstream.id
+            )

@@ -248,3 +248,157 @@ async def test_disable_upstream_skips_when_already_disabled(monkeypatch):
     assert disabled is False
     assert upstream._committed is False
     assert len(recorded) == 0  # 不重复审计
+
+
+async def test_run_once_disables_failing_upstream_and_leaves_healthy(monkeypatch):
+    """一轮巡检：一个挂、一个正常 → 只禁挂的，正常的完好。"""
+    from llm_gateway.db.models import ResourceState
+    from llm_gateway.services import health_checker
+
+    bad = _FakePersistedUpstream(state=ResourceState.ACTIVE)
+    bad.name = "bad-upstream"
+    good = _FakePersistedUpstream(state=ResourceState.ACTIVE)
+    good.name = "good-upstream"
+    active = [bad, good]
+
+    async def _fake_collect_active_upstreams(session):
+        return list(active)
+
+    monkeypatch.setattr(
+        health_checker,
+        "_collect_active_upstreams",
+        _fake_collect_active_upstreams,
+    )
+
+    probe_calls = []
+
+    async def _fake_probe_upstream(upstream, *, timeout_seconds):
+        probe_calls.append(upstream.name)
+        if upstream is bad:
+            return HealthVerdict(False, 500, "http_5xx")
+        return HealthVerdict(True, 200, "ok")
+
+    monkeypatch.setattr(health_checker, "_probe_upstream", _fake_probe_upstream)
+
+    disabled_ids = []
+
+    async def _fake_disable_upstream(*, upstream_id, verdict):
+        for item in active:
+            if item.id == upstream_id:
+                item.state = ResourceState.DISABLED
+                disabled_ids.append(upstream_id)
+                return True
+        return False
+
+    monkeypatch.setattr(health_checker, "_disable_upstream", _fake_disable_upstream)
+
+    await health_checker._run_once(timeout_seconds=3.0)
+
+    assert sorted(probe_calls) == ["bad-upstream", "good-upstream"]
+    assert bad.state == ResourceState.DISABLED
+    assert good.state == ResourceState.ACTIVE
+    assert disabled_ids == [bad.id]
+
+
+async def test_run_once_treats_404_as_healthy_and_does_not_disable(monkeypatch):
+    """404（昇腾 PD 分离）应被视为健康，不禁用。"""
+    from llm_gateway.db.models import ResourceState
+    from llm_gateway.services import health_checker
+
+    pd = _FakePersistedUpstream(state=ResourceState.ACTIVE)
+    active = [pd]
+
+    async def _fake_collect_active_upstreams(session):
+        return list(active)
+
+    monkeypatch.setattr(
+        health_checker,
+        "_collect_active_upstreams",
+        _fake_collect_active_upstreams,
+    )
+
+    async def _fake_probe_upstream(upstream, *, timeout_seconds):
+        return HealthVerdict(True, 404, "ok")
+
+    monkeypatch.setattr(health_checker, "_probe_upstream", _fake_probe_upstream)
+
+    disabled_ids = []
+
+    async def _fake_disable_upstream(*, upstream_id, verdict):
+        disabled_ids.append(upstream_id)
+        return True
+
+    monkeypatch.setattr(health_checker, "_disable_upstream", _fake_disable_upstream)
+
+    await health_checker._run_once(timeout_seconds=3.0)
+
+    assert pd.state == ResourceState.ACTIVE
+    assert disabled_ids == []
+
+
+async def test_run_once_continues_when_disable_raises(monkeypatch):
+    """单个 _disable_upstream 抛异常不能中断对其他节点的处理。"""
+    from llm_gateway.db.models import ResourceState
+    from llm_gateway.services import health_checker
+
+    first = _FakePersistedUpstream(state=ResourceState.ACTIVE)
+    first.name = "first"
+    second = _FakePersistedUpstream(state=ResourceState.ACTIVE)
+    second.name = "second"
+    active = [first, second]
+
+    async def _fake_collect_active_upstreams(session):
+        return list(active)
+
+    monkeypatch.setattr(
+        health_checker,
+        "_collect_active_upstreams",
+        _fake_collect_active_upstreams,
+    )
+
+    async def _fake_probe_upstream(upstream, *, timeout_seconds):
+        # 两个都挂，确保都会走到 disable
+        return HealthVerdict(False, 500, "http_5xx")
+
+    monkeypatch.setattr(health_checker, "_probe_upstream", _fake_probe_upstream)
+
+    disabled_ids = []
+
+    async def _fake_disable_upstream(*, upstream_id, verdict):
+        if upstream_id == first.id:
+            raise RuntimeError("db down")
+        disabled_ids.append(upstream_id)
+        return True
+
+    monkeypatch.setattr(health_checker, "_disable_upstream", _fake_disable_upstream)
+
+    # 不应抛异常
+    await health_checker._run_once(timeout_seconds=3.0)
+
+    # 第一个失败被吞掉，第二个仍被正常禁用
+    assert disabled_ids == [second.id]
+
+
+async def test_run_once_noop_when_no_active_upstreams(monkeypatch):
+    """没有 ACTIVE upstream → 直接返回，不探测。"""
+    from llm_gateway.services import health_checker
+
+    async def _fake_collect_active_upstreams(session):
+        return []
+
+    monkeypatch.setattr(
+        health_checker,
+        "_collect_active_upstreams",
+        _fake_collect_active_upstreams,
+    )
+
+    probe_calls = []
+
+    async def _fake_probe_upstream(upstream, *, timeout_seconds):
+        probe_calls.append(upstream)
+        return HealthVerdict(True, 200, "ok")
+
+    monkeypatch.setattr(health_checker, "_probe_upstream", _fake_probe_upstream)
+
+    await health_checker._run_once(timeout_seconds=3.0)
+    assert probe_calls == []
