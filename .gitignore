@@ -18,3 +18,4 @@ wheels/
 .omc/
 .omx/
 .codegraph/
+.DS_Store
