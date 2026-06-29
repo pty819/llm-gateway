@@ -78,6 +78,18 @@ class Settings(BaseSettings):
         default=None, alias="LLM_GATEWAY_REQUIRE_NONDEFAULT_ADMIN_CREDENTIALS"
     )
     session_ttl_hours: int = Field(default=168, alias="LLM_GATEWAY_SESSION_TTL_HOURS")
+    # 后台健康巡检：周期探测每个 ACTIVE upstream 的 /models，故障自动禁用。
+    # interval/timeout 默认 3s：发现延迟 ≤ 一个周期，探测本身有独立超时上限。
+    # enabled 总开关供调试/排障时一键关闭。
+    health_check_interval_seconds: float = Field(
+        default=3.0, alias="LLM_GATEWAY_HEALTH_CHECK_INTERVAL_SECONDS"
+    )
+    health_check_timeout_seconds: float = Field(
+        default=3.0, alias="LLM_GATEWAY_HEALTH_CHECK_TIMEOUT_SECONDS"
+    )
+    health_check_enabled: bool = Field(
+        default=True, alias="LLM_GATEWAY_HEALTH_CHECK_ENABLED"
+    )
 
     def should_require_nondefault_admin_credentials(self) -> bool:
         if self.require_nondefault_admin_credentials is not None:
