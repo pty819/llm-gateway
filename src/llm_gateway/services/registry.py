@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from uuid import UUID
 
+from fastapi import HTTPException, status
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
@@ -18,6 +19,7 @@ from llm_gateway.db.models import (
     TeamMembership,
     utcnow,
 )
+from llm_gateway.services.facts import record_audit_event
 
 
 SLUG_PATTERN = r"^[a-z][a-z0-9-]*$"
@@ -62,3 +64,146 @@ async def subject_can_access_skill(
         )
     )
     return result.scalars().first() is not None
+
+
+async def get_skill_by_owner_slug(
+    session: AsyncSession, *, owner_id: UUID, slug: str, include_disabled: bool = False
+) -> Skill | None:
+    stmt = select(Skill).where(
+        col(Skill.owner_subject_id) == owner_id,
+        col(Skill.slug) == slug,
+    )
+    if not include_disabled:
+        stmt = stmt.where(col(Skill.state) == ResourceState.ACTIVE)
+    return (await session.execute(stmt)).scalars().first()
+
+
+async def create_or_append_skill_version(
+    session: AsyncSession,
+    *,
+    actor: Subject,
+    slug: str,
+    version: str,
+    name: str,
+    summary: str | None,
+    description: str | None,
+    notes: str | None,
+    zip_bytes: bytes,
+) -> Skill:
+    """Create a skill (first version) or append a new version.
+
+    If (actor, slug) does not exist -> create the skill + first version.
+    If it exists and actor is the owner -> append a new version, make it latest.
+    If it exists but owner is someone else -> 409 artifact_slug_conflict.
+    Duplicate version string on the same skill -> 409 version_conflict.
+    """
+    existing = await get_skill_by_owner_slug(
+        session, owner_id=actor.id, slug=slug, include_disabled=True
+    )
+    if existing is None:
+        # The actor owns no skill with this slug. Reject if a different owner
+        # already claims an active skill with the same slug.
+        collision = await session.execute(
+            select(Skill).where(
+                col(Skill.slug) == slug,
+                col(Skill.owner_subject_id) != actor.id,
+                col(Skill.state) == ResourceState.ACTIVE,
+            )
+        )
+        if collision.scalars().first() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="artifact_slug_conflict",
+            )
+
+    sha = hashlib.sha256(zip_bytes).hexdigest()
+
+    if existing is None:
+        skill = Skill(
+            owner_subject_id=actor.id,
+            slug=slug,
+            name=name,
+            summary=summary,
+            description=description,
+            notes=notes,
+            latest_version=version,
+        )
+        session.add(skill)
+        await session.flush()
+        session.add(
+            SkillVersion(
+                skill_id=skill.id,
+                version=version,
+                content_blob=zip_bytes,
+                content_sha256=sha,
+                size_bytes=len(zip_bytes),
+                upload_subject_id=actor.id,
+            )
+        )
+        await session.flush()
+        action = "skill.create"
+    else:
+        dup = await session.execute(
+            select(col(SkillVersion.id)).where(
+                col(SkillVersion.skill_id) == existing.id,
+                col(SkillVersion.version) == version,
+            )
+        )
+        if dup.scalars().first() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail="version_conflict"
+            )
+        existing.name = name
+        existing.summary = summary
+        existing.description = description
+        if notes is not None:
+            existing.notes = notes
+        existing.latest_version = version
+        existing.updated_at = utcnow()
+        session.add(
+            SkillVersion(
+                skill_id=existing.id,
+                version=version,
+                content_blob=zip_bytes,
+                content_sha256=sha,
+                size_bytes=len(zip_bytes),
+                upload_subject_id=actor.id,
+            )
+        )
+        await session.flush()
+        skill = existing
+        action = "skill.upload_version"
+
+    await record_audit_event(
+        session,
+        action=action,
+        resource_type="skill",
+        resource_id=skill.id,
+        outcome="success",
+        actor_subject_id=actor.id,
+        detail={"slug": slug, "version": version, "sha256": sha[:16]},
+    )
+    return skill
+
+
+async def ensure_skill_team_grant(
+    session: AsyncSession, *, skill_id: UUID, team_id: UUID
+) -> SkillTeamGrant:
+    """Idempotent grant upsert: reactivate if exists, else create.
+    Mirrors services/security.py:ensure_model_team_grant."""
+    result = await session.execute(
+        select(SkillTeamGrant).where(
+            col(SkillTeamGrant.skill_id) == skill_id,
+            col(SkillTeamGrant.team_id) == team_id,
+        )
+    )
+    grant = result.scalar_one_or_none()
+    if grant:
+        if grant.state != ResourceState.ACTIVE:
+            grant.state = ResourceState.ACTIVE
+            grant.updated_at = utcnow()
+        return grant
+    grant = SkillTeamGrant(skill_id=skill_id, team_id=team_id)
+    session.add(grant)
+    await session.flush()
+    return grant
