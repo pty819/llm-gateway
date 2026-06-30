@@ -110,6 +110,22 @@
 		onChangeOwnPassword: () => void | Promise<void>;
 		onCopy: (value: string, key: string) => void | Promise<void>;
 	} = $props();
+
+	const mcpConfigCommand = $derived(
+		JSON.stringify(
+			{
+				mcpServers: {
+					'llm-gateway': {
+						url: `${gatewayOrigin}/v1/mcp`,
+						headers: { Authorization: 'Bearer <your-gateway-key>' }
+					}
+				}
+			},
+			null,
+			2
+		)
+	);
+	const hasOwnKey = $derived((profile?.keys ?? []).some((k) => k.state === 'active'));
 </script>
 
 <div class="page-header"><div><h1>我的访问权限</h1><p>{profile?.subject.login_username ?? profile?.subject.name}</p></div></div>
@@ -219,6 +235,16 @@
 			<h3>Claude Code</h3>
 			<p>Claude Code 走 Anthropic Messages 协议，Base URL 填前端入口，不带 <code>/v1/messages</code>；客户端会自己拼接 <code>/v1/messages</code>。如果模型别名不是 <code>claude</code> 或 <code>anthropic</code> 开头，用自定义模型变量把它放进选择器。</p>
 			<CommandBlock command={claudeEnvCommand} />
+		</section>
+		<section class="doc-panel">
+			<h3>网关 MCP（Skill / MCP 市场接入）</h3>
+			<p>在 agent 的 MCP 配置中加入网关 MCP 后，agent 就能在对话中直接搜索、下载市场里的 Skill，以及查看 MCP 配置。鉴权使用你的网关密钥（<code>gw-</code> 开头）作为 Bearer token。</p>
+			{#if hasOwnKey}
+				<p class="muted">当前密钥：<code>{visibleKeyHint}</code>。完整密钥仅在签发时显示一次，请从签发记录中获取并替换下方 <code>&lt;your-gateway-key&gt;</code>。</p>
+			{:else}
+				<p class="muted">你还没有可用的网关密钥。<button type="button" onclick={onIssueOwnKey}>创建密钥</button></p>
+			{/if}
+			<CommandBlock command={mcpConfigCommand} />
 		</section>
 	</div>
 </section>

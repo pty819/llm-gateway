@@ -5,6 +5,7 @@
 	import PageTitle from '$lib/components/PageTitle.svelte';
 	import CreateMcpDialog from '$lib/components/CreateMcpDialog.svelte';
 	import McpGrantsEditor from '$lib/components/McpGrantsEditor.svelte';
+	import ReadmeDialog from '$lib/components/ReadmeDialog.svelte';
 	import Pagination from '$lib/components/Pagination.svelte';
 
 	let {
@@ -72,6 +73,9 @@
 	let detailLoading = $state<string | null>(null);
 	let likeBusy = $state<string | null>(null);
 	let likedSet = $state<Set<string>>(new Set());
+
+	let readmeMcp = $state<McpDetail | null>(null);
+	let readmeOpen = $state(false);
 
 	function ownerKey(mcp: McpSummary): string {
 		return mcp.owner_name ?? mcp.owner_subject_id;
@@ -184,6 +188,25 @@
 		if (v.command) parts.push(v.command);
 		if (v.url) parts.push(v.url);
 		return parts.join(' · ');
+	}
+
+	async function viewReadme(mcp: McpSummary) {
+		try {
+			const detail = await client.getMcpDetail(ownerKey(mcp), mcp.slug);
+			const key = rowKey(mcp);
+			const next = new Set(likedSet);
+			if (detail.liked_by_me) next.add(key);
+			else next.delete(key);
+			likedSet = next;
+			if (detail.readme) {
+				readmeMcp = detail;
+				readmeOpen = true;
+			} else {
+				browseError = '该 MCP 暂无 README。';
+			}
+		} catch (err) {
+			browseError = err instanceof Error ? err.message : '加载详情失败。';
+		}
 	}
 
 	onMount(() => {
@@ -307,6 +330,7 @@
 							<td>{mcp.download_count}</td>
 							<td>{mcp.like_count}</td>
 							<td class="ops">
+								<button class="secondary" type="button" onclick={() => viewReadme(mcp)}>查看README</button>
 								<button class="secondary" type="button" onclick={() => toggleDetail(mcp)}>
 									{expandedKey === key ? '收起' : '查看详情'}
 								</button>
@@ -374,6 +398,17 @@
 		{client}
 		onClose={() => (creating = false)}
 		onPublished={loadMcps}
+	/>
+{/if}
+
+{#if readmeOpen && readmeMcp}
+	<ReadmeDialog
+		readme={readmeMcp.readme ?? ''}
+		title={`${readmeMcp.slug} · README`}
+		onClose={() => {
+			readmeOpen = false;
+			readmeMcp = null;
+		}}
 	/>
 {/if}
 

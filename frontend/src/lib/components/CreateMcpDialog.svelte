@@ -17,6 +17,7 @@
 	let name = $state('');
 	let version = $state('');
 	let summary = $state('');
+	let readme = $state('');
 	let transport = $state<'stdio' | 'http' | 'sse'>('stdio');
 
 	// stdio 字段
@@ -92,7 +93,8 @@
 					slug: slug.trim(),
 					name: name.trim(),
 					version: version.trim(),
-					summary: summary.trim() || undefined
+					summary: summary.trim() || undefined,
+					readme: readme.trim() || undefined
 				},
 				config
 			);
@@ -128,6 +130,10 @@
 			<label>
 				摘要
 				<input bind:value={summary} placeholder="一句话描述" />
+			</label>
+			<label class="full">
+				README（支持 Markdown）
+				<textarea bind:value={readme} placeholder="# My MCP&#10;这里填写使用说明……"></textarea>
 			</label>
 			<label>
 				传输方式
@@ -173,3 +179,14 @@
 		</footer>
 	</section>
 </div>
+
+<style>
+	.form-grid .full {
+		grid-column: 1 / -1;
+	}
+
+	.form-grid textarea {
+		min-height: 6rem;
+		resize: vertical;
+	}
+</style>

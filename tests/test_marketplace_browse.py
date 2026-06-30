@@ -313,3 +313,44 @@ async def test_browse_mcp_redacted(client):
     for v in body["versions"]:
         assert v["env"] == {"API_KEY": "***"}
         assert v["headers"] == {"Authorization": "***"}
+
+
+# ---------------------------------------------------------------------------
+# 8. mcp readme (user-filled) is published and viewable in browse detail
+# ---------------------------------------------------------------------------
+
+async def test_mcp_readme_published_and_viewable(client):
+    owner = await _login_owner(client)
+    slug = _unique_slug("mcp-readme")
+    readme_text = "# My MCP\nThis is a test"
+
+    # Publish the MCP as owner with a readme field, then grant to the guest team.
+    resp = await client.post(
+        "/auth/registry/mcps",
+        headers=owner.headers,
+        json={
+            "slug": slug,
+            "name": "Readme MCP",
+            "version": "1.0.0",
+            "summary": "s",
+            "readme": readme_text,
+            "config": _mcp_config(),
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    mcp_id = resp.json()["mcp"]["id"]
+
+    async with AsyncSessionLocal() as session:
+        guest = (
+            await session.execute(sqlselect(Team).where(col(Team.name) == "guest"))
+        ).scalar_one()
+        await ensure_mcp_team_grant(session, mcp_id=mcp_id, team_id=guest.id)
+        await session.commit()
+
+    # User B (non-owner, guest member) browses the MCP detail.
+    b_headers, *_ = await _login_user_with_key(client)
+    detail = await client.get(
+        f"/auth/registry/mcps/browse/{owner.username}/{slug}", headers=b_headers
+    )
+    assert detail.status_code == 200, detail.text
+    assert "This is a test" in (detail.json().get("readme") or "")

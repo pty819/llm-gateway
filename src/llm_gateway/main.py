@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 import litellm
 from fastapi import FastAPI
 
-from llm_gateway.api import admin, auth, health, proxy, realtime, registry
+from llm_gateway.api import admin, auth, health, mcp_server, proxy, realtime, registry
 from llm_gateway.core.config import get_settings
 from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.services.facts_queue import drain_now
@@ -60,6 +60,7 @@ def create_app() -> FastAPI:
     app.include_router(realtime.router)
     app.include_router(proxy.router)
     app.include_router(registry.router)
+    app.include_router(mcp_server.router)
     return app
 
 

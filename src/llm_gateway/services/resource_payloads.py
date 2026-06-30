@@ -126,7 +126,7 @@ def mcp_summary(mcp, owner_name: str | None = None) -> dict[str, Any]:
 
 def mcp_detail(
     mcp, versions, latest_version, grants, owner_name: str | None = None,
-    *, reveal: bool = False, liked_by_me: bool = False,
+    *, reveal: bool = False, liked_by_me: bool = False, readme: str | None = None,
 ) -> dict[str, Any]:
     """versions are serialized with redaction per `reveal`. latest_version is the
     resolved latest McpVersion row (or None) also serialized with redaction."""
@@ -134,6 +134,7 @@ def mcp_detail(
         **mcp_summary(mcp, owner_name=owner_name),
         "description": mcp.description,
         "notes": mcp.notes,
+        "readme": readme,
         "liked_by_me": liked_by_me,
         "versions": [redact_mcp_version(v, reveal=reveal) for v in versions],
         "latest": redact_mcp_version(latest_version, reveal=reveal) if latest_version else None,

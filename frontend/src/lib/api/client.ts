@@ -135,6 +135,7 @@ export class AdminApiClient {
 			summary?: string;
 			description?: string;
 			notes?: string;
+			readme?: string;
 		},
 		config: McpConfigInput
 	): Promise<{ mcp: McpSummary }> {

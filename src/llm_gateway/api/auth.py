@@ -1438,6 +1438,7 @@ async def publish_mcp(
         description=payload.get("description"),
         notes=payload.get("notes"),
         config=payload.get("config") or {},
+        readme=payload.get("readme"),
     )
     await session.commit()
     await session.refresh(mcp)
@@ -1542,7 +1543,7 @@ async def browse_mcp_detail(
     return mcp_detail(
         mcp, versions, latest, grants,
         owner_name=owner_obj.name if owner_obj else None,
-        reveal=reveal, liked_by_me=liked_by_me,
+        reveal=reveal, liked_by_me=liked_by_me, readme=mcp.readme,
     )
 
 

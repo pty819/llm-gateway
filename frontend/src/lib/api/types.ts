@@ -459,6 +459,7 @@ export interface McpSummary {
 export interface McpDetail extends McpSummary {
 	description: string | null;
 	notes: string | null;
+	readme: string | null;
 	liked_by_me: boolean;
 	versions: McpVersionDetail[];
 	latest: McpVersionDetail | null;

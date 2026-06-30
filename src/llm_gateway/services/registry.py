@@ -492,6 +492,7 @@ async def create_or_append_mcp_version(
     description: str | None,
     notes: str | None,
     config: dict,
+    readme: str | None = None,
 ) -> MCP:
     """Create an MCP config (first version) or append a new version.
     Namespacing is (owner, slug); a different owner may reuse the same slug.
@@ -510,6 +511,7 @@ async def create_or_append_mcp_version(
             description=description,
             notes=notes,
             latest_version=version,
+            readme=readme,
         )
         session.add(mcp)
         await session.flush()
@@ -545,6 +547,8 @@ async def create_or_append_mcp_version(
         existing.description = description
         if notes is not None:
             existing.notes = notes
+        if readme is not None:
+            existing.readme = readme
         existing.latest_version = version
         existing.updated_at = utcnow()
         session.add(

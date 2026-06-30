@@ -267,6 +267,7 @@ class MCP(TimestampMixin, table=True):
     state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
     latest_version: str | None = Field(default=None, index=True)
     notes: str | None = None
+    readme: str | None = None
     download_count: int = Field(default=0, index=True)
     like_count: int = Field(default=0, index=True)
 

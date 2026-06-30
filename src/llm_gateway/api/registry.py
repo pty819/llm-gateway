@@ -234,5 +234,5 @@ async def get_mcp_detail_route(
     reveal = mcp.owner_subject_id == auth.subject.id
     return mcp_detail(
         mcp, versions, latest, grants,
-        owner_name=owner_obj.name if owner_obj else None, reveal=reveal,
+        owner_name=owner_obj.name if owner_obj else None, reveal=reveal, readme=mcp.readme,
     )
