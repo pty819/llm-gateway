@@ -519,3 +519,83 @@ async def test_self_service_non_owner_cannot_grant(client):
         json={"team_id": guest_id},
     )
     assert r.status_code == 404
+
+
+async def _admin_headers(client):
+    from llm_gateway.core.config import get_settings
+
+    login = await client.post(
+        "/auth/login",
+        json={
+            "username": get_settings().bootstrap_admin_username,
+            "password": get_settings().bootstrap_admin_password,
+        },
+    )
+    assert login.status_code == 200, login.text
+    return {"x-session-token": login.json()["session_token"]}
+
+
+async def test_admin_lists_skill_team_grants(client):
+    sess_headers, *_ = await _login_user_with_key(client)
+    slug = _unique_slug("adm")
+    await client.post(
+        "/auth/registry/skills", headers=sess_headers,
+        data={"slug": slug, "name": "Adm", "version": "1.0.0"},
+        files={"file": ("a.zip", _make_zip(), "application/zip")},
+    )
+    admin = await _admin_headers(client)
+    resp = await client.get("/admin/registry/skill-team-grants", headers=admin)
+    assert resp.status_code == 200, resp.text
+    assert "items" in resp.json()
+
+
+async def test_admin_can_disable_any_skill(client):
+    sess_headers, *_ = await _login_user_with_key(client)
+    slug = _unique_slug("target")
+    up = await client.post(
+        "/auth/registry/skills", headers=sess_headers,
+        data={"slug": slug, "name": "Target", "version": "1.0.0"},
+        files={"file": ("t.zip", _make_zip(), "application/zip")},
+    )
+    skill_id = up.json()["skill"]["id"]
+    admin = await _admin_headers(client)
+    r = await client.patch(
+        f"/admin/registry/skills/{skill_id}/state",
+        headers=admin, json={"state": "disabled"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["skill"]["state"] == "disabled"
+
+
+async def test_admin_can_create_grant_for_any_skill(client):
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.db.models import Team
+    from sqlmodel import select as sqlselect
+    from sqlmodel import col
+
+    sess_headers, *_ = await _login_user_with_key(client)
+    slug = _unique_slug("grantable")
+    up = await client.post(
+        "/auth/registry/skills", headers=sess_headers,
+        data={"slug": slug, "name": "G", "version": "1.0.0"},
+        files={"file": ("g.zip", _make_zip(), "application/zip")},
+    )
+    skill_id = up.json()["skill"]["id"]
+    async with AsyncSessionLocal() as session:
+        guest = (
+            await session.execute(sqlselect(Team).where(col(Team.name) == "guest"))
+        ).scalar_one()
+        guest_id = str(guest.id)
+    admin = await _admin_headers(client)
+    r = await client.post(
+        "/admin/registry/skill-team-grants", headers=admin,
+        json={"skill_id": skill_id, "team_id": guest_id},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["grant"]["team_id"] == guest_id
+
+
+async def test_admin_non_admin_user_forbidden(client):
+    sess_headers, *_ = await _login_user_with_key(client)  # a normal user
+    r = await client.get("/admin/registry/skill-team-grants", headers=sess_headers)
+    assert r.status_code == 401
