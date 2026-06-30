@@ -435,7 +435,8 @@ async def managed_usage_summary(
 
 @router.get("/managed/usage/ranking")
 async def managed_usage_ranking(
-    project_id: UUID,
+    scope: str,
+    resource_id: UUID,
     start: datetime | None = None,
     end: datetime | None = None,
     model: str | None = None,
@@ -452,22 +453,40 @@ async def managed_usage_ranking(
         end = utcnow()
         start = end - timedelta(days=30)
 
-    # 权限：必须是该 project 的 manager，否则 403。project_id 在 Python 端先校验，
-    # 传入 SQL 时已是安全值，不依赖 SQL 层过滤正确性。
-    await _require_project_manager(session, context.subject.id, project_id)
-
-    ranking = await _usage_ranking_from_postgres(
-        session,
-        start=start,
-        end=end,
-        project_id=project_id,
-        model=model,
-        limit=limit,
-    )
+    # 权限校验在 Python 端先做，传入 SQL 时已是安全值，不依赖 SQL 层过滤正确性。
+    # team 排行只含当前 ACTIVE 成员（_team_subject_ids 已过滤
+    # TeamMembership.state == ACTIVE），与 managed_usage_summary 的 team 分支一致。
+    if scope == "project":
+        await _require_project_manager(session, context.subject.id, resource_id)
+        ranking = await _usage_ranking_from_postgres(
+            session,
+            start=start,
+            end=end,
+            project_ids=[resource_id],
+            model=model,
+            limit=limit,
+        )
+    elif scope == "team":
+        await _require_team_manager(session, context.subject.id, resource_id)
+        subject_ids = await _team_subject_ids(session, [resource_id])
+        ranking = await _usage_ranking_from_postgres(
+            session,
+            start=start,
+            end=end,
+            subject_ids=subject_ids,
+            model=model,
+            limit=limit,
+        )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid_managed_usage_scope",
+        )
     return {
         "start": start,
         "end": end,
-        "project_id": project_id,
+        "scope": scope,
+        "resource_id": resource_id,
         "ranking": ranking,
     }
 
@@ -929,18 +948,29 @@ async def _usage_ranking_from_postgres(
     *,
     start: datetime,
     end: datetime,
-    project_id: UUID,
+    project_ids: list[UUID] | None = None,
+    subject_ids: list[UUID] | None = None,
     model: str | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
-    """Per-subject usage ranking within a single project, sorted by total_tokens desc.
+    """Per-subject usage ranking, sorted by total_tokens desc.
 
     Mirrors _usage_summary_from_postgres (same total_tokens coalesce expression,
     same Postgres aggregation) but groups by subject and orders by usage. Used by
     the manager-facing ranking endpoint; the manager permission check happens in
     the route handler before this runs. subject_id IS NULL rows are excluded to
     match the admin DuckDB ranking behavior.
+
+    Scope is selected by passing exactly one of ``project_ids`` (filter on
+    RequestFact.project_id) or ``subject_ids`` (filter on
+    RequestFact.subject_id, used for team scope where membership is derived via
+    TeamMembership). Empty lists short-circuit to [] like the summary builder.
     """
+    if project_ids is not None and not project_ids:
+        return []
+    if subject_ids is not None and not subject_ids:
+        return []
+
     total_tokens_expr = func.coalesce(
         RequestFact.total_tokens,
         func.coalesce(RequestFact.prompt_tokens, 0)
@@ -971,11 +1001,12 @@ async def _usage_ranking_from_postgres(
         )
         .select_from(RequestFact)
         .outerjoin(Subject, RequestFact.subject_id == Subject.id)
-        .where(
-            col(RequestFact.project_id) == project_id,
-            col(RequestFact.subject_id).isnot(None),
-        )
+        .where(col(RequestFact.subject_id).isnot(None))
     )
+    if project_ids is not None:
+        stmt = stmt.where(col(RequestFact.project_id).in_(project_ids))
+    if subject_ids is not None:
+        stmt = stmt.where(col(RequestFact.subject_id).in_(subject_ids))
     # Conditionally apply time bounds so a half-specified window (only start or
     # only end) behaves like _usage_summary_from_postgres rather than silently
     # returning [] because `started_at < NULL` is always false.

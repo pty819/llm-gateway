@@ -1075,10 +1075,11 @@
 	}
 
 	async function refreshManagedRanking() {
-		if (managedUsageScope !== 'project' || !managedUsageResourceId) return;
+		if (!managedUsageResourceId) return;
 		await run(async () => {
 			const params: Record<string, string> = {
-				project_id: managedUsageResourceId,
+				scope: managedUsageScope,
+				resource_id: managedUsageResourceId,
 				limit: String(managedRankingLimit)
 			};
 			if (managedRankingStart) params.start = managedRankingStart;
