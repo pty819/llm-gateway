@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.test_marketplace_skills import _login_user_with_key
+from tests.test_marketplace_skills import _admin_headers, _login_user_with_key
 from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.db.models import Subject, Team
 from llm_gateway.services.registry import (
@@ -379,3 +379,61 @@ async def test_self_service_mcp_non_owner_cannot_grant(client):
         json={"team_id": guest_id},
     )
     assert r.status_code == 404  # 'me' resolves to bob who owns no such mcp
+
+
+async def test_admin_lists_mcp_team_grants(client):
+    sess_headers, *_ = await _login_user_with_key(client)
+    await client.post(
+        "/auth/registry/mcps", headers=sess_headers,
+        json={"slug": _unique_slug("adm"), "name": "A", "version": "1.0.0",
+              "config": _mcp_config()},
+    )
+    admin = await _admin_headers(client)
+    resp = await client.get("/admin/registry/mcp-team-grants", headers=admin)
+    assert resp.status_code == 200, resp.text
+    assert "items" in resp.json()
+
+
+async def test_admin_can_disable_any_mcp(client):
+    sess_headers, *_ = await _login_user_with_key(client)
+    slug = _unique_slug("target")
+    up = await client.post(
+        "/auth/registry/mcps", headers=sess_headers,
+        json={"slug": slug, "name": "T", "version": "1.0.0", "config": _mcp_config()},
+    )
+    mcp_id = up.json()["mcp"]["id"]
+    admin = await _admin_headers(client)
+    r = await client.patch(
+        f"/admin/registry/mcps/{mcp_id}/state", headers=admin,
+        json={"state": "disabled"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["mcp"]["state"] == "disabled"
+
+
+async def test_admin_can_create_mcp_grant_for_any(client):
+    sess_headers, *_ = await _login_user_with_key(client)
+    slug = _unique_slug("grantable")
+    up = await client.post(
+        "/auth/registry/mcps", headers=sess_headers,
+        json={"slug": slug, "name": "G", "version": "1.0.0", "config": _mcp_config()},
+    )
+    mcp_id = up.json()["mcp"]["id"]
+    async with AsyncSessionLocal() as session:
+        guest = (
+            await session.execute(sqlselect(Team).where(col(Team.name) == "guest"))
+        ).scalar_one()
+        guest_id = str(guest.id)
+    admin = await _admin_headers(client)
+    r = await client.post(
+        "/admin/registry/mcp-team-grants", headers=admin,
+        json={"mcp_id": mcp_id, "team_id": guest_id},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["grant"]["team_id"] == guest_id
+
+
+async def test_admin_non_admin_user_forbidden_mcp(client):
+    sess_headers, *_ = await _login_user_with_key(client)
+    r = await client.get("/admin/registry/mcp-team-grants", headers=sess_headers)
+    assert r.status_code == 401
