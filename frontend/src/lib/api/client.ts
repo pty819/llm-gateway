@@ -1,5 +1,8 @@
 import type {
 	ApiError,
+	McpConfigInput,
+	McpSummary,
+	McpTeamGrantSummary,
 	Paginated,
 	SkillSummary,
 	SkillTeamGrantSummary
@@ -74,6 +77,41 @@ export class AdminApiClient {
 	): Promise<{ grant: SkillTeamGrantSummary }> {
 		return this.patch(
 			`/auth/registry/skills/me/${encodeURIComponent(slug)}/grants/${grantId}/state`,
+			{ state: 'disabled' }
+		);
+	}
+
+	async listMyMcps(): Promise<Paginated<McpSummary>> {
+		return this.get('/auth/registry/mcps');
+	}
+
+	async publishMcp(
+		form: {
+			slug: string;
+			name: string;
+			version: string;
+			summary?: string;
+			description?: string;
+			notes?: string;
+		},
+		config: McpConfigInput
+	): Promise<{ mcp: McpSummary }> {
+		return this.post('/auth/registry/mcps', { ...form, config });
+	}
+
+	async listMcpGrants(slug: string): Promise<Paginated<McpTeamGrantSummary>> {
+		return this.get(`/auth/registry/mcps/me/${encodeURIComponent(slug)}/grants`);
+	}
+
+	async grantMcp(slug: string, teamId: string): Promise<{ grant: McpTeamGrantSummary }> {
+		return this.post(`/auth/registry/mcps/me/${encodeURIComponent(slug)}/grants`, {
+			team_id: teamId
+		});
+	}
+
+	async revokeMcpGrant(slug: string, grantId: string): Promise<{ grant: McpTeamGrantSummary }> {
+		return this.patch(
+			`/auth/registry/mcps/me/${encodeURIComponent(slug)}/grants/${grantId}/state`,
 			{ state: 'disabled' }
 		);
 	}

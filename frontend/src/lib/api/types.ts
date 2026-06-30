@@ -400,6 +400,57 @@ export interface SkillTeamGrantSummary {
 	state: string;
 }
 
+export interface McpVersionDetail {
+	version: string;
+	transport: string;
+	command: string | null;
+	args: string[];
+	env: Record<string, string>;
+	url: string | null;
+	headers: Record<string, string>;
+	tools: Array<Record<string, unknown>>;
+	upload_subject_id: string;
+	state: string;
+	created_at: string | null;
+}
+
+export interface McpTeamGrantSummary {
+	id: string;
+	mcp_id: string;
+	team_id: string;
+	state: string;
+}
+
+export interface McpSummary {
+	id: string;
+	owner_subject_id: string;
+	owner_name: string | null;
+	slug: string;
+	name: string;
+	summary: string | null;
+	state: string;
+	latest_version: string | null;
+	updated_at: string | null;
+}
+
+export interface McpDetail extends McpSummary {
+	description: string | null;
+	notes: string | null;
+	versions: McpVersionDetail[];
+	latest: McpVersionDetail | null;
+	grants: McpTeamGrantSummary[];
+}
+
+export interface McpConfigInput {
+	transport: string;
+	command?: string | null;
+	args?: string[];
+	env?: Record<string, string>;
+	url?: string | null;
+	headers?: Record<string, string>;
+	tools?: Array<Record<string, unknown>>;
+}
+
 export interface Paginated<T> {
 	items: T[];
 	total: number;
