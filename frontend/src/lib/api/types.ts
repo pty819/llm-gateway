@@ -380,3 +380,29 @@ export interface ManagedRankingRow {
 	success_count: number;
 	failure_count: number;
 }
+
+export interface SkillSummary {
+	id: string;
+	owner_subject_id: string;
+	owner_name: string | null;
+	slug: string;
+	name: string;
+	summary: string | null;
+	state: string;
+	latest_version: string | null;
+	updated_at: string | null;
+}
+
+export interface SkillTeamGrantSummary {
+	id: string;
+	skill_id: string;
+	team_id: string;
+	state: string;
+}
+
+export interface Paginated<T> {
+	items: T[];
+	total: number;
+	page?: number;
+	size?: number;
+}

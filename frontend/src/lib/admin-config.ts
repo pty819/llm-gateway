@@ -5,6 +5,7 @@ import {
 	Gauge,
 	KeyRound,
 	Network,
+	Package,
 	Route,
 	Shield,
 	Trophy,
@@ -37,6 +38,7 @@ export const sections: Section[] = [
 	{ id: 'projects', label: '项目', group: '访问', icon: Route },
 	{ id: 'keys', label: '网关密钥', group: '访问', icon: KeyRound },
 	{ id: 'teams', label: '权限组', group: '访问', icon: UserPlus },
+	{ id: 'skill-market', label: 'Skill 市场', group: '市场', icon: Package },
 	{ id: 'entitlements', label: '旧授权', group: '策略', icon: Shield },
 	{ id: 'rate', label: '限流', group: '策略', icon: Gauge },
 	{ id: 'usage', label: '用量', group: '证据', icon: Activity },
@@ -47,6 +49,8 @@ export const sections: Section[] = [
 export const navGroups = Array.from(new Set(sections.map((section) => section.group)));
 
 export const employeeIdPattern = /^[A-Za-z]\d{8}$/;
+
+export const marketSlugPattern = /^[a-z][a-z0-9-]*$/;
 
 // ---- 纯函数(无状态依赖的 label / 格式化助手) ----
 

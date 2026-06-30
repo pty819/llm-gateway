@@ -1,4 +1,9 @@
-import type { ApiError } from './types';
+import type {
+	ApiError,
+	Paginated,
+	SkillSummary,
+	SkillTeamGrantSummary
+} from './types';
 
 type QueryValue = string | number | boolean | null | undefined;
 
@@ -27,15 +32,67 @@ export class AdminApiClient {
 		return this.request<T>('DELETE', withQuery(path, params));
 	}
 
+	async listMySkills(): Promise<Paginated<SkillSummary>> {
+		return this.get('/auth/registry/skills');
+	}
+
+	async uploadSkill(
+		form: {
+			slug: string;
+			name: string;
+			version: string;
+			summary?: string;
+			description?: string;
+			notes?: string;
+		},
+		file: File
+	): Promise<{ skill: SkillSummary }> {
+		const fd = new FormData();
+		fd.append('file', file);
+		fd.append('slug', form.slug);
+		fd.append('name', form.name);
+		fd.append('version', form.version);
+		if (form.summary) fd.append('summary', form.summary);
+		if (form.description) fd.append('description', form.description);
+		if (form.notes) fd.append('notes', form.notes);
+		return this.post('/auth/registry/skills', fd);
+	}
+
+	async listSkillGrants(slug: string): Promise<Paginated<SkillTeamGrantSummary>> {
+		return this.get(`/auth/registry/skills/me/${encodeURIComponent(slug)}/grants`);
+	}
+
+	async grantSkill(slug: string, teamId: string): Promise<{ grant: SkillTeamGrantSummary }> {
+		return this.post(`/auth/registry/skills/me/${encodeURIComponent(slug)}/grants`, {
+			team_id: teamId
+		});
+	}
+
+	async revokeSkillGrant(
+		slug: string,
+		grantId: string
+	): Promise<{ grant: SkillTeamGrantSummary }> {
+		return this.patch(
+			`/auth/registry/skills/me/${encodeURIComponent(slug)}/grants/${grantId}/state`,
+			{ state: 'disabled' }
+		);
+	}
+
 	private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+		const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
 		const response = await fetch(path, {
 			method,
 			headers: {
 				...(this.adminToken ? { 'x-admin-token': this.adminToken } : {}),
 				...(this.sessionToken ? { 'x-session-token': this.sessionToken } : {}),
-				...(body === undefined ? {} : { 'content-type': 'application/json' })
+				...(body === undefined || isFormData ? {} : { 'content-type': 'application/json' })
 			},
-			body: body === undefined ? undefined : JSON.stringify(body)
+			body:
+				body === undefined
+					? undefined
+					: isFormData
+						? (body as FormData)
+						: JSON.stringify(body)
 		});
 		if (!response.ok) {
 			throw await toApiError(response);
