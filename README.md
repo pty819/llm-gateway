@@ -492,3 +492,17 @@ npm run test:e2e
 - SSO is intentionally out of scope; registration, login, self-service password change, and admin password reset are handled by the gateway.
 - Gateway keys are shown once when issued; existing keys are listed only by prefix.
 - ClickHouse or other heavyweight analytics stores are intentionally not used.
+
+## Marketplace（Skill 市场）
+
+网关内置一个 Skill 市场（纯注册表，不执行）。任何登录用户可上传 skill
+（`POST /auth/registry/skills`，multipart：metadata + zip）并授权给权限组
+（`/auth/registry/skills/me/{slug}/grants`）。下游 agent 用 gateway key 浏览和下载：
+
+    GET  /v1/registry/skills                       # 可见 skill 列表
+    GET  /v1/registry/skills/{owner}/{slug}        # 详情 + 版本
+    GET  /v1/registry/skills/{owner}/{slug}/versions/latest/download
+
+访问控制 = team 授权。授权给内置 `guest` 组即公开（所有用户默认属于 guest）；
+不授权则仅 owner 可见。命名空间为 owner/slug 二级（alice/weather 与 bob/weather 共存）。
+管理员可在 `/admin/registry/*` 跨 owner 管理任意制品。
