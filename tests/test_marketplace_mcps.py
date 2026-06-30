@@ -2,6 +2,17 @@ from __future__ import annotations
 
 import pytest
 
+from tests.test_marketplace_skills import _login_user_with_key
+from llm_gateway.db.session import AsyncSessionLocal
+from llm_gateway.db.models import Subject, Team
+from llm_gateway.services.registry import (
+    create_or_append_mcp_version,
+    ensure_mcp_team_grant,
+)
+from sqlmodel import select as sqlselect
+from sqlmodel import col
+from tests.test_backend_integration import _auth_headers
+
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
@@ -162,3 +173,86 @@ async def test_mcp_grant_upsert_and_visibility():
         await session.commit()
         await session.refresh(mcp)
         assert await subject_can_access_mcp(session, subject_id=consumer.id, mcp=mcp)
+
+
+async def _publish_and_grant_to_guest(owner_id, slug):
+    """Publish an MCP owned by owner_id and grant to the builtin guest team.
+    Returns (mcp_id, slug)."""
+    async with AsyncSessionLocal() as session:
+        owner = await session.get(Subject, owner_id)
+        mcp = await create_or_append_mcp_version(
+            session, actor=owner, slug=slug, name="Weather MCP", version="1.0.0",
+            summary="weather mcp", description=None, notes=None, config=_mcp_config(),
+        )
+        guest = (
+            await session.execute(sqlselect(Team).where(col(Team.name) == "guest"))
+        ).scalar_one()
+        await ensure_mcp_team_grant(session, mcp_id=mcp.id, team_id=guest.id)
+        await session.commit()
+        return mcp.id, slug
+
+
+async def test_dataplane_mcp_list_detail_and_redaction(client):
+    _, _, username, owner_id = await _login_user_with_key(client)
+    slug = _unique_slug("weather-mcp")
+    await _publish_and_grant_to_guest(owner_id, slug)
+
+    # a DIFFERENT registered user (also a guest member) can list + read detail
+    _, other_gw, _, _ = await _login_user_with_key(client)
+    resp = await client.get(
+        f"/v1/registry/mcps?q={slug}", headers=_auth_headers(other_gw)
+    )
+    assert resp.status_code == 200, resp.text
+    slugs = [m["slug"] for m in resp.json()["items"]]
+    assert slug in slugs, slugs
+
+    detail = await client.get(
+        f"/v1/registry/mcps/{username}/{slug}", headers=_auth_headers(other_gw)
+    )
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    assert body["slug"] == slug
+    # NON-owner (other_gw) sees REDACTED env/headers
+    assert body["latest"]["env"] == {"API_KEY": "***"}, body["latest"]["env"]
+    for v in body["versions"]:
+        assert v["env"] == {"API_KEY": "***"}
+    # transport + command + tools (non-secret) are visible
+    assert body["latest"]["transport"] == "stdio"
+    assert body["latest"]["command"] == "uvx mcp-server-x"
+
+
+async def test_dataplane_owner_sees_cleartext(client):
+    """The OWNER querying their own mcp via the data plane sees cleartext env."""
+    _, owner_gw, username, owner_id = await _login_user_with_key(client)
+    slug = _unique_slug("own")
+    await _publish_and_grant_to_guest(owner_id, slug)
+    detail = await client.get(
+        f"/v1/registry/mcps/{username}/{slug}", headers=_auth_headers(owner_gw)
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["latest"]["env"] == {"API_KEY": "secret-value"}
+
+
+async def test_dataplane_hidden_mcp_returns_404(client):
+    _, _, _, alice_id = await _login_user_with_key(client)
+    async with AsyncSessionLocal() as session:
+        alice = await session.get(Subject, alice_id)
+        private_slug = _unique_slug("private")
+        await create_or_append_mcp_version(
+            session, actor=alice, slug=private_slug, name="P", version="1.0.0",
+            summary=None, description=None, notes=None, config=_mcp_config(),
+        )
+        await session.commit()
+    # need alice's username for the path; re-login to get it
+    _, _, alice_login, _ = await _login_user_with_key(client)
+    _, other_gw, _, _ = await _login_user_with_key(client)
+    resp = await client.get(
+        f"/v1/registry/mcps/{alice_login}/nope-mcp", headers=_auth_headers(other_gw)
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "artifact_not_found"
+
+
+async def test_dataplane_mcp_no_gateway_key_401(client):
+    resp = await client.get("/v1/registry/mcps")
+    assert resp.status_code == 401
