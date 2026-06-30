@@ -32,3 +32,45 @@ def paginated(items: Sequence, total: int, limit: int | None, offset: int) -> di
         "limit": limit if limit is not None else total,
         "offset": offset,
     }
+
+
+def skill_summary(skill, owner_name: str | None = None) -> dict[str, Any]:
+    return {
+        "id": str(skill.id),
+        "owner_subject_id": str(skill.owner_subject_id),
+        "owner_name": owner_name,
+        "slug": skill.slug,
+        "name": skill.name,
+        "summary": skill.summary,
+        "state": skill.state.value if hasattr(skill.state, "value") else skill.state,
+        "latest_version": skill.latest_version,
+        "updated_at": skill.updated_at.isoformat() if skill.updated_at else None,
+    }
+
+
+def skill_detail(skill, versions, grants, owner_name: str | None = None) -> dict[str, Any]:
+    return {
+        **skill_summary(skill, owner_name=owner_name),
+        "description": skill.description,
+        "notes": skill.notes,
+        "versions": [
+            {
+                "version": v.version,
+                "content_sha256": v.content_sha256,
+                "size_bytes": v.size_bytes,
+                "upload_subject_id": str(v.upload_subject_id),
+                "state": v.state.value if hasattr(v.state, "value") else v.state,
+                "created_at": v.created_at.isoformat() if v.created_at else None,
+            }
+            for v in versions
+        ],
+        "grants": [
+            {
+                "id": str(g.id),
+                "skill_id": str(g.skill_id),
+                "team_id": str(g.team_id),
+                "state": g.state.value if hasattr(g.state, "value") else g.state,
+            }
+            for g in grants
+        ],
+    }
