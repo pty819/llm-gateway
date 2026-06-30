@@ -47,7 +47,10 @@ def create_app() -> FastAPI:
         # at call time, so setting it once at startup governs every proxy call.
         litellm.request_timeout = settings.upstream_timeout_seconds
         await health_checker.start()
-        yield
+        # Start the MCP server's session manager task group (the SDK app is
+        # mounted as a sub-app; its own lifespan doesn't run under FastAPI).
+        async with mcp_server.mcp_lifespan():
+            yield
         await health_checker.stop()
         # Flush any in-flight request facts before the process exits so a
         # restart/SIGTERM never silently drops accounting data.
@@ -60,7 +63,9 @@ def create_app() -> FastAPI:
     app.include_router(realtime.router)
     app.include_router(proxy.router)
     app.include_router(registry.router)
-    app.include_router(mcp_server.router)
+    # MCP server (Streamable HTTP) — mounted as an ASGI sub-app under /v1/mcp.
+    # The SDK app's route path is set to "" so mounting at /v1/mcp is exact.
+    app.mount("/v1/mcp", mcp_server.create_mcp_asgi_app())
     return app
 
 

@@ -116,7 +116,7 @@
 			{
 				mcpServers: {
 					'llm-gateway': {
-						url: `${gatewayOrigin}/v1/mcp`,
+						url: `${gatewayOrigin}/v1/mcp/`,
 						headers: { Authorization: 'Bearer <your-gateway-key>' }
 					}
 				}
