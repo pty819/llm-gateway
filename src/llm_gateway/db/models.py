@@ -48,6 +48,17 @@ class UsageSource(StrEnum):
     MISSING = "missing"
 
 
+class ArtifactKind(StrEnum):
+    SKILL = "skill"
+    MCP = "mcp"
+
+
+class MCPTransport(StrEnum):
+    STDIO = "stdio"
+    HTTP = "http"
+    SSE = "sse"
+
+
 class TimestampMixin(SQLModel):
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
@@ -211,6 +222,82 @@ class RatePolicy(TimestampMixin, table=True):
     scope_id: UUID = Field(index=True)
     requests_per_minute: int | None = None
     concurrency_limit: int | None = None
+    state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
+
+
+class Skill(TimestampMixin, table=True):
+    __tablename__ = "skills"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    owner_subject_id: UUID = Field(foreign_key="subjects.id", index=True)
+    slug: str = Field(index=True)
+    name: str
+    summary: str | None = None
+    description: str | None = None
+    state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
+    latest_version: str | None = Field(default=None, index=True)
+    notes: str | None = None
+
+
+class SkillVersion(TimestampMixin, table=True):
+    __tablename__ = "skill_versions"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    skill_id: UUID = Field(foreign_key="skills.id", index=True)
+    version: str = Field(index=True)
+    content_blob: bytes
+    content_sha256: str = Field(index=True)
+    size_bytes: int
+    upload_subject_id: UUID = Field(foreign_key="subjects.id")
+    state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
+
+
+class MCP(TimestampMixin, table=True):
+    __tablename__ = "mcps"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    owner_subject_id: UUID = Field(foreign_key="subjects.id", index=True)
+    slug: str = Field(index=True)
+    name: str
+    summary: str | None = None
+    description: str | None = None
+    state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
+    latest_version: str | None = Field(default=None, index=True)
+    notes: str | None = None
+
+
+class McpVersion(TimestampMixin, table=True):
+    __tablename__ = "mcp_versions"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    mcp_id: UUID = Field(foreign_key="mcps.id", index=True)
+    version: str = Field(index=True)
+    transport: MCPTransport = Field(index=True)
+    command: str | None = None
+    args: list[str] = Field(default_factory=list, sa_column=Column(JSONB))
+    env: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSONB))
+    url: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSONB))
+    tools: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSONB))
+    upload_subject_id: UUID = Field(foreign_key="subjects.id")
+    state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
+
+
+class SkillTeamGrant(TimestampMixin, table=True):
+    __tablename__ = "skill_team_grants"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    skill_id: UUID = Field(foreign_key="skills.id", index=True)
+    team_id: UUID = Field(foreign_key="teams.id", index=True)
+    state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
+
+
+class McpTeamGrant(TimestampMixin, table=True):
+    __tablename__ = "mcp_team_grants"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    mcp_id: UUID = Field(foreign_key="mcps.id", index=True)
+    team_id: UUID = Field(foreign_key="teams.id", index=True)
     state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
 
 
