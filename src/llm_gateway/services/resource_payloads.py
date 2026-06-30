@@ -74,3 +74,67 @@ def skill_detail(skill, versions, grants, owner_name: str | None = None) -> dict
             for g in grants
         ],
     }
+
+
+_MCP_SENSITIVE_VERSION_KEYS = ("env", "headers")
+
+
+def redact_mcp_version(version, *, reveal: bool = False) -> dict[str, Any]:
+    """Serialize an McpVersion to a dict. env/headers values are replaced with
+    '***' unless reveal=True (owner/admin only). tools are never redacted."""
+    data = {
+        "version": version.version,
+        "transport": version.transport.value if hasattr(version.transport, "value") else version.transport,
+        "command": version.command,
+        "args": list(version.args or []),
+        "env": dict(version.env or {}),
+        "url": version.url,
+        "headers": dict(version.headers or {}),
+        "tools": list(version.tools or []),
+        "upload_subject_id": str(version.upload_subject_id),
+        "state": version.state.value if hasattr(version.state, "value") else version.state,
+        "created_at": version.created_at.isoformat() if version.created_at else None,
+    }
+    if not reveal:
+        for key in _MCP_SENSITIVE_VERSION_KEYS:
+            data[key] = {k: "***" for k in (data[key] or {})}
+    return data
+
+
+def mcp_summary(mcp, owner_name: str | None = None) -> dict[str, Any]:
+    return {
+        "id": str(mcp.id),
+        "owner_subject_id": str(mcp.owner_subject_id),
+        "owner_name": owner_name,
+        "slug": mcp.slug,
+        "name": mcp.name,
+        "summary": mcp.summary,
+        "state": mcp.state.value if hasattr(mcp.state, "value") else mcp.state,
+        "latest_version": mcp.latest_version,
+        "updated_at": mcp.updated_at.isoformat() if mcp.updated_at else None,
+    }
+
+
+def mcp_detail(
+    mcp, versions, latest_version, grants, owner_name: str | None = None,
+    *, reveal: bool = False,
+) -> dict[str, Any]:
+    """versions are serialized with redaction per `reveal`. latest_version is the
+    resolved latest McpVersion row (or None) also serialized with redaction."""
+    detail = {
+        **mcp_summary(mcp, owner_name=owner_name),
+        "description": mcp.description,
+        "notes": mcp.notes,
+        "versions": [redact_mcp_version(v, reveal=reveal) for v in versions],
+        "latest": redact_mcp_version(latest_version, reveal=reveal) if latest_version else None,
+        "grants": [
+            {
+                "id": str(g.id),
+                "mcp_id": str(g.mcp_id),
+                "team_id": str(g.team_id),
+                "state": g.state.value if hasattr(g.state, "value") else g.state,
+            }
+            for g in grants
+        ],
+    }
+    return detail
