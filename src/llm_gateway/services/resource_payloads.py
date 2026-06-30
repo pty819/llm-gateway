@@ -45,14 +45,21 @@ def skill_summary(skill, owner_name: str | None = None) -> dict[str, Any]:
         "state": skill.state.value if hasattr(skill.state, "value") else skill.state,
         "latest_version": skill.latest_version,
         "updated_at": skill.updated_at.isoformat() if skill.updated_at else None,
+        "download_count": skill.download_count,
+        "like_count": skill.like_count,
     }
 
 
-def skill_detail(skill, versions, grants, owner_name: str | None = None) -> dict[str, Any]:
+def skill_detail(
+    skill, versions, grants, owner_name: str | None = None,
+    *, readme: str | None = None, liked_by_me: bool = False,
+) -> dict[str, Any]:
     return {
         **skill_summary(skill, owner_name=owner_name),
         "description": skill.description,
         "notes": skill.notes,
+        "readme": readme,
+        "liked_by_me": liked_by_me,
         "versions": [
             {
                 "version": v.version,
@@ -112,12 +119,14 @@ def mcp_summary(mcp, owner_name: str | None = None) -> dict[str, Any]:
         "state": mcp.state.value if hasattr(mcp.state, "value") else mcp.state,
         "latest_version": mcp.latest_version,
         "updated_at": mcp.updated_at.isoformat() if mcp.updated_at else None,
+        "download_count": mcp.download_count,
+        "like_count": mcp.like_count,
     }
 
 
 def mcp_detail(
     mcp, versions, latest_version, grants, owner_name: str | None = None,
-    *, reveal: bool = False,
+    *, reveal: bool = False, liked_by_me: bool = False,
 ) -> dict[str, Any]:
     """versions are serialized with redaction per `reveal`. latest_version is the
     resolved latest McpVersion row (or None) also serialized with redaction."""
@@ -125,6 +134,7 @@ def mcp_detail(
         **mcp_summary(mcp, owner_name=owner_name),
         "description": mcp.description,
         "notes": mcp.notes,
+        "liked_by_me": liked_by_me,
         "versions": [redact_mcp_version(v, reveal=reveal) for v in versions],
         "latest": redact_mcp_version(latest_version, reveal=reveal) if latest_version else None,
         "grants": [

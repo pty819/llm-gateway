@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import io
+import zipfile
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -12,10 +14,12 @@ from llm_gateway.db.models import (
     ArtifactKind,
     MCP,
     MCPTransport,
+    McpLike,
     McpTeamGrant,
     McpVersion,
     ResourceState,
     Skill,
+    SkillLike,
     SkillTeamGrant,
     SkillVersion,
     Subject,
@@ -82,6 +86,50 @@ async def get_skill_by_owner_slug(
     return (await session.execute(stmt)).scalars().first()
 
 
+def _extract_readme(zip_bytes: bytes) -> str | None:
+    """Extract a README (SKILL.md preferred, else README.md) from a skill zip.
+
+    Looks at the zip root or one level deep (e.g. ``my-skill/SKILL.md``),
+    case-insensitive on the basename. Rejects any path containing ``..``
+    (path traversal guard). Caps content at 64KB. Returns None if the zip is
+    unreadable or no markdown file is found — never raises, so README extraction
+    failures never block an upload.
+    """
+    readme_max_bytes = 65536
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            # First pass: collect candidate (depth, name) entries.
+            candidates: list[tuple[int, str, str]] = []
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                path = info.filename
+                # Normalize separators and reject traversal segments.
+                if ".." in path.replace("\\", "/").split("/"):
+                    continue
+                parts = [p for p in path.replace("\\", "/").split("/") if p]
+                depth = len(parts)
+                if depth > 2:
+                    continue
+                base = parts[-1].lower()
+                if base == "skill.md":
+                    # SKILL.md always wins; track its priority index 0.
+                    candidates.append((0, depth, path))
+                elif base == "readme.md":
+                    candidates.append((1, depth, path))
+            if not candidates:
+                return None
+            # Prefer SKILL.md (priority 0), then shallowest path, then name order.
+            candidates.sort(key=lambda c: (c[0], c[1], c[2]))
+            chosen = candidates[0][2]
+            raw = zf.read(chosen)
+            if len(raw) > readme_max_bytes:
+                raw = raw[:readme_max_bytes]
+            return raw.decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+
 async def create_or_append_skill_version(
     session: AsyncSession,
     *,
@@ -109,6 +157,7 @@ async def create_or_append_skill_version(
     )
 
     sha = hashlib.sha256(zip_bytes).hexdigest()
+    readme_text = _extract_readme(zip_bytes)
 
     if existing is None:
         skill = Skill(
@@ -119,6 +168,7 @@ async def create_or_append_skill_version(
             description=description,
             notes=notes,
             latest_version=version,
+            readme=readme_text,
         )
         session.add(skill)
         await session.flush()
@@ -150,6 +200,8 @@ async def create_or_append_skill_version(
         existing.description = description
         if notes is not None:
             existing.notes = notes
+        if readme_text is not None:
+            existing.readme = readme_text
         existing.latest_version = version
         existing.updated_at = utcnow()
         session.add(
@@ -209,8 +261,13 @@ async def list_visible_skills(
     owner: str | None = None,
     limit: int = 30,
     offset: int = 0,
+    sort: str = "downloads",
 ) -> tuple[list[Skill], int]:
-    """Return skills visible to subject_id (owner of OR team-granted), with search."""
+    """Return skills visible to subject_id (owner of OR team-granted), with search.
+
+    `sort` selects the primary ordering: ``"downloads"`` (default) orders by
+    download_count desc then updated_at desc; ``"likes"`` orders by like_count
+    desc then updated_at desc."""
     base_filter = [
         col(Skill.state) == ResourceState.ACTIVE,
         or_(
@@ -253,10 +310,14 @@ async def list_visible_skills(
         )
     count_stmt = select(func.count(distinct(col(Skill.id)))).where(*base_filter)
     total = int((await session.execute(count_stmt)).scalar_one() or 0)
+    if sort == "likes":
+        order = (col(Skill.like_count).desc(), col(Skill.updated_at).desc())
+    else:
+        order = (col(Skill.download_count).desc(), col(Skill.updated_at).desc())
     list_stmt = (
         select(Skill)
         .where(*base_filter)
-        .order_by(col(Skill.updated_at).desc())
+        .order_by(*order)
         .limit(limit)
         .offset(offset)
     )
@@ -296,6 +357,60 @@ async def get_latest_active_version(
         .limit(1)
     )
     return (await session.execute(stmt)).scalars().first()
+
+
+async def toggle_skill_like(
+    session: AsyncSession, *, subject_id: UUID, skill_id: UUID
+) -> Skill:
+    """Idempotent like toggle: if not liked, create SkillLike + like_count += 1;
+    if liked, delete it + like_count -= 1. Returns the updated skill."""
+    skill = await session.get(Skill, skill_id)
+    if skill is None:
+        raise HTTPException(status_code=404, detail="artifact_not_found")
+    existing = (
+        await session.execute(
+            select(SkillLike).where(
+                col(SkillLike.subject_id) == subject_id,
+                col(SkillLike.skill_id) == skill_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        await session.delete(existing)
+        skill.like_count = max(0, (skill.like_count or 0) - 1)
+    else:
+        session.add(SkillLike(subject_id=subject_id, skill_id=skill_id))
+        skill.like_count = (skill.like_count or 0) + 1
+    skill.updated_at = utcnow()
+    await session.flush()
+    return skill
+
+
+async def is_skill_liked_by(
+    session: AsyncSession, *, subject_id: UUID, skill_id: UUID
+) -> bool:
+    row = (
+        await session.execute(
+            select(col(SkillLike.id)).where(
+                col(SkillLike.subject_id) == subject_id,
+                col(SkillLike.skill_id) == skill_id,
+            )
+        )
+    ).scalars().first()
+    return row is not None
+
+
+async def increment_skill_download_count(
+    session: AsyncSession, *, skill_id: UUID
+) -> None:
+    """Atomic UPDATE skills SET download_count = download_count + 1."""
+    from sqlalchemy import update
+
+    await session.execute(
+        update(Skill)
+        .where(col(Skill.id) == skill_id)
+        .values(download_count=Skill.download_count + 1)
+    )
 
 
 # ---- MCP artifact (connection config) ----
@@ -496,8 +611,13 @@ async def list_visible_mcps(
     owner: str | None = None,
     limit: int = 30,
     offset: int = 0,
+    sort: str = "downloads",
 ) -> tuple[list[MCP], int]:
-    """Return mcps visible to subject_id (owner of OR team-granted), with search."""
+    """Return mcps visible to subject_id (owner of OR team-granted), with search.
+
+    `sort` selects the primary ordering: ``"downloads"`` (default) orders by
+    download_count desc then updated_at desc; ``"likes"`` orders by like_count
+    desc then updated_at desc."""
     base_filter = [
         col(MCP.state) == ResourceState.ACTIVE,
         or_(
@@ -540,10 +660,14 @@ async def list_visible_mcps(
         )
     count_stmt = select(func.count(distinct(col(MCP.id)))).where(*base_filter)
     total = int((await session.execute(count_stmt)).scalar_one() or 0)
+    if sort == "likes":
+        order = (col(MCP.like_count).desc(), col(MCP.updated_at).desc())
+    else:
+        order = (col(MCP.download_count).desc(), col(MCP.updated_at).desc())
     list_stmt = (
         select(MCP)
         .where(*base_filter)
-        .order_by(col(MCP.updated_at).desc())
+        .order_by(*order)
         .limit(limit)
         .offset(offset)
     )
@@ -582,3 +706,44 @@ async def get_latest_active_mcp_version(
         .limit(1)
     )
     return (await session.execute(stmt)).scalars().first()
+
+
+async def toggle_mcp_like(
+    session: AsyncSession, *, subject_id: UUID, mcp_id: UUID
+) -> MCP:
+    """Idempotent like toggle: if not liked, create McpLike + like_count += 1;
+    if liked, delete it + like_count -= 1. Returns the updated mcp."""
+    mcp = await session.get(MCP, mcp_id)
+    if mcp is None:
+        raise HTTPException(status_code=404, detail="artifact_not_found")
+    existing = (
+        await session.execute(
+            select(McpLike).where(
+                col(McpLike.subject_id) == subject_id,
+                col(McpLike.mcp_id) == mcp_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        await session.delete(existing)
+        mcp.like_count = max(0, (mcp.like_count or 0) - 1)
+    else:
+        session.add(McpLike(subject_id=subject_id, mcp_id=mcp_id))
+        mcp.like_count = (mcp.like_count or 0) + 1
+    mcp.updated_at = utcnow()
+    await session.flush()
+    return mcp
+
+
+async def is_mcp_liked_by(
+    session: AsyncSession, *, subject_id: UUID, mcp_id: UUID
+) -> bool:
+    row = (
+        await session.execute(
+            select(col(McpLike.id)).where(
+                col(McpLike.subject_id) == subject_id,
+                col(McpLike.mcp_id) == mcp_id,
+            )
+        )
+    ).scalars().first()
+    return row is not None

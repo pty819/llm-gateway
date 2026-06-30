@@ -3,7 +3,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column
+from sqlalchemy import Column, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
@@ -237,6 +237,9 @@ class Skill(TimestampMixin, table=True):
     state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
     latest_version: str | None = Field(default=None, index=True)
     notes: str | None = None
+    readme: str | None = None
+    download_count: int = Field(default=0, index=True)
+    like_count: int = Field(default=0, index=True)
 
 
 class SkillVersion(TimestampMixin, table=True):
@@ -264,6 +267,8 @@ class MCP(TimestampMixin, table=True):
     state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
     latest_version: str | None = Field(default=None, index=True)
     notes: str | None = None
+    download_count: int = Field(default=0, index=True)
+    like_count: int = Field(default=0, index=True)
 
 
 class McpVersion(TimestampMixin, table=True):
@@ -299,6 +304,28 @@ class McpTeamGrant(TimestampMixin, table=True):
     mcp_id: UUID = Field(foreign_key="mcps.id", index=True)
     team_id: UUID = Field(foreign_key="teams.id", index=True)
     state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
+
+
+class SkillLike(TimestampMixin, table=True):
+    __tablename__ = "skill_likes"
+    __table_args__ = (
+        UniqueConstraint("subject_id", "skill_id", name="uq_skill_likes_subject_skill"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    subject_id: UUID = Field(foreign_key="subjects.id", index=True)
+    skill_id: UUID = Field(foreign_key="skills.id", index=True)
+
+
+class McpLike(TimestampMixin, table=True):
+    __tablename__ = "mcp_likes"
+    __table_args__ = (
+        UniqueConstraint("subject_id", "mcp_id", name="uq_mcp_likes_subject_mcp"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    subject_id: UUID = Field(foreign_key="subjects.id", index=True)
+    mcp_id: UUID = Field(foreign_key="mcps.id", index=True)
 
 
 class AuditEvent(SQLModel, table=True):

@@ -392,6 +392,17 @@ export interface SkillSummary {
 	state: string;
 	latest_version: string | null;
 	updated_at: string | null;
+	download_count: number;
+	like_count: number;
+}
+
+export interface SkillVersionRow {
+	version: string;
+	content_sha256: string | null;
+	size_bytes: number | null;
+	upload_subject_id: string | null;
+	state: string;
+	created_at: string | null;
 }
 
 export interface SkillTeamGrantSummary {
@@ -399,6 +410,15 @@ export interface SkillTeamGrantSummary {
 	skill_id: string;
 	team_id: string;
 	state: string;
+}
+
+export interface SkillDetail extends SkillSummary {
+	description: string | null;
+	notes: string | null;
+	readme: string | null;
+	liked_by_me: boolean;
+	versions: SkillVersionRow[];
+	grants: SkillTeamGrantSummary[];
 }
 
 export interface McpVersionDetail {
@@ -432,11 +452,14 @@ export interface McpSummary {
 	state: string;
 	latest_version: string | null;
 	updated_at: string | null;
+	download_count: number;
+	like_count: number;
 }
 
 export interface McpDetail extends McpSummary {
 	description: string | null;
 	notes: string | null;
+	liked_by_me: boolean;
 	versions: McpVersionDetail[];
 	latest: McpVersionDetail | null;
 	grants: McpTeamGrantSummary[];

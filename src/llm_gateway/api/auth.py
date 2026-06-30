@@ -13,6 +13,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 from sqlalchemy import case, desc, func, select, text
@@ -26,11 +27,16 @@ from llm_gateway.api.deps import (
     settings_dep,
     user_session_dep,
 )
+from llm_gateway.api.registry import (
+    _get_visible_mcp_or_404,
+    _get_visible_skill_or_404,
+)
 from llm_gateway.core.config import Settings
 from llm_gateway.db.models import (
     GatewayKey,
     MCP,
     McpTeamGrant,
+    McpVersion,
     Project,
     ProjectMembership,
     RequestFact,
@@ -38,6 +44,7 @@ from llm_gateway.db.models import (
     ResourceState,
     Skill,
     SkillTeamGrant,
+    SkillVersion,
     Subject,
     Team,
     TeamMembership,
@@ -61,12 +68,25 @@ from llm_gateway.services.registry import (
     create_or_append_skill_version,
     ensure_mcp_team_grant,
     ensure_skill_team_grant,
+    get_latest_active_mcp_version,
+    get_latest_active_version,
     get_mcp_by_owner_slug,
+    get_mcp_version_row,
     get_skill_by_owner_slug,
+    get_skill_version,
+    increment_skill_download_count,
+    is_mcp_liked_by,
+    is_skill_liked_by,
+    list_visible_mcps,
+    list_visible_skills,
+    toggle_mcp_like,
+    toggle_skill_like,
 )
 from llm_gateway.services.resource_payloads import (
+    mcp_detail,
     mcp_summary,
     redact_gateway_key,
+    skill_detail,
     skill_summary,
 )
 from llm_gateway.services.rate_limit import RateLimitExceeded, check_login_rate
@@ -1148,6 +1168,154 @@ async def list_my_skills(
     }
 
 
+# ---- marketplace: browse (visible-to-me discovery) ----
+
+@router.get("/registry/skills/browse")
+async def browse_skills(
+    q: str | None = Query(default=None),
+    owner: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    size: int | None = Query(default=None),
+    sort: str = Query(default="downloads"),
+    ctx=Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+    settings: Settings = Depends(settings_dep),
+):
+    page_size = size or settings.marketplace_list_default_size
+    page_size = min(page_size, settings.marketplace_list_max_size)
+    offset = (page - 1) * page_size
+    items, total = await list_visible_skills(
+        session,
+        subject_id=ctx.subject.id,
+        q=q,
+        owner=owner,
+        limit=page_size,
+        offset=offset,
+        sort=sort,
+    )
+    owner_ids = {s.owner_subject_id for s in items}
+    owner_names: dict[UUID, str] = {}
+    if owner_ids:
+        rows = await session.execute(
+            select(Subject.id, Subject.name).where(col(Subject.id).in_(owner_ids))
+        )
+        owner_names = {row[0]: row[1] for row in rows.all()}
+    return {
+        "items": [
+            skill_summary(s, owner_names.get(s.owner_subject_id)) for s in items
+        ],
+        "total": total,
+        "page": page,
+        "size": page_size,
+    }
+
+
+@router.get("/registry/skills/browse/{owner}/{slug}")
+async def browse_skill_detail(
+    owner: str,
+    slug: str,
+    ctx=Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    skill = await _get_visible_skill_or_404(
+        session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
+    )
+    versions = list(
+        (
+            await session.execute(
+                select(SkillVersion)
+                .where(
+                    col(SkillVersion.skill_id) == skill.id,
+                    col(SkillVersion.state) == ResourceState.ACTIVE,
+                )
+                .order_by(col(SkillVersion.created_at).desc())
+            )
+        ).scalars().all()
+    )
+    grants = list(
+        (
+            await session.execute(
+                select(SkillTeamGrant).where(col(SkillTeamGrant.skill_id) == skill.id)
+            )
+        ).scalars().all()
+    )
+    owner_obj = await session.get(Subject, skill.owner_subject_id)
+    liked_by_me = await is_skill_liked_by(
+        session, subject_id=ctx.subject.id, skill_id=skill.id
+    )
+    return skill_detail(
+        skill, versions, grants,
+        owner_name=owner_obj.name if owner_obj else None,
+        readme=skill.readme, liked_by_me=liked_by_me,
+    )
+
+
+@router.get("/registry/skills/browse/{owner}/{slug}/download")
+async def browse_skill_download(
+    owner: str,
+    slug: str,
+    version: str = Query(default="latest"),
+    ctx=Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    skill = await _get_visible_skill_or_404(
+        session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
+    )
+    if version == "latest":
+        sv = await get_latest_active_version(session, skill=skill)
+    else:
+        sv = await get_skill_version(session, skill_id=skill.id, version=version)
+    if sv is None:
+        raise HTTPException(status_code=404, detail="version_not_found")
+    await increment_skill_download_count(session, skill_id=skill.id)
+    await session.commit()
+    import io as _io
+
+    return StreamingResponse(
+        _io.BytesIO(sv.content_blob),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{slug}-{sv.version}.zip"',
+            "X-Content-SHA256": sv.content_sha256,
+            "ETag": f'"{sv.content_sha256}"',
+        },
+    )
+
+
+@router.post("/registry/skills/browse/{owner}/{slug}/like")
+async def browse_skill_like(
+    owner: str,
+    slug: str,
+    ctx=Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    skill = await _get_visible_skill_or_404(
+        session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
+    )
+    skill = await toggle_skill_like(
+        session, subject_id=ctx.subject.id, skill_id=skill.id
+    )
+    await session.commit()
+    return {"liked_by_me": True, "like_count": skill.like_count}
+
+
+@router.delete("/registry/skills/browse/{owner}/{slug}/like")
+async def browse_skill_unlike(
+    owner: str,
+    slug: str,
+    ctx=Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    skill = await _get_visible_skill_or_404(
+        session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
+    )
+    skill = await toggle_skill_like(
+        session, subject_id=ctx.subject.id, skill_id=skill.id
+    )
+    await session.commit()
+    return {"liked_by_me": False, "like_count": skill.like_count}
+
+
 async def _require_owned_skill(session, ctx, slug, include_disabled=False):
     skill = await get_skill_by_owner_slug(
         session, owner_id=ctx.subject.id, slug=slug, include_disabled=include_disabled
@@ -1294,6 +1462,122 @@ async def list_my_mcps(
         "items": [mcp_summary(m, owner_name=ctx.subject.name) for m in items],
         "total": len(items),
     }
+
+
+# ---- marketplace: browse (visible-to-me discovery) ----
+
+@router.get("/registry/mcps/browse")
+async def browse_mcps(
+    q: str | None = Query(default=None),
+    owner: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    size: int | None = Query(default=None),
+    sort: str = Query(default="downloads"),
+    ctx=Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+    settings: Settings = Depends(settings_dep),
+):
+    page_size = size or settings.marketplace_list_default_size
+    page_size = min(page_size, settings.marketplace_list_max_size)
+    offset = (page - 1) * page_size
+    items, total = await list_visible_mcps(
+        session,
+        subject_id=ctx.subject.id,
+        q=q,
+        owner=owner,
+        limit=page_size,
+        offset=offset,
+        sort=sort,
+    )
+    owner_ids = {m.owner_subject_id for m in items}
+    owner_names: dict[UUID, str] = {}
+    if owner_ids:
+        rows = await session.execute(
+            select(Subject.id, Subject.name).where(col(Subject.id).in_(owner_ids))
+        )
+        owner_names = {row[0]: row[1] for row in rows.all()}
+    return {
+        "items": [mcp_summary(m, owner_names.get(m.owner_subject_id)) for m in items],
+        "total": total,
+        "page": page,
+        "size": page_size,
+    }
+
+
+@router.get("/registry/mcps/browse/{owner}/{slug}")
+async def browse_mcp_detail(
+    owner: str,
+    slug: str,
+    ctx=Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    mcp = await _get_visible_mcp_or_404(
+        session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
+    )
+    versions = list(
+        (
+            await session.execute(
+                select(McpVersion)
+                .where(
+                    col(McpVersion.mcp_id) == mcp.id,
+                    col(McpVersion.state) == ResourceState.ACTIVE,
+                )
+                .order_by(col(McpVersion.created_at).desc())
+            )
+        ).scalars().all()
+    )
+    grants = list(
+        (
+            await session.execute(
+                select(McpTeamGrant).where(col(McpTeamGrant.mcp_id) == mcp.id)
+            )
+        ).scalars().all()
+    )
+    latest = await get_latest_active_mcp_version(session, mcp=mcp)
+    owner_obj = await session.get(Subject, mcp.owner_subject_id)
+    reveal = mcp.owner_subject_id == ctx.subject.id
+    liked_by_me = await is_mcp_liked_by(
+        session, subject_id=ctx.subject.id, mcp_id=mcp.id
+    )
+    return mcp_detail(
+        mcp, versions, latest, grants,
+        owner_name=owner_obj.name if owner_obj else None,
+        reveal=reveal, liked_by_me=liked_by_me,
+    )
+
+
+@router.post("/registry/mcps/browse/{owner}/{slug}/like")
+async def browse_mcp_like(
+    owner: str,
+    slug: str,
+    ctx=Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    mcp = await _get_visible_mcp_or_404(
+        session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
+    )
+    mcp = await toggle_mcp_like(
+        session, subject_id=ctx.subject.id, mcp_id=mcp.id
+    )
+    await session.commit()
+    return {"liked_by_me": True, "like_count": mcp.like_count}
+
+
+@router.delete("/registry/mcps/browse/{owner}/{slug}/like")
+async def browse_mcp_unlike(
+    owner: str,
+    slug: str,
+    ctx=Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    mcp = await _get_visible_mcp_or_404(
+        session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
+    )
+    mcp = await toggle_mcp_like(
+        session, subject_id=ctx.subject.id, mcp_id=mcp.id
+    )
+    await session.commit()
+    return {"liked_by_me": False, "like_count": mcp.like_count}
 
 
 async def _require_owned_mcp(session, ctx, slug, include_disabled=False):

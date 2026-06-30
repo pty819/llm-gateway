@@ -1,9 +1,11 @@
 import type {
 	ApiError,
 	McpConfigInput,
+	McpDetail,
 	McpSummary,
 	McpTeamGrantSummary,
 	Paginated,
+	SkillDetail,
 	SkillSummary,
 	SkillTeamGrantSummary
 } from './types';
@@ -81,6 +83,46 @@ export class AdminApiClient {
 		);
 	}
 
+	async listBrowseSkills(params?: {
+		q?: string;
+		owner?: string;
+		page?: number;
+		size?: number;
+		sort?: string;
+	}): Promise<Paginated<SkillSummary>> {
+		return this.get('/auth/registry/skills/browse', params);
+	}
+
+	async getSkillDetail(owner: string, slug: string): Promise<SkillDetail> {
+		return this.get(
+			`/auth/registry/skills/browse/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}`
+		);
+	}
+
+	async likeSkill(owner: string, slug: string): Promise<{ liked_by_me: boolean; like_count: number }> {
+		return this.post(
+			`/auth/registry/skills/browse/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}/like`,
+			{}
+		);
+	}
+
+	async unlikeSkill(
+		owner: string,
+		slug: string
+	): Promise<{ liked_by_me: boolean; like_count: number }> {
+		return this.delete(
+			`/auth/registry/skills/browse/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}/like`
+		);
+	}
+
+	async downloadSkill(owner: string, slug: string, version = 'latest'): Promise<Blob> {
+		const path = withQuery(
+			`/auth/registry/skills/browse/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}/download`,
+			{ version }
+		);
+		return this.requestBlob(path);
+	}
+
 	async listMyMcps(): Promise<Paginated<McpSummary>> {
 		return this.get('/auth/registry/mcps');
 	}
@@ -116,6 +158,38 @@ export class AdminApiClient {
 		);
 	}
 
+	async listBrowseMcps(params?: {
+		q?: string;
+		owner?: string;
+		page?: number;
+		size?: number;
+		sort?: string;
+	}): Promise<Paginated<McpSummary>> {
+		return this.get('/auth/registry/mcps/browse', params);
+	}
+
+	async getMcpDetail(owner: string, slug: string): Promise<McpDetail> {
+		return this.get(
+			`/auth/registry/mcps/browse/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}`
+		);
+	}
+
+	async likeMcp(owner: string, slug: string): Promise<{ liked_by_me: boolean; like_count: number }> {
+		return this.post(
+			`/auth/registry/mcps/browse/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}/like`,
+			{}
+		);
+	}
+
+	async unlikeMcp(
+		owner: string,
+		slug: string
+	): Promise<{ liked_by_me: boolean; like_count: number }> {
+		return this.delete(
+			`/auth/registry/mcps/browse/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}/like`
+		);
+	}
+
 	private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
 		const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
 		const response = await fetch(path, {
@@ -136,6 +210,20 @@ export class AdminApiClient {
 			throw await toApiError(response);
 		}
 		return (await response.json()) as T;
+	}
+
+	private async requestBlob(path: string): Promise<Blob> {
+		const response = await fetch(path, {
+			method: 'GET',
+			headers: {
+				...(this.adminToken ? { 'x-admin-token': this.adminToken } : {}),
+				...(this.sessionToken ? { 'x-session-token': this.sessionToken } : {})
+			}
+		});
+		if (!response.ok) {
+			throw await toApiError(response);
+		}
+		return await response.blob();
 	}
 }
 
@@ -179,6 +267,16 @@ export function withQuery(path: string, params?: Record<string, QueryValue>): st
 
 export function isApiError(error: unknown): error is ApiError {
 	return Boolean(error && typeof error === 'object' && 'status' in error && 'message' in error);
+}
+
+/** Trigger a browser download for an already-fetched blob. */
+export function downloadBlob(blob: Blob, filename: string): void {
+	const url = URL.createObjectURL(blob);
+	const a = document.createElement('a');
+	a.href = url;
+	a.download = filename;
+	a.click();
+	URL.revokeObjectURL(url);
 }
 
 function isGatewayError(value: unknown): value is { error: { type: string; message: string } } {

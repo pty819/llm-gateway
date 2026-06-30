@@ -28,6 +28,8 @@
 		"vitest": "^4.1.7"
 	},
 	"dependencies": {
-		"lucide-svelte": "^1.0.1"
+		"dompurify": "^3.2.0",
+		"lucide-svelte": "^1.0.1",
+		"marked": "^15.0.0"
 	}
 }
