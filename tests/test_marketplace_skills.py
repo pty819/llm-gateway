@@ -370,3 +370,152 @@ async def test_dataplane_list_and_download_for_guest_grant(client):
     assert dl.status_code == 200
     assert dl.headers["content-type"] == "application/zip"
     assert dl.content[:2] == b"PK"
+
+
+async def test_self_service_upload_and_download_lifecycle(client):
+    sess_headers, gw_key, username, owner_id = await _login_user_with_key(client)
+    slug = _unique_slug("demo")
+
+    resp = await client.post(
+        "/auth/registry/skills",
+        headers=sess_headers,
+        data={"slug": slug, "name": "Demo", "version": "1.0.0", "summary": "d"},
+        files={"file": ("demo.zip", _make_zip("v1"), "application/zip")},
+    )
+    assert resp.status_code == 200, resp.text
+    skill = resp.json()["skill"]
+    assert skill["slug"] == slug
+    assert skill["latest_version"] == "1.0.0"
+
+    from tests.test_backend_integration import _auth_headers
+    dl = await client.get(
+        f"/v1/registry/skills/{username}/{slug}/versions/latest/download",
+        headers=_auth_headers(gw_key),
+    )
+    assert dl.status_code == 200
+    assert dl.content[:2] == b"PK"
+
+    resp2 = await client.post(
+        "/auth/registry/skills",
+        headers=sess_headers,
+        data={"slug": slug, "name": "Demo", "version": "2.0.0"},
+        files={"file": ("demo.zip", _make_zip("v2"), "application/zip")},
+    )
+    assert resp2.status_code == 200, resp2.text
+    assert resp2.json()["skill"]["latest_version"] == "2.0.0"
+
+
+async def test_self_service_duplicate_version_409(client):
+    sess_headers, *_ = await _login_user_with_key(client)
+    slug = _unique_slug("dup")
+    data = {"slug": slug, "name": "Dup", "version": "1.0.0"}
+    r1 = await client.post(
+        "/auth/registry/skills", headers=sess_headers, data=data,
+        files={"file": ("d.zip", _make_zip(), "application/zip")},
+    )
+    assert r1.status_code == 200, r1.text
+    r2 = await client.post(
+        "/auth/registry/skills", headers=sess_headers, data=data,
+        files={"file": ("d.zip", _make_zip(), "application/zip")},
+    )
+    assert r2.status_code == 409
+    assert r2.json()["detail"] == "version_conflict"
+
+
+async def test_self_service_cross_owner_slug_coexists(client):
+    """Per spec: different owners can use the same slug. bob uploads the same slug
+    as alice and gets his OWN independent skill (no conflict)."""
+    alice_headers, _, alice_user, _ = await _login_user_with_key(client)
+    bob_headers, *_ = await _login_user_with_key(client)
+    slug = _unique_slug("shared")
+
+    a = await client.post(
+        "/auth/registry/skills", headers=alice_headers,
+        data={"slug": slug, "name": "Alice", "version": "1.0.0"},
+        files={"file": ("a.zip", _make_zip(), "application/zip")},
+    )
+    assert a.status_code == 200, a.text
+    b = await client.post(
+        "/auth/registry/skills", headers=bob_headers,
+        data={"slug": slug, "name": "Bob", "version": "1.0.0"},
+        files={"file": ("b.zip", _make_zip(), "application/zip")},
+    )
+    assert b.status_code == 200, b.text
+    assert a.json()["skill"]["id"] != b.json()["skill"]["id"]
+
+
+async def test_self_service_grants_lifecycle(client):
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.db.models import Team
+    from sqlmodel import select as sqlselect
+    from sqlmodel import col
+
+    sess_headers, *_ = await _login_user_with_key(client)
+    slug = _unique_slug("g")
+    await client.post(
+        "/auth/registry/skills", headers=sess_headers,
+        data={"slug": slug, "name": "G", "version": "1.0.0"},
+        files={"file": ("g.zip", _make_zip(), "application/zip")},
+    )
+    async with AsyncSessionLocal() as session:
+        guest = (
+            await session.execute(sqlselect(Team).where(col(Team.name) == "guest"))
+        ).scalar_one()
+        guest_id = str(guest.id)
+
+    r = await client.post(
+        f"/auth/registry/skills/me/{slug}/grants", headers=sess_headers,
+        json={"team_id": guest_id},
+    )
+    assert r.status_code == 200, r.text
+    grant_id = r.json()["grant"]["id"]
+
+    g = await client.get(f"/auth/registry/skills/me/{slug}/grants", headers=sess_headers)
+    assert g.status_code == 200
+    assert any(gr["id"] == grant_id for gr in g.json()["items"])
+
+    rev = await client.patch(
+        f"/auth/registry/skills/me/{slug}/grants/{grant_id}/state",
+        headers=sess_headers, json={"state": "disabled"},
+    )
+    assert rev.status_code == 200
+    assert rev.json()["grant"]["state"] == "disabled"
+
+
+async def test_self_service_upload_too_large_413(client):
+    sess_headers, *_ = await _login_user_with_key(client)
+    slug = _unique_slug("big")
+    big = b"0" * (1 + 10 * 1024 * 1024)  # just over default 10MiB
+    r = await client.post(
+        "/auth/registry/skills", headers=sess_headers,
+        data={"slug": slug, "name": "Big", "version": "1.0.0"},
+        files={"file": ("big.zip", big, "application/zip")},
+    )
+    assert r.status_code == 413
+
+
+async def test_self_service_non_owner_cannot_grant(client):
+    """Alice owns skill X. Bob (different user) must NOT be able to grant X to a team,
+    because 'me' resolves to bob who has no skill X → 404."""
+    alice_headers, *_ = await _login_user_with_key(client)
+    bob_headers, *_ = await _login_user_with_key(client)
+    slug = _unique_slug("owned")
+    await client.post(
+        "/auth/registry/skills", headers=alice_headers,
+        data={"slug": slug, "name": "Owned", "version": "1.0.0"},
+        files={"file": ("o.zip", _make_zip(), "application/zip")},
+    )
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.db.models import Team
+    from sqlmodel import select as sqlselect
+    from sqlmodel import col
+    async with AsyncSessionLocal() as session:
+        guest = (
+            await session.execute(sqlselect(Team).where(col(Team.name) == "guest"))
+        ).scalar_one()
+        guest_id = str(guest.id)
+    r = await client.post(
+        f"/auth/registry/skills/me/{slug}/grants", headers=bob_headers,
+        json={"team_id": guest_id},
+    )
+    assert r.status_code == 404

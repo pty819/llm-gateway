@@ -2,7 +2,17 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 from sqlalchemy import case, desc, func, select, text
@@ -24,6 +34,8 @@ from llm_gateway.db.models import (
     RequestFact,
     RequestOutcome,
     ResourceState,
+    Skill,
+    SkillTeamGrant,
     Subject,
     Team,
     TeamMembership,
@@ -40,7 +52,13 @@ from llm_gateway.services.policy import (
     list_accessible_model_aliases_for_subject,
     list_subject_team_names,
 )
-from llm_gateway.services.resource_payloads import redact_gateway_key
+from llm_gateway.services.registry import (
+    SLUG_PATTERN,
+    create_or_append_skill_version,
+    ensure_skill_team_grant,
+    get_skill_by_owner_slug,
+)
+from llm_gateway.services.resource_payloads import redact_gateway_key, skill_summary
 from llm_gateway.services.rate_limit import RateLimitExceeded, check_login_rate
 from llm_gateway.services.security import (
     DUMMY_PASSWORD_HASH,
@@ -1020,3 +1038,158 @@ def _requires_real_name(subject: Subject) -> bool:
     name = subject.name.strip()
     username = normalize_username(subject.login_username or "")
     return not name or (bool(username) and normalize_username(name) == username)
+
+
+# ---- marketplace: self-service skill registry ----
+
+class SkillGrantCreate(BaseModel):
+    team_id: UUID
+
+
+@router.post("/registry/skills")
+async def upload_skill(
+    slug: str = Form(...),
+    name: str = Form(...),
+    version: str = Form(...),
+    summary: str | None = Form(default=None),
+    description: str | None = Form(default=None),
+    notes: str | None = Form(default=None),
+    file: UploadFile = File(...),
+    ctx=Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+    settings=Depends(settings_dep),
+):
+    import re
+
+    if not re.match(SLUG_PATTERN, slug):
+        raise HTTPException(status_code=422, detail="invalid_slug")
+    zip_bytes = await file.read()
+    if len(zip_bytes) > settings.marketplace_skill_max_bytes:
+        raise HTTPException(status_code=413, detail="skill_too_large")
+    if not zip_bytes:
+        raise HTTPException(status_code=400, detail="empty_upload")
+    skill = await create_or_append_skill_version(
+        session,
+        actor=ctx.subject,
+        slug=slug,
+        name=name,
+        version=version,
+        summary=summary,
+        description=description,
+        notes=notes,
+        zip_bytes=zip_bytes,
+    )
+    await session.commit()
+    await session.refresh(skill)
+    return {"skill": skill_summary(skill, owner_name=ctx.subject.name)}
+
+
+@router.get("/registry/skills")
+async def list_my_skills(
+    ctx=Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    from sqlalchemy import select as _select
+    from sqlmodel import col as _col
+
+    stmt = (
+        _select(Skill)
+        .where(_col(Skill.owner_subject_id) == ctx.subject.id)
+        .order_by(_col(Skill.updated_at).desc())
+    )
+    items = list((await session.execute(stmt)).scalars().all())
+    return {
+        "items": [skill_summary(s, owner_name=ctx.subject.name) for s in items],
+        "total": len(items),
+    }
+
+
+async def _require_owned_skill(session, ctx, slug, include_disabled=False):
+    skill = await get_skill_by_owner_slug(
+        session, owner_id=ctx.subject.id, slug=slug, include_disabled=include_disabled
+    )
+    if skill is None or skill.owner_subject_id != ctx.subject.id:
+        raise HTTPException(status_code=404, detail="artifact_not_found")
+    return skill
+
+
+@router.get("/registry/skills/me/{slug}/grants")
+async def list_my_skill_grants(
+    slug: str,
+    ctx=Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    skill = await _require_owned_skill(session, ctx, slug)
+    from sqlalchemy import select as _select
+    from sqlmodel import col as _col
+
+    rows = (
+        await session.execute(
+            _select(SkillTeamGrant).where(_col(SkillTeamGrant.skill_id) == skill.id)
+        )
+    ).scalars().all()
+    items = [
+        {
+            "id": str(g.id),
+            "skill_id": str(g.skill_id),
+            "team_id": str(g.team_id),
+            "state": g.state.value if hasattr(g.state, "value") else g.state,
+        }
+        for g in rows
+    ]
+    return {"items": items, "total": len(items)}
+
+
+@router.post("/registry/skills/me/{slug}/grants")
+async def create_my_skill_grant(
+    slug: str,
+    payload: SkillGrantCreate,
+    ctx=Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    skill = await _require_owned_skill(session, ctx, slug)
+    team = await session.get(Team, payload.team_id)
+    if team is None:
+        raise HTTPException(status_code=404, detail="team_not_found")
+    grant = await ensure_skill_team_grant(
+        session, skill_id=skill.id, team_id=payload.team_id
+    )
+    await session.commit()
+    await session.refresh(grant)
+    return {
+        "grant": {
+            "id": str(grant.id),
+            "skill_id": str(grant.skill_id),
+            "team_id": str(grant.team_id),
+            "state": grant.state.value if hasattr(grant.state, "value") else grant.state,
+        }
+    }
+
+
+@router.patch("/registry/skills/me/{slug}/grants/{grant_id}/state")
+async def patch_my_skill_grant_state(
+    slug: str,
+    grant_id: UUID,
+    payload: dict,
+    ctx=Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    skill = await _require_owned_skill(session, ctx, slug)
+    grant = await session.get(SkillTeamGrant, grant_id)
+    if grant is None or grant.skill_id != skill.id:
+        raise HTTPException(status_code=404, detail="grant_not_found")
+    new_state = payload.get("state")
+    if new_state not in ("active", "disabled"):
+        raise HTTPException(status_code=422, detail="invalid_state")
+    grant.state = ResourceState(new_state)
+    grant.updated_at = utcnow()
+    await session.commit()
+    await session.refresh(grant)
+    return {
+        "grant": {
+            "id": str(grant.id),
+            "skill_id": str(grant.skill_id),
+            "team_id": str(grant.team_id),
+            "state": grant.state.value if hasattr(grant.state, "value") else grant.state,
+        }
+    }
