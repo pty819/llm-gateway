@@ -92,29 +92,17 @@ async def create_or_append_skill_version(
 ) -> Skill:
     """Create a skill (first version) or append a new version.
 
+    Namespacing is (owner, slug): a different owner may use the same slug
+    (alice/weather and bob/weather coexist), enforced by the composite
+    UNIQUE(owner_subject_id, slug) constraint. This function only resolves
+    the actor's own (actor.id, slug) row.
     If (actor, slug) does not exist -> create the skill + first version.
-    If it exists and actor is the owner -> append a new version, make it latest.
-    If it exists but owner is someone else -> 409 artifact_slug_conflict.
+    If it exists (actor is the owner) -> append a new version, make it latest.
     Duplicate version string on the same skill -> 409 version_conflict.
     """
     existing = await get_skill_by_owner_slug(
         session, owner_id=actor.id, slug=slug, include_disabled=True
     )
-    if existing is None:
-        # The actor owns no skill with this slug. Reject if a different owner
-        # already claims an active skill with the same slug.
-        collision = await session.execute(
-            select(Skill).where(
-                col(Skill.slug) == slug,
-                col(Skill.owner_subject_id) != actor.id,
-                col(Skill.state) == ResourceState.ACTIVE,
-            )
-        )
-        if collision.scalars().first() is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="artifact_slug_conflict",
-            )
 
     sha = hashlib.sha256(zip_bytes).hexdigest()
 

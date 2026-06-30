@@ -24,9 +24,9 @@ def _make_zip(text: str = "SKILL.md content") -> bytes:
 
 
 def _unique_slug(base: str = "skill") -> str:
-    """A unique active slug per call. Tests share a persistent DB with no
-    per-test isolation, and active slugs must be globally unique, so a fixed
-    slug left by one test would collide on a later run."""
+    """A unique slug per call. Tests share a persistent DB with no per-test
+    isolation, so a fixed slug left by one test could collide on a later run.
+    Unique slugs avoid cross-test interference."""
     from uuid import uuid4
 
     return f"{base}-{uuid4().hex[:8]}"
@@ -144,26 +144,28 @@ async def test_upload_duplicate_version_raises_conflict():
         assert exc.value.detail == "version_conflict"
 
 
-async def test_upload_slug_taken_by_other_owner_raises_conflict():
-    from fastapi import HTTPException
-
+async def test_upload_duplicate_slug_different_owner_allowed():
     alice = await _make_user()
     bob = await _make_user()
     slug = _unique_slug("weather")
     async with AsyncSessionLocal() as session:
-        await create_or_append_skill_version(
+        alice_skill = await create_or_append_skill_version(
             session, actor=alice, slug=slug, name="W", version="1.0.0",
             summary=None, description=None, notes=None, zip_bytes=_make_zip(),
         )
         await session.commit()
     async with AsyncSessionLocal() as session:
-        with pytest.raises(HTTPException) as exc:
-            await create_or_append_skill_version(
-                session, actor=bob, slug=slug, name="W", version="1.0.0",
-                summary=None, description=None, notes=None, zip_bytes=_make_zip(),
-            )
-        assert exc.value.status_code == 409
-        assert exc.value.detail == "artifact_slug_conflict"
+        bob_skill = await create_or_append_skill_version(
+            session, actor=bob, slug=slug, name="W", version="1.0.0",
+            summary=None, description=None, notes=None, zip_bytes=_make_zip(),
+        )
+        await session.commit()
+    # alice/weather and bob/weather coexist as independent skills
+    assert alice_skill.id != bob_skill.id
+    assert alice_skill.owner_subject_id == alice.id
+    assert bob_skill.owner_subject_id == bob.id
+    assert alice_skill.slug == bob_skill.slug == slug
+    assert alice_skill.latest_version == bob_skill.latest_version == "1.0.0"
 
 
 async def test_grant_upsert_and_visibility():
