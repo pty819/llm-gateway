@@ -56,6 +56,42 @@ async def _make_user(login_username: str | None = None) -> Subject:
     return subject
 
 
+async def _login_user_with_key(client):
+    """Register a fresh user; return (session_headers, raw_gateway_key, username, subject_id)."""
+    from tests.test_backend_integration import _employee_username
+    from llm_gateway.core.config import get_settings
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.security import (
+        create_gateway_key,
+        create_registered_user,
+        create_user_session,
+    )
+
+    username = _employee_username()
+    async with AsyncSessionLocal() as session:
+        subject, project, _key, _raw = await create_registered_user(
+            session,
+            username=username,
+            full_name="市场用户",
+            password="correct-horse-battery",
+        )
+        user_session, raw_session = await create_user_session(
+            session,
+            subject_id=subject.id,
+            ttl_hours=get_settings().session_ttl_hours,
+        )
+        _gw_key, raw_gw = await create_gateway_key(
+            session, subject_id=subject.id, project_id=project.id, name="mk",
+        )
+        await session.commit()
+    return (
+        {"x-session-token": raw_session},
+        raw_gw,
+        username,
+        subject.id,
+    )
+
+
 async def test_resolve_owner_by_login_username_then_name():
     from llm_gateway.db.session import AsyncSessionLocal
     from llm_gateway.db.models import Subject, SubjectType
@@ -284,3 +320,53 @@ async def test_latest_active_version_falls_back_when_pointer_disabled():
         latest = await get_latest_active_version(session, skill=s1)
         assert latest is not None
         assert latest.version == "1.0.0"  # fell back to most recent active
+
+
+async def test_dataplane_list_and_download_for_guest_grant(client):
+    from tests.test_backend_integration import _auth_headers
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.db.models import Subject, Team, ResourceState
+    from llm_gateway.services.registry import (
+        create_or_append_skill_version,
+        ensure_skill_team_grant,
+    )
+    from sqlmodel import select as sqlselect
+    from sqlmodel import col
+
+    sess_headers, gw_key, username, owner_id = await _login_user_with_key(client)
+
+    slug = _unique_slug("weather")
+    async with AsyncSessionLocal() as session:
+        owner = await session.get(Subject, owner_id)
+        skill = await create_or_append_skill_version(
+            session, actor=owner, slug=slug, name="Weather", version="1.0.0",
+            summary="weather skill", description=None, notes=None, zip_bytes=_make_zip(),
+        )
+        guest = (
+            await session.execute(sqlselect(Team).where(col(Team.name) == "guest"))
+        ).scalar_one()
+        await ensure_skill_team_grant(session, skill_id=skill.id, team_id=guest.id)
+        await session.commit()
+
+    # a DIFFERENT registered user (also a guest member) can list + download
+    _, other_gw, _, _ = await _login_user_with_key(client)
+    resp = await client.get(
+        f"/v1/registry/skills?q={slug}", headers=_auth_headers(other_gw)
+    )
+    assert resp.status_code == 200, resp.text
+    slugs = [s["slug"] for s in resp.json()["items"]]
+    assert slug in slugs, slugs
+
+    detail = await client.get(
+        f"/v1/registry/skills/{username}/{slug}", headers=_auth_headers(other_gw)
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["slug"] == slug
+
+    dl = await client.get(
+        f"/v1/registry/skills/{username}/{slug}/versions/latest/download",
+        headers=_auth_headers(other_gw),
+    )
+    assert dl.status_code == 200
+    assert dl.headers["content-type"] == "application/zip"
+    assert dl.content[:2] == b"PK"
