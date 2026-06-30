@@ -19,3 +19,6 @@ wheels/
 .omx/
 .codegraph/
 .DS_Store
+
+# Local git worktrees (subagent-driven development)
+.worktrees/
