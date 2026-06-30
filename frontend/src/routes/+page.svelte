@@ -8,6 +8,8 @@
 		Gauge,
 		KeyRound,
 		Network,
+		Package,
+		Plug,
 		Route,
 		Shield,
 		Trophy,
@@ -231,6 +233,7 @@
 	const managedProjects = $derived(profile?.managed?.projects ?? []);
 	const managedTeams = $derived(profile?.managed?.teams ?? []);
 	const hasManagedResources = $derived(managedProjects.length > 0 || managedTeams.length > 0);
+	const marketTeams = $derived(profile?.team_memberships ?? []);
 	const gatewayOrigin = $derived((gatewayBaseUrl || '').replace(/\/+$/, ''));
 	const gatewayV1Base = $derived(`${gatewayOrigin}/v1`);
 	const responsesEndpoint = $derived(`${gatewayV1Base}/responses`);
@@ -1262,7 +1265,12 @@
 			{#if !isAdmin}
 				<nav class="nav-group" aria-label="账号">
 					<div class="nav-group-title">账号</div>
-					<button class="active nav-button" type="button"><span>我的访问权限</span><KeyRound size={16} /></button>
+					<button class:active={active === 'usage'} class="nav-button" type="button" onclick={() => (active = 'usage')}><span>我的访问权限</span><KeyRound size={16} /></button>
+				</nav>
+				<nav class="nav-group" aria-label="市场">
+					<div class="nav-group-title">市场</div>
+					<button class:active={active === 'skill-market'} class="nav-button" type="button" onclick={() => (active = 'skill-market')}><span>Skill 市场</span><Package size={16} /></button>
+					<button class:active={active === 'mcp-market'} class="nav-button" type="button" onclick={() => (active = 'mcp-market')}><span>MCP 市场</span><Plug size={16} /></button>
 				</nav>
 			{:else}
 			{#each navGroups as group}
@@ -1293,7 +1301,7 @@
 			<section class="content">
 				{#if pageError}<div class="error">{pageError}</div>{/if}
 
-				{#if !isAdmin}
+				{#if !isAdmin && active !== 'skill-market' && active !== 'mcp-market'}
 					<OwnedDashboard
 						{profile}
 						{ownUsage}
@@ -1347,6 +1355,12 @@
 						onChangeOwnPassword={changeOwnPassword}
 						onCopy={copyText}
 					/>
+				{:else if active === 'skill-market'}
+					<PageTitle title={'Skill 市场'} subtitle={'上传和管理你的 Skill 制品,并授权给权限组。'} />
+					<SkillMarketSection client={api} teams={marketTeams} />
+				{:else if active === 'mcp-market'}
+					<PageTitle title={'MCP 市场'} subtitle={'发布和管理你的 MCP 连接配置,并授权给权限组。'} />
+					<McpMarketSection client={api} teams={marketTeams} />
 				{:else if active === 'models'}
 					<PageTitle title={'模型别名'} subtitle={'配置下游模型名称、LiteLLM 映射、能力标记和模型级 IP 策略。'} />
 					<section class="panel">

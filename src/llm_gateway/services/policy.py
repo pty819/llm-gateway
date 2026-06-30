@@ -210,3 +210,28 @@ async def list_subject_team_names(session: AsyncSession, *, subject_id) -> list[
         .order_by(col(Team.name))
     )
     return list((await session.execute(stmt)).scalars().all())
+
+
+async def list_subject_team_memberships(
+    session: AsyncSession, *, subject_id
+) -> list[dict]:
+    """Return the active teams a subject belongs to as ``{id, name}`` dicts.
+
+    Mirrors list_subject_team_names but selects Team.id alongside Team.name so
+    callers (e.g. the self-service grants editor) can reference a team by id.
+    Includes built-in teams like ``guest`` since the subject is a member.
+    """
+    stmt = (
+        select(Team.id, Team.name)
+        .join(TeamMembership, col(TeamMembership.team_id) == col(Team.id))
+        .where(
+            col(Team.state) == ResourceState.ACTIVE,
+            col(TeamMembership.state) == ResourceState.ACTIVE,
+            col(TeamMembership.subject_id) == subject_id,
+        )
+        .order_by(col(Team.name))
+    )
+    return [
+        {"id": str(team_id), "name": team_name}
+        for team_id, team_name in (await session.execute(stmt)).all()
+    ]

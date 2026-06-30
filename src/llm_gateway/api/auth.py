@@ -52,6 +52,7 @@ from llm_gateway.services.managed_memberships import (
 )
 from llm_gateway.services.policy import (
     list_accessible_model_aliases_for_subject,
+    list_subject_team_memberships,
     list_subject_team_names,
 )
 from llm_gateway.services.registry import (
@@ -763,6 +764,9 @@ async def _profile_payload(session: AsyncSession, subject: Subject) -> dict[str,
     return {
         "subject": _public_subject(subject),
         "teams": await list_subject_team_names(session, subject_id=subject.id),
+        "team_memberships": await list_subject_team_memberships(
+            session, subject_id=subject.id
+        ),
         "models": await list_accessible_model_aliases_for_subject(
             session, subject_id=subject.id
         ),

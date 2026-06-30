@@ -144,6 +144,9 @@ async def test_self_service_register_login_and_guest_team_model_access(client):
     raw_key = payload["gateway_key"]["plaintext_key"]
     assert payload["profile"]["subject"]["login_username"] == username
     assert "guest" in payload["profile"]["teams"]
+    team_memberships = payload["profile"]["team_memberships"]
+    assert isinstance(team_memberships, list)
+    assert any(m["name"] == "guest" and m["id"] for m in team_memberships)
     assert f"guest-model-{suffix}" in payload["profile"]["models"]
 
     models = await client.get("/v1/models", headers=_auth_headers(raw_key))

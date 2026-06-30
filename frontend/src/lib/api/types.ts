@@ -317,6 +317,7 @@ export type Diagnostics = {
 export type AuthProfile = {
 	subject: Subject;
 	teams: string[];
+	team_memberships: Array<{ id: string; name: string }>;
 	models: string[];
 	keys: GatewayKey[];
 	managed: {
