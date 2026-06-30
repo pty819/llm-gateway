@@ -194,6 +194,8 @@ _AUDIT_SENSITIVE_KEYS = frozenset(
         "bearer",
         "cookie",
         "secret",
+        "env",
+        "headers",
     }
 )
 
