@@ -493,7 +493,7 @@ npm run test:e2e
 - Gateway keys are shown once when issued; existing keys are listed only by prefix.
 - ClickHouse or other heavyweight analytics stores are intentionally not used.
 
-## Marketplace（Skill 市场）
+## Marketplace（Skill 与 MCP 市场）
 
 网关内置一个 Skill 市场（纯注册表，不执行）。任何登录用户可上传 skill
 （`POST /auth/registry/skills`，multipart：metadata + zip）并授权给权限组
@@ -506,3 +506,11 @@ npm run test:e2e
 访问控制 = team 授权。授权给内置 `guest` 组即公开（所有用户默认属于 guest）；
 不授权则仅 owner 可见。命名空间为 owner/slug 二级（alice/weather 与 bob/weather 共存）。
 管理员可在 `/admin/registry/*` 跨 owner 管理任意制品。
+
+MCP 市场存放**连接配置**（非 zip）。用户上传 transport/command/url/args/env/headers/tools 配置：
+
+    GET  /v1/registry/mcps                      # 可见 mcp 列表
+    GET  /v1/registry/mcps/{owner}/{slug}       # 详情 + 当前配置（env/headers 在非 owner 视图下脱敏为 ***）
+
+owner 自身可见明文 env/headers；被授权的权限组成员看到脱敏值。MCP 无 download 端点——
+agent 拿到配置后自行连接 MCP server。命名空间、版本管理、授权语义与 Skill 一致。
