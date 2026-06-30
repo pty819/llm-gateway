@@ -225,7 +225,7 @@ POST /auth/registry/skills
   file 字段: skill.zip
   → 若 (owner, slug) 不存在 → 建 skill 主表 + 首个 version
   → 若已存在且 owner 是自己 → 追加新 version（同 version 号 → 409 version_conflict）
-  → owner 不是自己 → 409 artifact_slug_conflict
+  → owner 不是自己但用同名 slug → **允许**（owner/slug 二级命名，alice/weather 与 bob/weather 共存，由复合 UNIQUE 约束保证完整性）
   → 服务端强校验大小 <= marketplace_skill_max_bytes
 ```
 
