@@ -5,8 +5,16 @@ import zipfile
 
 import pytest
 
+from sqlmodel import col, select as sqlselect
+
 from llm_gateway.db.session import AsyncSessionLocal
-from llm_gateway.db.models import Subject, SubjectType, Team, TeamMembership
+from llm_gateway.db.models import (
+    ResourceState,
+    Subject,
+    SubjectType,
+    Team,
+    TeamMembership,
+)
 from llm_gateway.services.registry import (
     create_or_append_skill_version,
     ensure_skill_team_grant,
@@ -195,3 +203,84 @@ async def test_grant_upsert_and_visibility():
         assert await subject_can_access_skill(
             session, subject_id=consumer.id, skill=skill
         )
+
+
+async def test_list_visible_guest_grant_equals_public():
+    """A skill granted to the builtin 'guest' team is visible to every subject
+    that is a guest member."""
+    owner = await _make_user()
+    consumer = await _make_user()
+
+    async with AsyncSessionLocal() as session:
+        guest = (
+            await session.execute(sqlselect(Team).where(col(Team.name) == "guest"))
+        ).scalar_one()
+        session.add(TeamMembership(team_id=guest.id, subject_id=consumer.id))
+        await session.commit()
+
+    slug = _unique_slug("pub")
+    async with AsyncSessionLocal() as session:
+        skill = await create_or_append_skill_version(
+            session, actor=owner, slug=slug, name="Pub", version="1.0.0",
+            summary=None, description=None, notes=None, zip_bytes=_make_zip(),
+        )
+        await ensure_skill_team_grant(session, skill_id=skill.id, team_id=guest.id)
+        await session.commit()
+
+    from llm_gateway.services.registry import list_visible_skills
+
+    async with AsyncSessionLocal() as session:
+        items, total = await list_visible_skills(session, subject_id=consumer.id)
+        assert any(s.slug == slug for s in items), [s.slug for s in items]
+        assert total >= 1
+
+
+async def test_list_visible_excludes_unauthorized():
+    owner = await _make_user()
+    stranger = await _make_user()
+    slug = _unique_slug("secret")
+    async with AsyncSessionLocal() as session:
+        await create_or_append_skill_version(
+            session, actor=owner, slug=slug, name="Secret", version="1.0.0",
+            summary=None, description=None, notes=None, zip_bytes=_make_zip(),
+        )
+        await session.commit()
+
+    from llm_gateway.services.registry import list_visible_skills
+
+    async with AsyncSessionLocal() as session:
+        items, _ = await list_visible_skills(session, subject_id=stranger.id)
+        assert all(s.slug != slug for s in items)
+        items_owner, _ = await list_visible_skills(session, subject_id=owner.id)
+        assert any(s.slug == slug for s in items_owner)
+
+
+async def test_latest_active_version_falls_back_when_pointer_disabled():
+    """If latest_version points at a row that no longer resolves as active,
+    fall back to the most recent active version by created_at."""
+    owner = await _make_user()
+    slug = _unique_slug("fallback")
+    from llm_gateway.services.registry import get_latest_active_version, get_skill_version
+
+    async with AsyncSessionLocal() as session:
+        s1 = await create_or_append_skill_version(
+            session, actor=owner, slug=slug, name="F", version="1.0.0",
+            summary=None, description=None, notes=None, zip_bytes=_make_zip("1"),
+        )
+        await session.commit()
+        await create_or_append_skill_version(
+            session, actor=owner, slug=slug, name="F", version="2.0.0",
+            summary=None, description=None, notes=None, zip_bytes=_make_zip("2"),
+        )
+        await session.commit()
+        # artificially disable the v2 row (the current latest)
+        v2 = await get_skill_version(session, skill_id=s1.id, version="2.0.0")
+        assert v2 is not None
+        v2.state = ResourceState.DISABLED
+        await session.commit()
+        await session.refresh(s1)
+
+    async with AsyncSessionLocal() as session:
+        latest = await get_latest_active_version(session, skill=s1)
+        assert latest is not None
+        assert latest.version == "1.0.0"  # fell back to most recent active

@@ -4,7 +4,7 @@ import hashlib
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import or_, select
+from sqlalchemy import distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
@@ -195,3 +195,100 @@ async def ensure_skill_team_grant(
     session.add(grant)
     await session.flush()
     return grant
+
+
+async def list_visible_skills(
+    session: AsyncSession,
+    *,
+    subject_id: UUID,
+    q: str | None = None,
+    owner: str | None = None,
+    limit: int = 30,
+    offset: int = 0,
+) -> tuple[list[Skill], int]:
+    """Return skills visible to subject_id (owner of OR team-granted), with search."""
+    base_filter = [
+        col(Skill.state) == ResourceState.ACTIVE,
+        or_(
+            col(Skill.owner_subject_id) == subject_id,
+            col(Skill.id).in_(
+                select(distinct(col(SkillTeamGrant.skill_id)))
+                .join(Team, col(Team.id) == col(SkillTeamGrant.team_id))
+                .join(
+                    TeamMembership,
+                    col(TeamMembership.team_id) == col(Team.id),
+                )
+                .where(
+                    col(SkillTeamGrant.state) == ResourceState.ACTIVE,
+                    col(Team.state) == ResourceState.ACTIVE,
+                    col(TeamMembership.state) == ResourceState.ACTIVE,
+                    col(TeamMembership.subject_id) == subject_id,
+                )
+            ),
+        ),
+    ]
+    if q:
+        needle = f"%{q}%"
+        base_filter.append(
+            or_(
+                col(Skill.name).ilike(needle),
+                col(Skill.summary).ilike(needle),
+                col(Skill.slug).ilike(needle),
+            )
+        )
+    if owner:
+        base_filter.append(
+            col(Skill.owner_subject_id).in_(
+                select(col(Subject.id)).where(
+                    or_(
+                        col(Subject.login_username) == owner,
+                        col(Subject.name) == owner,
+                    )
+                )
+            )
+        )
+    count_stmt = select(func.count(distinct(col(Skill.id)))).where(*base_filter)
+    total = int((await session.execute(count_stmt)).scalar_one() or 0)
+    list_stmt = (
+        select(Skill)
+        .where(*base_filter)
+        .order_by(col(Skill.updated_at).desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    items = list((await session.execute(list_stmt)).scalars().all())
+    return items, total
+
+
+async def get_skill_version(
+    session: AsyncSession, *, skill_id: UUID, version: str
+) -> SkillVersion | None:
+    stmt = select(SkillVersion).where(
+        col(SkillVersion.skill_id) == skill_id,
+        col(SkillVersion.version) == version,
+        col(SkillVersion.state) == ResourceState.ACTIVE,
+    )
+    return (await session.execute(stmt)).scalars().first()
+
+
+async def get_latest_active_version(
+    session: AsyncSession, *, skill: Skill
+) -> SkillVersion | None:
+    """Resolve the latest_version pointer; if it points at a disabled row or is
+    null, fall back to the most recent active version by created_at."""
+    if skill.latest_version:
+        pointed = await get_skill_version(
+            session, skill_id=skill.id, version=skill.latest_version
+        )
+        if pointed:
+            return pointed
+    stmt = (
+        select(SkillVersion)
+        .where(
+            col(SkillVersion.skill_id) == skill.id,
+            col(SkillVersion.state) == ResourceState.ACTIVE,
+        )
+        .order_by(col(SkillVersion.created_at).desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalars().first()
