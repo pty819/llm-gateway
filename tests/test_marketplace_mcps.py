@@ -256,3 +256,126 @@ async def test_dataplane_hidden_mcp_returns_404(client):
 async def test_dataplane_mcp_no_gateway_key_401(client):
     resp = await client.get("/v1/registry/mcps")
     assert resp.status_code == 401
+
+
+async def test_self_service_mcp_publish_and_reveal(client):
+    sess_headers, gw_key, username, owner_id = await _login_user_with_key(client)
+    slug = _unique_slug("my-mcp")
+    cfg = _mcp_config(env={"SECRET": "top-secret"}, tools=[{"name": "get_weather"}])
+
+    resp = await client.post(
+        "/auth/registry/mcps", headers=sess_headers,
+        json={
+            "slug": slug, "name": "My MCP", "version": "1.0.0",
+            "summary": "s", "config": cfg,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    mcp = resp.json()["mcp"]
+    assert mcp["slug"] == slug
+    assert mcp["latest_version"] == "1.0.0"
+
+    # OWNER detail via data plane REVEALS cleartext env (reveal logic in Task 3)
+    detail = await client.get(
+        f"/v1/registry/mcps/{username}/{slug}", headers=_auth_headers(gw_key)
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["latest"]["env"] == {"SECRET": "top-secret"}
+    assert detail.json()["latest"]["tools"] == [{"name": "get_weather"}]
+
+
+async def test_self_service_mcp_append_version(client):
+    sess_headers, *_ = await _login_user_with_key(client)
+    slug = _unique_slug("append")
+    await client.post(
+        "/auth/registry/mcps", headers=sess_headers,
+        json={"slug": slug, "name": "M", "version": "1.0.0", "config": _mcp_config()},
+    )
+    r2 = await client.post(
+        "/auth/registry/mcps", headers=sess_headers,
+        json={"slug": slug, "name": "M", "version": "2.0.0",
+              "config": _mcp_config(command="uvx new@2")},
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["mcp"]["latest_version"] == "2.0.0"
+
+
+async def test_self_service_mcp_duplicate_version_409(client):
+    sess_headers, *_ = await _login_user_with_key(client)
+    slug = _unique_slug("dup")
+    body = {"slug": slug, "name": "D", "version": "1.0.0", "config": _mcp_config()}
+    r1 = await client.post("/auth/registry/mcps", headers=sess_headers, json=body)
+    assert r1.status_code == 200
+    r2 = await client.post("/auth/registry/mcps", headers=sess_headers, json=body)
+    assert r2.status_code == 409
+    assert r2.json()["detail"] == "version_conflict"
+
+
+async def test_self_service_mcp_invalid_transport_422(client):
+    sess_headers, *_ = await _login_user_with_key(client)
+    r = await client.post(
+        "/auth/registry/mcps", headers=sess_headers,
+        json={"slug": _unique_slug("bad"), "name": "B", "version": "1.0.0",
+              "config": _mcp_config(transport="bogus")},
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"] == "invalid_transport"
+
+
+async def test_self_service_mcp_grants_lifecycle(client):
+    sess_headers, gw_key, username, owner_id = await _login_user_with_key(client)
+    slug = _unique_slug("grants")
+    await client.post(
+        "/auth/registry/mcps", headers=sess_headers,
+        json={"slug": slug, "name": "G", "version": "1.0.0", "config": _mcp_config()},
+    )
+    async with AsyncSessionLocal() as session:
+        guest = (
+            await session.execute(sqlselect(Team).where(col(Team.name) == "guest"))
+        ).scalar_one()
+        guest_id = str(guest.id)
+
+    r = await client.post(
+        f"/auth/registry/mcps/me/{slug}/grants", headers=sess_headers,
+        json={"team_id": guest_id},
+    )
+    assert r.status_code == 200, r.text
+    grant_id = r.json()["grant"]["id"]
+
+    g = await client.get(f"/auth/registry/mcps/me/{slug}/grants", headers=sess_headers)
+    assert g.status_code == 200
+    assert any(gr["id"] == grant_id for gr in g.json()["items"])
+
+    rev = await client.patch(
+        f"/auth/registry/mcps/me/{slug}/grants/{grant_id}/state",
+        headers=sess_headers, json={"state": "disabled"},
+    )
+    assert rev.status_code == 200
+    assert rev.json()["grant"]["state"] == "disabled"
+
+    # after revoke, a guest member can no longer see the config
+    _, other_gw, _, _ = await _login_user_with_key(client)
+    detail = await client.get(
+        f"/v1/registry/mcps/{username}/{slug}", headers=_auth_headers(other_gw)
+    )
+    assert detail.status_code == 404
+
+
+async def test_self_service_mcp_non_owner_cannot_grant(client):
+    alice_headers, *_ = await _login_user_with_key(client)
+    bob_headers, *_ = await _login_user_with_key(client)
+    slug = _unique_slug("owned")
+    await client.post(
+        "/auth/registry/mcps", headers=alice_headers,
+        json={"slug": slug, "name": "A", "version": "1.0.0", "config": _mcp_config()},
+    )
+    async with AsyncSessionLocal() as session:
+        guest = (
+            await session.execute(sqlselect(Team).where(col(Team.name) == "guest"))
+        ).scalar_one()
+        guest_id = str(guest.id)
+    r = await client.post(
+        f"/auth/registry/mcps/me/{slug}/grants", headers=bob_headers,
+        json={"team_id": guest_id},
+    )
+    assert r.status_code == 404  # 'me' resolves to bob who owns no such mcp

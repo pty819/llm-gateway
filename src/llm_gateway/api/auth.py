@@ -29,6 +29,8 @@ from llm_gateway.api.deps import (
 from llm_gateway.core.config import Settings
 from llm_gateway.db.models import (
     GatewayKey,
+    MCP,
+    McpTeamGrant,
     Project,
     ProjectMembership,
     RequestFact,
@@ -54,11 +56,18 @@ from llm_gateway.services.policy import (
 )
 from llm_gateway.services.registry import (
     SLUG_PATTERN,
+    create_or_append_mcp_version,
     create_or_append_skill_version,
+    ensure_mcp_team_grant,
     ensure_skill_team_grant,
+    get_mcp_by_owner_slug,
     get_skill_by_owner_slug,
 )
-from llm_gateway.services.resource_payloads import redact_gateway_key, skill_summary
+from llm_gateway.services.resource_payloads import (
+    mcp_summary,
+    redact_gateway_key,
+    skill_summary,
+)
 from llm_gateway.services.rate_limit import RateLimitExceeded, check_login_rate
 from llm_gateway.services.security import (
     DUMMY_PASSWORD_HASH,
@@ -1189,6 +1198,154 @@ async def patch_my_skill_grant_state(
         "grant": {
             "id": str(grant.id),
             "skill_id": str(grant.skill_id),
+            "team_id": str(grant.team_id),
+            "state": grant.state.value if hasattr(grant.state, "value") else grant.state,
+        }
+    }
+
+
+# ---- marketplace: self-service MCP registry ----
+
+class McpGrantCreate(BaseModel):
+    team_id: UUID
+
+
+@router.post("/registry/mcps")
+async def publish_mcp(
+    payload: dict,
+    ctx=Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    slug = payload.get("slug")
+    name = payload.get("name")
+    version = payload.get("version")
+    if not slug or not name or not version:
+        raise HTTPException(status_code=422, detail="missing_required_field")
+    import re
+
+    if not re.match(SLUG_PATTERN, slug):
+        raise HTTPException(status_code=422, detail="invalid_slug")
+    mcp = await create_or_append_mcp_version(
+        session,
+        actor=ctx.subject,
+        slug=slug,
+        name=name,
+        version=version,
+        summary=payload.get("summary"),
+        description=payload.get("description"),
+        notes=payload.get("notes"),
+        config=payload.get("config") or {},
+    )
+    await session.commit()
+    await session.refresh(mcp)
+    return {"mcp": mcp_summary(mcp, owner_name=ctx.subject.name)}
+
+
+@router.get("/registry/mcps")
+async def list_my_mcps(
+    ctx=Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    from sqlalchemy import select as _select
+    from sqlmodel import col as _col
+
+    stmt = (
+        _select(MCP)
+        .where(_col(MCP.owner_subject_id) == ctx.subject.id)
+        .order_by(_col(MCP.updated_at).desc())
+    )
+    items = list((await session.execute(stmt)).scalars().all())
+    return {
+        "items": [mcp_summary(m, owner_name=ctx.subject.name) for m in items],
+        "total": len(items),
+    }
+
+
+async def _require_owned_mcp(session, ctx, slug, include_disabled=False):
+    mcp = await get_mcp_by_owner_slug(
+        session, owner_id=ctx.subject.id, slug=slug, include_disabled=include_disabled
+    )
+    if mcp is None or mcp.owner_subject_id != ctx.subject.id:
+        raise HTTPException(status_code=404, detail="artifact_not_found")
+    return mcp
+
+
+@router.get("/registry/mcps/me/{slug}/grants")
+async def list_my_mcp_grants(
+    slug: str,
+    ctx=Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    mcp = await _require_owned_mcp(session, ctx, slug)
+    from sqlalchemy import select as _select
+    from sqlmodel import col as _col
+
+    rows = (
+        await session.execute(
+            _select(McpTeamGrant).where(_col(McpTeamGrant.mcp_id) == mcp.id)
+        )
+    ).scalars().all()
+    items = [
+        {
+            "id": str(g.id),
+            "mcp_id": str(g.mcp_id),
+            "team_id": str(g.team_id),
+            "state": g.state.value if hasattr(g.state, "value") else g.state,
+        }
+        for g in rows
+    ]
+    return {"items": items, "total": len(items)}
+
+
+@router.post("/registry/mcps/me/{slug}/grants")
+async def create_my_mcp_grant(
+    slug: str,
+    payload: McpGrantCreate,
+    ctx=Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    mcp = await _require_owned_mcp(session, ctx, slug)
+    team = await session.get(Team, payload.team_id)
+    if team is None:
+        raise HTTPException(status_code=404, detail="team_not_found")
+    grant = await ensure_mcp_team_grant(
+        session, mcp_id=mcp.id, team_id=payload.team_id
+    )
+    await session.commit()
+    await session.refresh(grant)
+    return {
+        "grant": {
+            "id": str(grant.id),
+            "mcp_id": str(grant.mcp_id),
+            "team_id": str(grant.team_id),
+            "state": grant.state.value if hasattr(grant.state, "value") else grant.state,
+        }
+    }
+
+
+@router.patch("/registry/mcps/me/{slug}/grants/{grant_id}/state")
+async def patch_my_mcp_grant_state(
+    slug: str,
+    grant_id: UUID,
+    payload: dict,
+    ctx=Depends(user_session_dep),
+    session: AsyncSession = Depends(session_dep),
+):
+    mcp = await _require_owned_mcp(session, ctx, slug)
+    grant = await session.get(McpTeamGrant, grant_id)
+    if grant is None or grant.mcp_id != mcp.id:
+        raise HTTPException(status_code=404, detail="grant_not_found")
+    new_state = payload.get("state")
+    if new_state not in ("active", "disabled"):
+        raise HTTPException(status_code=422, detail="invalid_state")
+    grant.state = ResourceState(new_state)
+    grant.updated_at = utcnow()
+    await session.commit()
+    await session.refresh(grant)
+    return {
+        "grant": {
+            "id": str(grant.id),
+            "mcp_id": str(grant.mcp_id),
             "team_id": str(grant.team_id),
             "state": grant.state.value if hasattr(grant.state, "value") else grant.state,
         }
