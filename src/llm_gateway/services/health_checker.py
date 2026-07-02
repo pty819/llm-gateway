@@ -4,7 +4,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
-import httpx
+import httpx2 as httpx
 from sqlalchemy import select
 from sqlmodel import col
 

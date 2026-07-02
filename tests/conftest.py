@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
 
-import httpx
+import httpx2 as httpx
 import pytest
 import pytest_asyncio
 from dotenv import load_dotenv

@@ -2,7 +2,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
 
-import httpx
+import httpx2 as httpx
 import litellm
 from litellm import acompletion, anthropic_messages, aresponses
 

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
-import httpx
+import httpx2 as httpx
 from redis.asyncio import Redis
 
 from llm_gateway.db.models import ModelAlias, UpstreamTarget

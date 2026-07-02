@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from uuid import uuid4
 
-import httpx
+import httpx2 as httpx
 import pytest
 
 from llm_gateway.services.health_checker import HealthVerdict, classify_health
