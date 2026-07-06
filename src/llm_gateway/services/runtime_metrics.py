@@ -382,7 +382,7 @@ async def _vllm_token_rate(
         previous = json.loads(_decode_value(previous_raw))
         previous_tokens = float(previous["tokens_total"])
         previous_at = float(previous["sampled_at"])
-    except KeyError, TypeError, ValueError:
+    except (KeyError, TypeError, ValueError):
         return None
     elapsed = now - previous_at
     if elapsed <= 0:
@@ -517,7 +517,7 @@ def _decode_active_member(value: Any) -> dict[str, Any] | None:
         if isinstance(value, bytes):
             value = value.decode("utf-8")
         parsed = json.loads(str(value))
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
     if not isinstance(parsed, dict) or "upstream_id" not in parsed:
         return None

@@ -144,7 +144,7 @@ async def _read_sticky_upstream_id(
     try:
         payload = json.loads(_decode_value(raw))
         upstream_id = payload.get("upstream_id")
-    except TypeError, ValueError, AttributeError:
+    except (TypeError, ValueError, AttributeError):
         return None
     return upstream_id if isinstance(upstream_id, str) else None
 
@@ -158,7 +158,7 @@ async def _active_connection_counts(
     for item in await redis.zrange(ACTIVE_KEY, 0, -1):
         try:
             payload = json.loads(_decode_value(item))
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
         upstream_id = payload.get("upstream_id")
         if upstream_id in wanted:
@@ -171,7 +171,7 @@ def _kv_cache_usage(raw_metrics: Any) -> float | None:
         return None
     try:
         payload = json.loads(_decode_value(raw_metrics))
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
     if not isinstance(payload, dict) or payload.get("ignore"):
         return None
