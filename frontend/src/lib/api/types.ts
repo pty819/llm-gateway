@@ -1,7 +1,7 @@
 export type SubjectType = 'user' | 'service';
 export type ResourceState = 'active' | 'disabled';
 export type IPPolicyMode = 'all_pass' | 'allowlist';
-export type EndpointFamily = 'openai_chat' | 'openai_responses' | 'anthropic_messages';
+export type EndpointFamily = 'openai_chat' | 'openai_responses';
 export type RequestOutcome =
 	| 'success'
 	| 'auth_failure'
@@ -311,7 +311,6 @@ export type ReadyStatus = {
 export type Diagnostics = {
 	app_name: string;
 	environment: string;
-	litellm_version: string;
 };
 
 export type HealthCheckConfig = {

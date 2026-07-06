@@ -37,11 +37,9 @@
 		visibleKeyHint,
 		gatewayV1Base,
 		responsesEndpoint,
-		messagesEndpoint,
 		gatewayOrigin,
 		codexEnvCommand,
 		codexConfigCommand,
-		claudeEnvCommand,
 		copiedItem,
 		loading,
 		onRefreshOwnUsage,
@@ -87,14 +85,12 @@
 		ownPasswordForm: { current_password: string; new_password: string };
 		preferredModel: string;
 		visibleKeyHint: string;
-		gatewayV1Base: string;
-		responsesEndpoint: string;
-		messagesEndpoint: string;
-		gatewayOrigin: string;
-		codexEnvCommand: string;
-		codexConfigCommand: string;
-		claudeEnvCommand: string;
-		copiedItem: string;
+	gatewayV1Base: string;
+	responsesEndpoint: string;
+	gatewayOrigin: string;
+	codexEnvCommand: string;
+	codexConfigCommand: string;
+	copiedItem: string;
 		loading: boolean;
 		onRefreshOwnUsage: () => void | Promise<void>;
 		onRefreshManagedUsage: () => void | Promise<void>;
@@ -221,8 +217,6 @@
 	<div class="endpoint-grid">
 		<CopyValue label="OpenAI Base URL" value={gatewayV1Base} itemKey="openai-base" {copiedItem} onCopy={onCopy} />
 		<CopyValue label="Responses Endpoint" value={responsesEndpoint} itemKey="responses-endpoint" {copiedItem} onCopy={onCopy} />
-		<CopyValue label="Claude Messages Endpoint" value={messagesEndpoint} itemKey="messages-endpoint" {copiedItem} onCopy={onCopy} />
-		<CopyValue label="Claude Base URL" value={gatewayOrigin} itemKey="claude-base" {copiedItem} onCopy={onCopy} />
 	</div>
 	<div class="doc-grid">
 		<section class="doc-panel">
@@ -230,11 +224,6 @@
 			<p>Codex 走 OpenAI Responses 协议，Base URL 使用前端入口的 <code>/v1</code>，实际请求会落到 <code>/v1/responses</code>。</p>
 			<CommandBlock command={codexEnvCommand} />
 			<CommandBlock command={codexConfigCommand} />
-		</section>
-		<section class="doc-panel">
-			<h3>Claude Code</h3>
-			<p>Claude Code 走 Anthropic Messages 协议，Base URL 填前端入口，不带 <code>/v1/messages</code>；客户端会自己拼接 <code>/v1/messages</code>。如果模型别名不是 <code>claude</code> 或 <code>anthropic</code> 开头，用自定义模型变量把它放进选择器。</p>
-			<CommandBlock command={claudeEnvCommand} />
 		</section>
 		<section class="doc-panel">
 			<h3>网关 MCP（Skill / MCP 市场接入）</h3>

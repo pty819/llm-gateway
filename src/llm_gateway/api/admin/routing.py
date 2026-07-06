@@ -28,7 +28,7 @@ from llm_gateway.db.models import (
 )
 from llm_gateway.services.resource_payloads import apply_model_patch, redact_upstream
 from llm_gateway.services.facts import record_audit_event
-from llm_gateway.services.litellm_client import check_upstream_health
+from llm_gateway.services.upstream_client import check_upstream_health
 from llm_gateway.services.router_command import render_router_command
 from llm_gateway.services.security import ensure_model_team_grant, get_or_create_team
 

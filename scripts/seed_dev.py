@@ -43,9 +43,7 @@ async def main() -> None:
 
     base_url = os.environ["LLM_GATEWAY_UPSTREAM_BASE_URL"]
     upstream_model = os.environ["LLM_GATEWAY_UPSTREAM_MODEL"]
-    litellm_model = os.environ.get(
-        "LLM_GATEWAY_LITELLM_MODEL", f"openai/{upstream_model}"
-    )
+    litellm_model = os.environ.get("LLM_GATEWAY_LITELLM_MODEL", upstream_model)
     api_key = os.environ["LLM_GATEWAY_UPSTREAM_API_KEY"]
 
     async with AsyncSessionLocal() as session:

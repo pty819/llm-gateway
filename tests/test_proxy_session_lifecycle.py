@@ -9,7 +9,6 @@ def test_proxy_routes_do_not_depend_on_request_scoped_db_session():
     proxy_paths = {
         "/v1/chat/completions",
         "/v1/responses",
-        "/v1/messages",
         "/v1/models",
     }
 

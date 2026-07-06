@@ -67,7 +67,7 @@ def classify_health(
 async def _probe_upstream(upstream, *, timeout_seconds: float) -> HealthVerdict:
     """GET {base_url}/{health_path} and classify the response.
 
-    Mirrors the request construction of litellm_client.check_upstream_health
+    Mirrors the request construction of upstream_client.check_upstream_health
     (same base_url join, same header injection) but applies the stricter
     classify_health verdict used by the background checker.
     """

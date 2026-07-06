@@ -19,7 +19,7 @@ from llm_gateway.api.deps import (
 from llm_gateway.core.config import Settings
 from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.db.models import EndpointFamily, RequestOutcome, utcnow
-from llm_gateway.services.litellm_client import (
+from llm_gateway.services.upstream_client import (
     upstream_request_once,
     upstream_request_stream,
 )
@@ -383,24 +383,6 @@ async def openai_responses(
         endpoint_family=EndpointFamily.OPENAI_RESPONSES,
         nonstream_endpoint="responses",
         stream_endpoint="stream_responses",
-        request=request,
-        redis=redis,
-        settings=settings,
-        client_ip=client_ip,
-    )
-
-
-@router.post("/v1/messages")
-async def anthropic_messages(
-    request: Request,
-    redis: Redis = Depends(redis_dep),
-    settings: Settings = Depends(settings_dep),
-    client_ip: str = Depends(client_ip_dep),
-):
-    return await _proxy_endpoint(
-        endpoint_family=EndpointFamily.ANTHROPIC_MESSAGES,
-        nonstream_endpoint="anthropic_messages",
-        stream_endpoint="stream_anthropic",
         request=request,
         redis=redis,
         settings=settings,

@@ -3,6 +3,8 @@ import os
 import time
 from pathlib import Path
 
+import httpx2 as httpx
+
 
 def load_dotenv(path: str = ".env.local") -> None:
     env_path = Path(path)
@@ -23,57 +25,40 @@ def require_env(name: str) -> str:
     return value
 
 
-def usage_to_dict(usage):
-    if usage is None:
-        return None
-    if hasattr(usage, "model_dump"):
-        return usage.model_dump()
-    try:
-        return dict(usage)
-    except TypeError:
-        return str(usage)
-
-
 def main() -> None:
     load_dotenv()
 
-    from litellm import completion
-
-    try:
-        import importlib.metadata
-
-        litellm_version = importlib.metadata.version("litellm")
-    except Exception:
-        litellm_version = "unknown"
-
     api_base = require_env("LLM_GATEWAY_UPSTREAM_BASE_URL")
     api_key = require_env("LLM_GATEWAY_UPSTREAM_API_KEY")
-    litellm_model = os.environ.get("LLM_GATEWAY_LITELLM_MODEL")
-    if not litellm_model:
-        litellm_model = f"openai/{require_env('LLM_GATEWAY_UPSTREAM_MODEL')}"
-
-    started = time.time()
-    response = completion(
-        model=litellm_model,
-        api_base=api_base,
-        api_key=api_key,
-        messages=[{"role": "user", "content": "Reply with one short sentence."}],
-        max_tokens=64,
-        temperature=0,
+    model = os.environ.get("LLM_GATEWAY_LITELLM_MODEL") or require_env(
+        "LLM_GATEWAY_UPSTREAM_MODEL"
     )
 
-    choice = response.choices[0]
-    message = choice.message
+    url = api_base.rstrip("/") + "/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": "Reply with one short sentence."}],
+        "max_tokens": 64,
+        "temperature": 0,
+    }
+
+    started = time.time()
+    response = httpx.post(url, json=body, headers=headers, timeout=30.0)
+    response.raise_for_status()
+    data = response.json()
+
+    choice = data["choices"][0]
+    message = choice["message"]
     print(
         json.dumps(
             {
                 "ok": True,
-                "litellm_version": litellm_version,
                 "elapsed_ms": round((time.time() - started) * 1000),
-                "model": getattr(response, "model", None),
-                "finish_reason": getattr(choice, "finish_reason", None),
-                "content_preview": (getattr(message, "content", None) or "")[:240],
-                "usage": usage_to_dict(getattr(response, "usage", None)),
+                "model": data.get("model"),
+                "finish_reason": choice.get("finish_reason"),
+                "content_preview": (message.get("content") or "")[:240],
+                "usage": data.get("usage"),
             },
             ensure_ascii=False,
             indent=2,

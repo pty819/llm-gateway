@@ -64,13 +64,7 @@
 		persistSessionToken
 	} from '$lib/state/admin-token';
 	import { parseCidrList, parseJsonObject, validateCidrList, validateHttpUrl } from '$lib/validators';
-	import {
-		UPSTREAM_FORMAT_LABEL,
-		UPSTREAM_FORMAT_SHORT_LABEL,
-		composeLitellmModel,
-		deriveUpstreamFormat,
-		type UpstreamFormat
-	} from '$lib/upstream-format';
+	import { bareModelName } from '$lib/upstream-format';
 	import {
 		PAGE_SIZE,
 		sections,
@@ -204,7 +198,6 @@
 	let modelForm = $state({
 		alias: '',
 		upstream_model_name: '',
-		upstream_format: 'openai' as UpstreamFormat,
 		supports_streaming: true,
 		supports_tools: true,
 		supports_reasoning: true,
@@ -240,19 +233,9 @@
 	const gatewayOrigin = $derived((gatewayBaseUrl || '').replace(/\/+$/, ''));
 	const gatewayV1Base = $derived(`${gatewayOrigin}/v1`);
 	const responsesEndpoint = $derived(`${gatewayV1Base}/responses`);
-	const messagesEndpoint = $derived(`${gatewayV1Base}/messages`);
 	const preferredModel = $derived(profile?.models[0] ?? '<model-alias>');
 	const visibleKeyHint = $derived(profile?.keys[0]?.key_prefix ? `${profile.keys[0].key_prefix}...` : 'gw-...');
 	const codexEnvCommand = $derived(`export LLM_GATEWAY_API_KEY="<粘贴你的完整网关密钥>"`);
-	const claudeEnvCommand = $derived(
-		[
-			`export ANTHROPIC_BASE_URL="${gatewayOrigin}"`,
-			`export ANTHROPIC_AUTH_TOKEN="<粘贴你的完整网关密钥>"`,
-			`export ANTHROPIC_MODEL="${preferredModel}"`,
-			`export ANTHROPIC_CUSTOM_MODEL_OPTION="${preferredModel}"`,
-			`export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="${preferredModel}"`
-		].join('\n')
-	);
 	const codexConfigCommand = $derived(
 		[
 			'#:schema https://developers.openai.com/codex/config-schema.json',
@@ -539,9 +522,10 @@
 
 	async function toggleHealthCheck() {
 		if (!healthCheckConfig || healthCheckToggling) return;
+		const next = !healthCheckConfig.enabled;
 		healthCheckToggling = true;
 		await run(async () => {
-			healthCheckConfig = await api.setHealthCheckConfig(!healthCheckConfig.enabled);
+			healthCheckConfig = await api.setHealthCheckConfig(next);
 		});
 		healthCheckToggling = false;
 	}
@@ -795,7 +779,7 @@
 				clean({
 					alias: modelForm.alias,
 					upstream_model_name: modelForm.upstream_model_name,
-					litellm_model: composeLitellmModel(modelForm.upstream_format, modelForm.upstream_model_name),
+					litellm_model: modelForm.upstream_model_name,
 					supports_streaming: modelForm.supports_streaming,
 					supports_tools: modelForm.supports_tools,
 					supports_reasoning: modelForm.supports_reasoning,
@@ -809,7 +793,6 @@
 			modelForm = {
 				alias: '',
 				upstream_model_name: '',
-				upstream_format: 'openai',
 				supports_streaming: true,
 				supports_tools: true,
 				supports_reasoning: true,
@@ -1275,7 +1258,7 @@
 		<aside class="sidebar">
 			<div class="brand">
 				<strong>LLM Gateway</strong>
-				<span>{diagnostics?.environment ?? '环境未知'} · LiteLLM {diagnostics?.litellm_version ?? '未知'}</span>
+				<span>{diagnostics?.environment ?? '环境未知'}</span>
 			</div>
 			{#if !isAdmin}
 				<nav class="nav-group" aria-label="账号">
@@ -1341,14 +1324,12 @@
 						bind:ownPasswordForm
 						{preferredModel}
 						{visibleKeyHint}
-						{gatewayV1Base}
-						{responsesEndpoint}
-						{messagesEndpoint}
-						{gatewayOrigin}
-						{codexEnvCommand}
-						{codexConfigCommand}
-						{claudeEnvCommand}
-						{copiedItem}
+					{gatewayV1Base}
+					{responsesEndpoint}
+					{gatewayOrigin}
+					{codexEnvCommand}
+					{codexConfigCommand}
+					{copiedItem}
 						{loading}
 						onRefreshOwnUsage={refreshOwnUsage}
 						onRefreshManagedUsage={refreshManagedUsage}
@@ -1377,20 +1358,12 @@
 					<PageTitle title={'MCP 市场'} subtitle={'发布和管理你的 MCP 连接配置,并授权给权限组。'} />
 					<McpMarketSection client={api} teams={marketTeams} />
 				{:else if active === 'models'}
-					<PageTitle title={'模型别名'} subtitle={'配置下游模型名称、LiteLLM 映射、能力标记和模型级 IP 策略。'} />
+					<PageTitle title={'模型别名'} subtitle={'配置下游模型名称、上游模型映射、能力标记和模型级 IP 策略。'} />
 					<section class="panel">
 						<h2>创建模型别名</h2>
 						<div class="form-grid">
 							<label>别名<input bind:value={modelForm.alias} placeholder="dev-model" /></label>
 							<label>上游模型名<input bind:value={modelForm.upstream_model_name} /></label>
-							<label>上游格式
-								<select bind:value={modelForm.upstream_format}>
-									<option value="openai">{UPSTREAM_FORMAT_LABEL.openai}</option>
-									<option value="openai_chat_completions">{UPSTREAM_FORMAT_LABEL.openai_chat_completions}</option>
-									<option value="anthropic">{UPSTREAM_FORMAT_LABEL.anthropic}</option>
-									<option value="hosted_vllm">{UPSTREAM_FORMAT_LABEL.hosted_vllm}</option>
-								</select>
-							</label>
 							<label>粘性生命周期秒数<input type="number" min="1" max="86400" bind:value={modelForm.sticky_ttl_seconds} /></label>
 							<label>IP 策略<select bind:value={modelForm.ip_policy_mode}><option value="all_pass">全部放行</option><option value="allowlist">白名单</option></select></label>
 							<label>CIDRs<textarea bind:value={modelForm.ip_allowlist_cidrs} placeholder="10.0.0.0/8"></textarea></label>
@@ -1407,12 +1380,12 @@
 						<h2>模型别名</h2>
 						<div class="table-wrap">
 							<table>
-								<thead><tr><th>别名</th><th>LiteLLM</th><th>状态</th><th>粘性 TTL</th><th>IP 策略</th><th>Streaming</th><th>Tools</th><th>Reasoning</th><th>操作</th></tr></thead>
+								<thead><tr><th>别名</th><th>上游模型</th><th>状态</th><th>粘性 TTL</th><th>IP 策略</th><th>Streaming</th><th>Tools</th><th>Reasoning</th><th>操作</th></tr></thead>
 								<tbody>
 									{#each inventory.models as model}
 										<tr>
 											<td><strong>{model.alias}</strong><br /><span class="muted">{model.upstream_model_name}</span></td>
-											<td><span class="badge">{UPSTREAM_FORMAT_SHORT_LABEL[deriveUpstreamFormat(model.litellm_model)]}</span><br /><span class="muted">{model.litellm_model}</span></td>
+											<td><span class="badge">OpenAI</span><br /><span class="muted">{bareModelName(model.litellm_model)}</span></td>
 											<td><StateBadge value={model.state} /></td>
 											<td>{model.sticky_ttl_seconds}s</td>
 											<td><StateBadge value={model.ip_policy_mode} /><br /><span class="muted">{model.ip_allowlist_cidrs.join(', ') || '未配置 CIDR'}</span></td>
@@ -1600,7 +1573,7 @@
 					<section class="panel"><AuditTable rows={auditPageRows} onDetail={(event) => (auditDetail = event)} /><Pagination total={auditRows.length} page={auditPage} size={PAGE_SIZE.audit} onPage={(page) => (auditPage = page)} /></section>
 				{:else if active === 'diagnostics'}
 					<PageTitle title={'诊断'} subtitle={'运行时依赖和上游健康检查。'} />
-					<div class="grid"><div class="metric"><span>Postgres</span><strong>{ready?.checks.postgres ? '正常' : '异常'}</strong></div><div class="metric"><span>Redis</span><strong>{ready?.checks.redis ? '正常' : '异常'}</strong></div><div class="metric"><span>环境</span><strong>{diagnostics?.environment}</strong></div><div class="metric"><span>LiteLLM</span><strong>{diagnostics?.litellm_version}</strong></div></div>
+					<div class="grid"><div class="metric"><span>Postgres</span><strong>{ready?.checks.postgres ? '正常' : '异常'}</strong></div><div class="metric"><span>Redis</span><strong>{ready?.checks.redis ? '正常' : '异常'}</strong></div><div class="metric"><span>环境</span><strong>{diagnostics?.environment}</strong></div></div>
 					<section class="panel">
 						<h2>健康巡检</h2>
 						<p class="muted">自动探测每个活跃上游的 <code>/models</code>，故障时在 Redis 标记 UNHEALTHY 并从路由排除。关闭后 sidecar 仍运行但跳过探测，已有标记靠 TTL 自动过期恢复。</p>

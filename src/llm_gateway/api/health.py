@@ -1,4 +1,3 @@
-import importlib.metadata
 import inspect
 
 from fastapi import APIRouter, Depends
@@ -40,12 +39,7 @@ async def ready(
 
 @router.get("/admin/diagnostics", dependencies=[Depends(admin_dep)])
 async def diagnostics(settings: Settings = Depends(settings_dep)):
-    try:
-        litellm_version = importlib.metadata.version("litellm")
-    except Exception:
-        litellm_version = "unknown"
     return {
         "app_name": settings.app_name,
         "environment": settings.environment,
-        "litellm_version": litellm_version,
     }

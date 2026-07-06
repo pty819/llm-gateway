@@ -1,6 +1,6 @@
 # LLM Gateway
 
-FastAPI + Svelte enterprise LLM gateway for internal model serving. It sits in front of OpenAI-compatible vLLM endpoints, uses LiteLLM for protocol conversion, and owns identity, access control, request limits, sticky multi-upstream routing, usage facts, and operator workflows.
+FastAPI + Svelte enterprise LLM gateway for internal model serving. It sits in front of OpenAI-compatible vLLM endpoints, forwarding OpenAI Chat Completions and Responses API requests verbatim, and owns identity, access control, request limits, sticky multi-upstream routing, usage facts, and operator workflows.
 
 ## What It Does
 
@@ -11,7 +11,6 @@ FastAPI + Svelte enterprise LLM gateway for internal model serving. It sits in f
 - Admin account and admin console for users, teams, model grants, keys, upstreams, rate limits, usage, and audit.
 - OpenAI-compatible `/v1/chat/completions` proxy.
 - OpenAI-compatible `/v1/responses` proxy (for Codex and other Responses API clients).
-- Anthropic-compatible `/v1/messages` proxy through LiteLLM.
 - `/v1/models` returns only the models the caller can use.
 - Model-level IP allowlists.
 - Redis-backed RPM and concurrency limits.
@@ -22,7 +21,7 @@ FastAPI + Svelte enterprise LLM gateway for internal model serving. It sits in f
 
 ## Stack
 
-- Backend: FastAPI, async SQLAlchemy/SQLModel, PostgreSQL, Redis, LiteLLM.
+- Backend: FastAPI, async SQLAlchemy/SQLModel, PostgreSQL, Redis, httpx2.
 - Frontend: SvelteKit.
 - Package/runtime: `uv` for Python, npm for frontend.
 
@@ -43,7 +42,7 @@ LLM_GATEWAY_REDIS_URL=redis://...
 LLM_GATEWAY_UPSTREAM_BASE_URL=https://api.example.com/v1
 LLM_GATEWAY_UPSTREAM_MODEL=actual-upstream-model-name
 LLM_GATEWAY_UPSTREAM_API_KEY=upstream-provider-key
-LLM_GATEWAY_LITELLM_MODEL=openai/actual-upstream-model-name
+LLM_GATEWAY_LITELLM_MODEL=actual-upstream-model-name
 
 LLM_GATEWAY_ADMIN_TOKEN=dev-admin-token
 LLM_GATEWAY_BOOTSTRAP_ADMIN_USERNAME=admin
@@ -379,7 +378,7 @@ This is the name clients will use in their requests.
 ```text
 Alias:              qwen3
 Upstream model:     qwen3
-LiteLLM model:      openai/qwen3
+Upstream model id:  qwen3
 Sticky TTL seconds: 1200
 ```
 
@@ -398,7 +397,7 @@ Metrics URL: empty, or http://gpu-a:8000/metrics
 
 Repeat for `gpu-b` and `gpu-c`. Use the **Check** button to verify each replica is reachable.
 
-> **Automatic health checks (sidecar process):** Health checking runs in a dedicated sidecar process — `python -m llm_gateway.health_sidecar` — NOT in the main gateway process. This isolation is deliberate: the main process's asyncio event loop can be frozen for seconds at a time by LiteLLM's synchronous paths (tiktoken token counting, JSON deserialization, blocking logging), and when the loop recovers every concurrent health probe's timeout fires at once, producing a fleet-wide false-positive disable. The sidecar has its own GIL, so a main-process freeze can never poison the probes.
+> **Automatic health checks (sidecar process):** Health checking runs in a dedicated sidecar process — `python -m llm_gateway.health_sidecar` — NOT in the main gateway process. This isolation is deliberate: the main process's asyncio event loop can be frozen for seconds at a time by a synchronous call (blocking JSON deserialization, blocking logging), and when the loop recovers every concurrent health probe's timeout fires at once, producing a fleet-wide false-positive disable. The sidecar has its own GIL, so a main-process freeze can never poison the probes.
 >
 > **Two-state model:** Configuration state (admin-owned, `upstream_targets.state` in PG) and runtime liveness (sidecar-owned, Redis) are separate. Admin sets `active`/`disabled` in PG to decide whether an upstream participates in routing at all. The sidecar probes only `active` upstreams and writes `UNHEALTHY` markers to Redis (`llm_gateway:upstream:unhealthy:{id}`, TTL 30s) for those that fail. Routing excludes any upstream with an active marker. A passing probe clears the marker; if the sidecar dies, the TTL expires and the upstream auto-recovers — "能用就行", no manual restore needed.
 >
@@ -457,19 +456,6 @@ curl http://gateway-host:18080/v1/responses \
     "model": "qwen3",
     "input": "hello",
     "stream": true
-  }'
-```
-
-Anthropic Messages:
-
-```bash
-curl http://gateway-host:18080/v1/messages \
-  -H "x-api-key: <gateway-key>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "qwen3",
-    "max_tokens": 128,
-    "messages": [{"role": "user", "content": "hello"}]
   }'
 ```
 

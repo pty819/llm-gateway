@@ -1,6 +1,5 @@
 from contextlib import asynccontextmanager
 
-import litellm
 from fastapi import FastAPI
 
 from llm_gateway.api import admin, auth, health, mcp_server, proxy, realtime, registry
@@ -41,16 +40,12 @@ def create_app() -> FastAPI:
             await ensure_builtin_identity(session, settings)
             await session.commit()
         _guard_default_admin_credentials(settings)
-        # Make the upstream model-call timeout explicit and tunable instead of
-        # relying on litellm's implicit default. litellm reads this module global
-        # at call time, so setting it once at startup governs every proxy call.
-        litellm.request_timeout = settings.upstream_timeout_seconds
         # Health checking runs in a separate sidecar process (python -m
         # llm_gateway.health_sidecar), NOT here. A main-process event-loop
-        # freeze (LiteLLM sync paths) must not be able to take out the whole
-        # upstream fleet via false-positive probe timeouts. The sidecar has its
-        # own GIL and writes runtime liveness to Redis; this process only reads
-        # it on the routing path. See README "部署" for the sidecar invocation.
+        # freeze must not be able to take out the whole upstream fleet via
+        # false-positive probe timeouts. The sidecar has its own GIL and
+        # writes runtime liveness to Redis; this process only reads it on
+        # the routing path. See README "部署" for the sidecar invocation.
         # Start the MCP server's session manager task group (the SDK app is
         # mounted as a sub-app; its own lifespan doesn't run under FastAPI).
         async with mcp_server.mcp_lifespan():

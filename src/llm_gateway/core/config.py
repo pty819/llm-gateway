@@ -45,7 +45,8 @@ class Settings(BaseSettings):
     stream_keepalive_seconds: float = Field(
         default=15.0, alias="LLM_GATEWAY_STREAM_KEEPALIVE_SECONDS"
     )
-    # Total timeout applied to upstream model calls (maps to litellm.request_timeout).
+    # Total timeout applied to upstream model calls (forwarded to upstream
+    # via httpx2; see services/upstream_client.py).
     upstream_timeout_seconds: float = Field(
         default=6000.0, alias="LLM_GATEWAY_UPSTREAM_TIMEOUT_SECONDS"
     )

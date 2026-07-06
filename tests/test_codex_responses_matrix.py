@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 
 from llm_gateway.db.models import EndpointFamily, RequestOutcome, UsageSource
-from llm_gateway.services.litellm_client import LiteLLMCallResult
+from llm_gateway.services.upstream_client import UpstreamCallResult as LiteLLMCallResult
 
 from conftest import fetch_request_fact
 

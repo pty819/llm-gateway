@@ -14,7 +14,7 @@ from llm_gateway.db.models import (
     UsageSource,
     utcnow,
 )
-from llm_gateway.services.litellm_client import LiteLLMCallResult
+from llm_gateway.services.upstream_client import UpstreamCallResult as LiteLLMCallResult
 
 from conftest import fetch_request_fact
 
@@ -76,7 +76,7 @@ async def test_health_and_admin_diagnostics(client, monkeypatch):
         "/admin/diagnostics", headers={"x-admin-token": get_settings().admin_token}
     )
     assert diagnostics.status_code == 200
-    assert diagnostics.json()["litellm_version"] != "unknown"
+    assert "app_name" in diagnostics.json()
 
     realtime = await client.get(
         "/admin/realtime/snapshot",
@@ -112,7 +112,7 @@ async def test_self_service_register_login_and_guest_team_model_access(client):
         json={
             "alias": f"guest-model-{suffix}",
             "upstream_model_name": "guest-upstream",
-            "litellm_model": "openai/guest-upstream",
+            "litellm_model": "guest-upstream",
         },
     )
     assert model.status_code == 200, model.text
@@ -214,7 +214,7 @@ async def test_admin_session_can_manage_team_union_permissions(client):
             json={
                 "alias": f"model-{label}-{suffix}",
                 "upstream_model_name": f"upstream-{label}",
-                "litellm_model": f"openai/upstream-{label}",
+                "litellm_model": f"upstream-{label}",
             },
         )
         assert model.status_code == 200, model.text
@@ -321,7 +321,7 @@ async def test_model_alias_delete_requires_cascade_for_upstreams(client):
         json={
             "alias": f"delete-model-{suffix}",
             "upstream_model_name": "delete-upstream-model",
-            "litellm_model": "openai/delete-upstream-model",
+            "litellm_model": "delete-upstream-model",
         },
     )
     assert model.status_code == 200, model.text
@@ -857,34 +857,6 @@ async def test_openai_stream_completion_records_success(client, gateway_fixture)
     assert fact.streaming is True
 
 
-async def test_anthropic_messages_conversion_uses_litellm_and_records_usage(
-    client, gateway_fixture
-):
-    request_id = f"pytest-anthropic-{uuid4()}"
-    response = await client.post(
-        "/v1/messages",
-        headers={"x-api-key": gateway_fixture.raw_key, "x-request-id": request_id},
-        json={
-            "model": gateway_fixture.model_alias,
-            "max_tokens": 32,
-            "messages": [
-                {"role": "user", "content": "Reply with exactly one short sentence."}
-            ],
-        },
-    )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload.get("content")
-    assert payload.get("usage", {}).get("input_tokens", 0) > 0
-
-    fact = await fetch_request_fact(request_id)
-    assert fact.endpoint_family == EndpointFamily.ANTHROPIC_MESSAGES
-    assert fact.outcome == RequestOutcome.SUCCESS
-    assert fact.usage_source == UsageSource.LITELLM
-    assert fact.prompt_tokens and fact.prompt_tokens > 0
-
-
 async def test_model_ip_allowlist_denies_disallowed_client(
     external_ip_client, gateway_fixture
 ):
@@ -1145,7 +1117,7 @@ async def test_load_vllm_metric_targets_materializes_before_session_close():
         model = ModelAlias(
             alias=model_alias,
             upstream_model_name="pytest-upstream-model",
-            litellm_model="openai/pytest-upstream-model",
+            litellm_model="pytest-upstream-model",
         )
         session.add(model)
         await session.flush()
@@ -1317,7 +1289,7 @@ async def test_admin_enforces_homogeneous_upstream_replicas(client):
         json={
             "alias": f"homogeneous-{suffix}",
             "upstream_model_name": "homogeneous-upstream",
-            "litellm_model": "openai/homogeneous-upstream",
+            "litellm_model": "homogeneous-upstream",
             "sticky_ttl_seconds": 1800,
         },
     )
@@ -1400,7 +1372,7 @@ async def test_admin_can_delete_used_upstream_without_deleting_request_facts(
         model = ModelAlias(
             alias=f"delete-upstream-model-{suffix}",
             upstream_model_name=f"delete-upstream-model-{suffix}",
-            litellm_model=f"openai/delete-upstream-model-{suffix}",
+            litellm_model=f"delete-upstream-model-{suffix}",
         )
         session.add(model)
         await session.flush()
@@ -1469,7 +1441,7 @@ async def test_admin_can_cascade_delete_used_model_alias_preserving_usage(
         model = ModelAlias(
             alias=f"delete-alias-model-{suffix}",
             upstream_model_name=f"delete-alias-model-{suffix}",
-            litellm_model=f"openai/delete-alias-model-{suffix}",
+            litellm_model=f"delete-alias-model-{suffix}",
         )
         session.add(model)
         await session.flush()

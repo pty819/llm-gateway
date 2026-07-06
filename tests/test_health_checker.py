@@ -128,7 +128,7 @@ async def test_probe_upstream_returns_connect_timeout_verdict(monkeypatch):
 
 
 async def test_probe_upstream_injects_authorization_header(monkeypatch):
-    """api_key_value/ref 必须以 Bearer 注入，复用 litellm_client._api_key 语义。"""
+    """api_key_value/ref 必须以 Bearer 注入，复用 upstream_client._api_key 语义。"""
     from llm_gateway.services import health_checker
 
     upstream = _FakeUpstream(

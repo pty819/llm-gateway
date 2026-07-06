@@ -6,8 +6,9 @@ Invocation::
 
 This process does ONE thing: probe ACTIVE upstreams on a fixed interval and
 write runtime liveness (UNHEALTHY markers) to Redis. It deliberately imports
-nothing from the data plane — no litellm, no FastAPI, no token counting — so
-its event loop stays clean even when the main gateway is under heavy load.
+nothing from the data plane — no FastAPI, no upstream client, no token
+counting — so its event loop stays clean even when the main gateway is under
+heavy load.
 
 Three defenses live here:
 1. Process isolation (this file's whole reason for existing): an independent
