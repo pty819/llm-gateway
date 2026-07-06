@@ -61,7 +61,7 @@ async def test_list_models_rejects_invalid_key(client):
 async def test_health_and_admin_diagnostics(client, monkeypatch):
     from llm_gateway.core.config import get_settings
 
-    async def no_metric_targets():
+    async def no_metric_targets(redis=None):
         return []
 
     monkeypatch.setattr(
@@ -996,7 +996,7 @@ async def test_openai_chat_completion_records_realtime_runtime_metrics(
     from llm_gateway.services.rate_limit import redis_client
     from llm_gateway.services.runtime_metrics import ACTIVE_KEY, runtime_snapshot
 
-    async def no_metric_targets():
+    async def no_metric_targets(redis=None):
         return []
 
     monkeypatch.setattr(
@@ -1076,7 +1076,7 @@ async def test_realtime_snapshot_includes_cached_vllm_metrics(
         VLLMMetricsTarget,
     )
 
-    async def metric_targets():
+    async def metric_targets(redis=None):
         return [
             VLLMMetricsTarget(
                 upstream_id=str(gateway_fixture.upstream_id),
@@ -1163,7 +1163,7 @@ async def test_load_vllm_metric_targets_materializes_before_session_close():
         upstream_id = str(upstream.id)
         await session.commit()
 
-    targets = await _load_vllm_metric_targets()
+    targets = await _load_vllm_metric_targets(redis=None)
     target = next(item for item in targets if item.upstream_id == upstream_id)
 
     assert target.upstream_name == upstream_name

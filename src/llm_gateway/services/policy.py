@@ -17,6 +17,7 @@ from llm_gateway.db.models import (
     UpstreamTarget,
 )
 from llm_gateway.services.security import AuthContext
+from llm_gateway.services.upstream_health import filter_unhealthy as filter_unhealthy_upstreams
 from llm_gateway.services.upstream_routing import select_upstream_for_key
 
 
@@ -82,6 +83,20 @@ async def resolve_route_context(
     upstreams = list(upstream_result.scalars().all())
     if not upstreams:
         raise PolicyDenied("upstream_not_configured")
+
+    # Apply runtime liveness filter: drop upstreams the sidecar health checker
+    # has marked UNHEALTHY in Redis. This is the runtime complement to the PG
+    # state filter above — admin owns PG state, the sidecar owns Redis liveness.
+    # Degrades open: if Redis is unreachable, trust PG config alone rather than
+    # failing the request (a Redis outage must not take down the data plane).
+    if redis is not None and upstreams:
+        unhealthy_ids = await filter_unhealthy_upstreams(
+            redis, [u.id for u in upstreams]
+        )
+        if unhealthy_ids:
+            upstreams = [u for u in upstreams if str(u.id) not in unhealthy_ids]
+            if not upstreams:
+                raise PolicyDenied("upstream_not_configured")
 
     upstream, _loads = await select_upstream_for_key(
         redis,

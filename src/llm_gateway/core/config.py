@@ -99,6 +99,21 @@ class Settings(BaseSettings):
     health_check_enabled: bool = Field(
         default=True, alias="LLM_GATEWAY_HEALTH_CHECK_ENABLED"
     )
+    # TTL on the Redis UNHEALTHY marker. A failed probe refreshes it; a passing
+    # probe deletes it; if the sidecar dies the marker expires on its own so the
+    # upstream auto-recovers without human intervention ("能用就行"). Must exceed
+    # health_check_interval_seconds so a single missed cycle doesn't let a
+    # genuinely-down upstream flip back to healthy between probes.
+    health_check_unhealthy_ttl_seconds: int = Field(
+        default=30, alias="LLM_GATEWAY_HEALTH_CHECK_UNHEALTHY_TTL_SECONDS"
+    )
+    # Quorum floor: when this many upstreams fail in a single cycle, the checker
+    # treats it as a checker-side incident (event-loop freeze, network blip) and
+    # skips batch-marking rather than taking out a fleet of cross-machine,
+    # cross-model upstreams that are unlikely to have failed simultaneously.
+    health_check_quorum_min: int = Field(
+        default=2, alias="LLM_GATEWAY_HEALTH_CHECK_QUORUM_MIN"
+    )
 
     def should_require_nondefault_admin_credentials(self) -> bool:
         if self.require_nondefault_admin_credentials is not None:

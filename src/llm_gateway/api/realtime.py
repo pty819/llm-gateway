@@ -20,6 +20,7 @@ from llm_gateway.services.security import (
     authenticate_user_session,
     ensure_builtin_identity,
 )
+from llm_gateway.services.upstream_health import filter_unhealthy as filter_unhealthy_upstreams
 
 
 router = APIRouter(prefix="/admin")
@@ -40,7 +41,7 @@ async def realtime_snapshot(
         x_admin_token=x_admin_token,
         x_session_token=x_session_token,
     )
-    targets = await _load_vllm_metric_targets()
+    targets = await _load_vllm_metric_targets(redis)
     return await runtime_snapshot(
         redis, window_seconds=window_seconds, vllm_targets=targets
     )
@@ -65,7 +66,7 @@ async def realtime_stream(
 
     async def events():
         while not await request.is_disconnected():
-            targets = await _load_vllm_metric_targets()
+            targets = await _load_vllm_metric_targets(redis)
             snapshot = await runtime_snapshot(
                 redis, window_seconds=window_seconds, vllm_targets=targets
             )
@@ -121,7 +122,9 @@ def _session_token(request: Request) -> str | None:
     return None
 
 
-async def _load_vllm_metric_targets() -> list[VLLMMetricsTarget]:
+async def _load_vllm_metric_targets(
+    redis: Redis | None = None,
+) -> list[VLLMMetricsTarget]:
     async with AsyncSessionLocal() as session:
         rows = (
             await session.execute(
@@ -136,6 +139,19 @@ async def _load_vllm_metric_targets() -> list[VLLMMetricsTarget]:
                 .order_by(col(UpstreamTarget.created_at).desc())
             )
         ).all()
+        # Apply runtime liveness filter so the realtime dashboard only polls
+        # metrics for upstreams the sidecar currently considers reachable.
+        # Degrades open when Redis is unavailable.
+        if redis is not None and rows:
+            unhealthy_ids = await filter_unhealthy_upstreams(
+                redis, [upstream.id for upstream, _ in rows]
+            )
+            if unhealthy_ids:
+                rows = [
+                    (upstream, model)
+                    for upstream, model in rows
+                    if str(upstream.id) not in unhealthy_ids
+                ]
         targets = [
             VLLMMetricsTarget(
                 upstream_id=str(upstream.id),

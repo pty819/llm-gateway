@@ -7,7 +7,6 @@ from llm_gateway.api import admin, auth, health, mcp_server, proxy, realtime, re
 from llm_gateway.core.config import get_settings
 from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.services.facts_queue import drain_now
-from llm_gateway.services import health_checker
 from llm_gateway.services.security import ensure_builtin_identity
 
 
@@ -46,12 +45,16 @@ def create_app() -> FastAPI:
         # relying on litellm's implicit default. litellm reads this module global
         # at call time, so setting it once at startup governs every proxy call.
         litellm.request_timeout = settings.upstream_timeout_seconds
-        await health_checker.start()
+        # Health checking runs in a separate sidecar process (python -m
+        # llm_gateway.health_sidecar), NOT here. A main-process event-loop
+        # freeze (LiteLLM sync paths) must not be able to take out the whole
+        # upstream fleet via false-positive probe timeouts. The sidecar has its
+        # own GIL and writes runtime liveness to Redis; this process only reads
+        # it on the routing path. See README "部署" for the sidecar invocation.
         # Start the MCP server's session manager task group (the SDK app is
         # mounted as a sub-app; its own lifespan doesn't run under FastAPI).
         async with mcp_server.mcp_lifespan():
             yield
-        await health_checker.stop()
         # Flush any in-flight request facts before the process exits so a
         # restart/SIGTERM never silently drops accounting data.
         await drain_now()
