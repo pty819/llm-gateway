@@ -260,6 +260,47 @@ async def test_self_mcp_grant_create_audited(client):
     assert event.actor_subject_id is not None
     assert str(event.actor_subject_id) == str(subject_id)
     assert event.detail.get("mcp_id") == mcp_id
+    assert event.detail.get("team_id") == guest_id
+
+
+async def test_self_mcp_grant_set_state_audited(client):
+    sess_headers, *_ = await _login_self_service_user(client)
+    slug = _unique_slug("mcpstate")
+    config = {
+        "transport": "stdio",
+        "command": "uvx mcp-server-x",
+        "url": None,
+        "args": [],
+        "env": {},
+        "headers": {},
+        "tools": [],
+    }
+    await client.post(
+        "/auth/registry/mcps",
+        headers=sess_headers,
+        json={"slug": slug, "name": "MS", "version": "1.0.0", "config": config},
+    )
+    guest_id = await _guest_team_id()
+    create = await client.post(
+        f"/auth/registry/mcps/me/{slug}/grants",
+        headers=sess_headers,
+        json={"team_id": guest_id},
+    )
+    grant_id = create.json()["grant"]["id"]
+
+    r = await client.patch(
+        f"/auth/registry/mcps/me/{slug}/grants/{grant_id}/state",
+        headers=sess_headers,
+        json={"state": "disabled"},
+    )
+    assert r.status_code == 200, r.text
+
+    event = await _latest_audit_event("self.mcp_grant.set_state")
+    assert event is not None, "no audit event recorded for self.mcp_grant.set_state"
+    assert event.resource_type == "mcp_team_grant"
+    assert str(event.resource_id) == grant_id
+    assert event.actor_subject_id is not None
+    assert event.detail.get("state") == "disabled"
 
 
 async def test_self_skill_like_unlike_audited(client):
@@ -302,6 +343,56 @@ async def test_self_skill_like_unlike_audited(client):
     event = await _latest_audit_event("self.skill.unlike")
     assert event is not None, "no audit event recorded for self.skill.unlike"
     assert str(event.resource_id) == skill_id
+
+
+async def test_self_mcp_like_unlike_audited(client):
+    sess_headers, subject_id = await _login_self_service_user(client)
+    slug = _unique_slug("mcplike")
+    guest_id = await _guest_team_id()
+    config = {
+        "transport": "stdio",
+        "command": "uvx mcp-server-x",
+        "url": None,
+        "args": [],
+        "env": {},
+        "headers": {},
+        "tools": [],
+    }
+    up = await client.post(
+        "/auth/registry/mcps",
+        headers=sess_headers,
+        json={"slug": slug, "name": "LikeMcp", "version": "1.0.0", "config": config},
+    )
+    assert up.status_code == 200, up.text
+    mcp_id = up.json()["mcp"]["id"]
+    # grant to guest so the owner can "browse" their own mcp and like it
+    await client.post(
+        f"/auth/registry/mcps/me/{slug}/grants",
+        headers=sess_headers,
+        json={"team_id": guest_id},
+    )
+    owner_name = await _fetch_subject_name(subject_id)
+
+    like = await client.post(
+        f"/auth/registry/mcps/browse/{owner_name}/{slug}/like",
+        headers=sess_headers,
+    )
+    assert like.status_code == 200, like.text
+    event = await _latest_audit_event("self.mcp.like")
+    assert event is not None, "no audit event recorded for self.mcp.like"
+    assert event.resource_type == "mcp"
+    assert str(event.resource_id) == mcp_id
+    assert event.actor_subject_id is not None
+
+    unlike = await client.delete(
+        f"/auth/registry/mcps/browse/{owner_name}/{slug}/like",
+        headers=sess_headers,
+    )
+    assert unlike.status_code == 200, unlike.text
+    event = await _latest_audit_event("self.mcp.unlike")
+    assert event is not None, "no audit event recorded for self.mcp.unlike"
+    assert event.resource_type == "mcp"
+    assert str(event.resource_id) == mcp_id
 
 
 async def _fetch_subject_name(subject_id) -> str:
