@@ -11,14 +11,11 @@ from llm_gateway.api.deps import session_dep
 from llm_gateway.db.models import AuditEvent
 from llm_gateway.services import analytics
 
-
 router = APIRouter()
 
 
 AnalyticsBucket = Literal["minute", "hour", "day"]
-AnalyticsDimension = Literal[
-    "model", "subject", "project", "endpoint", "outcome", "streaming"
-]
+AnalyticsDimension = Literal["model", "subject", "project", "endpoint", "outcome", "streaming"]
 
 
 @router.get("/usage/summary")

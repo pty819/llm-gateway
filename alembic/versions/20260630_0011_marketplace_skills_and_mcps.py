@@ -10,8 +10,9 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 import sqlmodel
 import sqlmodel.sql.sqltypes
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision: str = "20260630_0011"
 down_revision: str | None = "20260629_0010"
@@ -20,12 +21,8 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    resource_state = postgresql.ENUM(
-        "ACTIVE", "DISABLED", name="resourcestate", create_type=False
-    )
-    mcp_transport = postgresql.ENUM(
-        "STDIO", "HTTP", "SSE", name="mcptransport", create_type=False
-    )
+    resource_state = postgresql.ENUM("ACTIVE", "DISABLED", name="resourcestate", create_type=False)
+    mcp_transport = postgresql.ENUM("STDIO", "HTTP", "SSE", name="mcptransport", create_type=False)
     # `resourcestate` already exists from migration 0001; `mcptransport` is new
     # and must be created explicitly because create_type=False suppresses the
     # implicit DDL. checkfirst=True keeps this idempotent.
@@ -70,15 +67,11 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["skill_id"], ["skills.id"]),
         sa.ForeignKeyConstraint(["upload_subject_id"], ["subjects.id"]),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "skill_id", "version", name="uq_skill_version_skill_version"
-        ),
+        sa.UniqueConstraint("skill_id", "version", name="uq_skill_version_skill_version"),
     )
     op.create_index("ix_skill_versions_skill_id", "skill_versions", ["skill_id"])
     op.create_index("ix_skill_versions_version", "skill_versions", ["version"])
-    op.create_index(
-        "ix_skill_versions_content_sha256", "skill_versions", ["content_sha256"]
-    )
+    op.create_index("ix_skill_versions_content_sha256", "skill_versions", ["content_sha256"])
     op.create_index("ix_skill_versions_state", "skill_versions", ["state"])
 
     # --- mcps ---
@@ -143,9 +136,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["skill_id"], ["skills.id"]),
         sa.ForeignKeyConstraint(["team_id"], ["teams.id"]),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "skill_id", "team_id", name="uq_skill_team_grant_skill_team"
-        ),
+        sa.UniqueConstraint("skill_id", "team_id", name="uq_skill_team_grant_skill_team"),
     )
     op.create_index("ix_skill_team_grants_skill_id", "skill_team_grants", ["skill_id"])
     op.create_index("ix_skill_team_grants_team_id", "skill_team_grants", ["team_id"])

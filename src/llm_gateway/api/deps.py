@@ -1,6 +1,6 @@
+import hmac
 from collections.abc import AsyncGenerator
 from ipaddress import ip_address, ip_network
-import hmac
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from redis.asyncio import Redis
@@ -72,9 +72,7 @@ def bearer_token(request: Request) -> str:
     anthropic_key = request.headers.get("x-api-key")
     if anthropic_key:
         return anthropic_key.strip()
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED, detail="missing_gateway_key"
-    )
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing_gateway_key")
 
 
 async def auth_dep(
@@ -84,9 +82,7 @@ async def auth_dep(
     raw_key = bearer_token(request)
     context = await authenticate_gateway_key(session, raw_key)
     if not context:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_gateway_key"
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_gateway_key")
     return context
 
 
@@ -97,9 +93,7 @@ async def admin_dep(
     settings: Settings = Depends(settings_dep),
     session: AsyncSession = Depends(session_dep),
 ) -> None:
-    token_matches = bool(x_admin_token) and hmac.compare_digest(
-        x_admin_token, settings.admin_token
-    )
+    token_matches = bool(x_admin_token) and hmac.compare_digest(x_admin_token, settings.admin_token)
     if not token_matches:
         raw_token = x_session_token or _session_token(request)
         if not raw_token:

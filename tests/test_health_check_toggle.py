@@ -134,9 +134,7 @@ async def test_main_loop_skips_run_once_when_disabled(monkeypatch):
 
     run_once_calls = []
 
-    async def _fake_run_once(
-        *, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min
-    ):
+    async def _fake_run_once(*, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min):
         run_once_calls.append(1)
 
     monkeypatch.setattr(health_checker, "_run_once", _fake_run_once)
@@ -168,9 +166,7 @@ async def test_main_loop_runs_when_enabled(monkeypatch):
 
     run_once_calls = []
 
-    async def _fake_run_once(
-        *, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min
-    ):
+    async def _fake_run_once(*, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min):
         run_once_calls.append(1)
 
     monkeypatch.setattr(health_checker, "_run_once", _fake_run_once)
@@ -206,9 +202,7 @@ async def test_main_loop_resumes_after_reenable(monkeypatch):
 
     run_once_calls = []
 
-    async def _fake_run_once(
-        *, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min
-    ):
+    async def _fake_run_once(*, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min):
         run_once_calls.append(1)
 
     monkeypatch.setattr(health_checker, "_run_once", _fake_run_once)

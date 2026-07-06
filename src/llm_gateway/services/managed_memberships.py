@@ -13,9 +13,7 @@ def managed_role_options() -> list[dict[str, str]]:
     return [{"value": role.value, "label": role.value} for role in ManagedRole]
 
 
-def project_membership_payload(
-    membership: ProjectMembership, subject: Subject
-) -> dict[str, Any]:
+def project_membership_payload(membership: ProjectMembership, subject: Subject) -> dict[str, Any]:
     return {
         "id": membership.id,
         "created_at": membership.created_at,
@@ -28,9 +26,7 @@ def project_membership_payload(
     }
 
 
-def team_membership_payload(
-    membership: TeamMembership, subject: Subject
-) -> dict[str, Any]:
+def team_membership_payload(membership: TeamMembership, subject: Subject) -> dict[str, Any]:
     return {
         "id": membership.id,
         "created_at": membership.created_at,

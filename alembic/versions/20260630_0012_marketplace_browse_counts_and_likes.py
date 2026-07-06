@@ -9,6 +9,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 import sqlmodel.sql.sqltypes
+
 from alembic import op
 
 revision: str = "20260630_0012"
@@ -57,9 +58,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["subject_id"], ["subjects.id"]),
         sa.ForeignKeyConstraint(["skill_id"], ["skills.id"]),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "subject_id", "skill_id", name="uq_skill_likes_subject_skill"
-        ),
+        sa.UniqueConstraint("subject_id", "skill_id", name="uq_skill_likes_subject_skill"),
     )
     op.create_index("ix_skill_likes_subject_id", "skill_likes", ["subject_id"])
     op.create_index("ix_skill_likes_skill_id", "skill_likes", ["skill_id"])

@@ -9,6 +9,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 import sqlmodel.sql.sqltypes
+
 from alembic import op
 
 revision: str = "20260701_0013"
@@ -18,9 +19,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "mcps", sa.Column("readme", sqlmodel.sql.sqltypes.AutoString(), nullable=True)
-    )
+    op.add_column("mcps", sa.Column("readme", sqlmodel.sql.sqltypes.AutoString(), nullable=True))
 
 
 def downgrade() -> None:

@@ -14,14 +14,13 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
-from starlette.requests import Request as StarletteRequest
-from starlette.responses import JSONResponse
-
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.streamable_http_manager import TransportSecuritySettings
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import JSONResponse
 
 from llm_gateway.api.registry import _get_visible_mcp_or_404, _get_visible_skill_or_404
 from llm_gateway.db.models import (
@@ -78,11 +77,9 @@ async def _get_session(ctx: Context) -> AsyncSession:
     return AsyncSessionLocal()
 
 
-async def _resolve_owner_names(
-    session: AsyncSession, items: list[Any]
-) -> dict[Any, str]:
+async def _resolve_owner_names(session: AsyncSession, items: list[Any]) -> dict[Any, str]:
     """Map owner_subject_id -> Subject.name for the given items (like registry.py)."""
-    owner_ids = {getattr(i, "owner_subject_id") for i in items}
+    owner_ids = {i.owner_subject_id for i in items}
     owner_names: dict[Any, str] = {}
     if owner_ids:
         rows = await session.execute(
@@ -139,9 +136,7 @@ async def search_skills(
         )
         owner_names = await _resolve_owner_names(session, items)
         return {
-            "items": [
-                skill_summary(s, owner_names.get(s.owner_subject_id)) for s in items
-            ],
+            "items": [skill_summary(s, owner_names.get(s.owner_subject_id)) for s in items],
             "total": total,
             "page": page,
             "size": size,
@@ -150,9 +145,7 @@ async def search_skills(
         await session.close()
 
 
-@mcp.tool(
-    description="Get full detail of a skill including README and version history."
-)
+@mcp.tool(description="Get full detail of a skill including README and version history.")
 async def get_skill(owner: str, slug: str, ctx: Context = None) -> dict[str, Any]:  # type: ignore[assignment]
     auth = await _get_auth(ctx)
     session = await _get_session(ctx)
@@ -177,9 +170,7 @@ async def get_skill(owner: str, slug: str, ctx: Context = None) -> dict[str, Any
         grants = list(
             (
                 await session.execute(
-                    select(SkillTeamGrant).where(
-                        col(SkillTeamGrant.skill_id) == skill.id
-                    )
+                    select(SkillTeamGrant).where(col(SkillTeamGrant.skill_id) == skill.id)
                 )
             )
             .scalars()
@@ -259,9 +250,7 @@ async def list_mcps(
         )
         owner_names = await _resolve_owner_names(session, items)
         return {
-            "items": [
-                mcp_summary(m, owner_names.get(m.owner_subject_id)) for m in items
-            ],
+            "items": [mcp_summary(m, owner_names.get(m.owner_subject_id)) for m in items],
             "total": total,
             "page": page,
             "size": size,

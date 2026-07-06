@@ -24,7 +24,6 @@ from llm_gateway.services.upstream_health import (
     filter_unhealthy as filter_unhealthy_upstreams,
 )
 
-
 router = APIRouter(prefix="/admin")
 
 
@@ -44,9 +43,7 @@ async def realtime_snapshot(
         x_session_token=x_session_token,
     )
     targets = await _load_vllm_metric_targets(redis)
-    return await runtime_snapshot(
-        redis, window_seconds=window_seconds, vllm_targets=targets
-    )
+    return await runtime_snapshot(redis, window_seconds=window_seconds, vllm_targets=targets)
 
 
 @router.get("/realtime/stream")
@@ -131,9 +128,7 @@ async def _load_vllm_metric_targets(
         rows = (
             await session.execute(
                 select(UpstreamTarget, ModelAlias)
-                .join(
-                    ModelAlias, col(ModelAlias.id) == col(UpstreamTarget.model_alias_id)
-                )
+                .join(ModelAlias, col(ModelAlias.id) == col(UpstreamTarget.model_alias_id))
                 .where(
                     col(UpstreamTarget.state) == ResourceState.ACTIVE,
                     col(ModelAlias.state) == ResourceState.ACTIVE,

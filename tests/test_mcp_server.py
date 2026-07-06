@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from sqlmodel import col
 from sqlmodel import select as sqlselect
 
@@ -206,9 +205,7 @@ async def test_mcp_download_skill_returns_url(client):
 
 async def test_mcp_unauthorized_no_key(client):
     payload = {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}}
-    resp = await client.post(
-        "/v1/mcp/", json=payload, headers={"Accept": "application/json"}
-    )
+    resp = await client.post("/v1/mcp/", json=payload, headers={"Accept": "application/json"})
     assert resp.status_code == 401
 
 

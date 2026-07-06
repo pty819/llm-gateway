@@ -7,10 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from llm_gateway.db.models import (
-    Project,
-    ProjectMembership,
     GatewayKey,
     ModelEntitlement,
+    Project,
+    ProjectMembership,
     RatePolicy,
     RequestFact,
     ResourceState,
@@ -70,9 +70,7 @@ async def _count_rows(session: AsyncSession, stmt) -> int:
     return int((await session.execute(stmt)).scalar_one() or 0)
 
 
-async def _detach_upstream_usage(
-    session: AsyncSession, upstream: UpstreamTarget
-) -> int:
+async def _detach_upstream_usage(session: AsyncSession, upstream: UpstreamTarget) -> int:
     request_count = await _count_rows(
         session,
         select(func.count(col(RequestFact.id))).where(
@@ -126,9 +124,7 @@ async def _validate_homogeneous_upstream_payload(
         )
     )
     siblings = [
-        item
-        for item in result.scalars().all()
-        if existing is None or item.id != existing.id
+        item for item in result.scalars().all() if existing is None or item.id != existing.id
     ]
     if not siblings:
         return
@@ -148,9 +144,7 @@ async def _validate_homogeneous_upstream_payload(
         )
 
 
-async def _delete_project_without_usage(
-    session: AsyncSession, project: Project
-) -> None:
+async def _delete_project_without_usage(session: AsyncSession, project: Project) -> None:
     await session.execute(
         delete(ProjectMembership).where(col(ProjectMembership.project_id) == project.id)
     )
@@ -162,9 +156,7 @@ async def _delete_project_without_usage(
             col(RatePolicy.scope) == "project", col(RatePolicy.scope_id) == project.id
         )
     )
-    await session.execute(
-        delete(GatewayKey).where(col(GatewayKey.project_id) == project.id)
-    )
+    await session.execute(delete(GatewayKey).where(col(GatewayKey.project_id) == project.id))
     await session.delete(project)
 
 

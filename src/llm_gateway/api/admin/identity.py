@@ -19,6 +19,7 @@ from llm_gateway.api.deps import session_dep
 from llm_gateway.db.models import (
     AuditEvent,
     GatewayKey,
+    ModelEntitlement,
     Project,
     ProjectMembership,
     RatePolicy,
@@ -26,18 +27,16 @@ from llm_gateway.db.models import (
     Subject,
     SubjectType,
     TeamMembership,
-    ModelEntitlement,
     UserSession,
     utcnow,
 )
+from llm_gateway.services.facts import record_audit_event
 from llm_gateway.services.resource_payloads import (
     apply_model_patch,
     paginated,
     redact_gateway_key,
 )
-from llm_gateway.services.facts import record_audit_event
 from llm_gateway.services.security import create_gateway_key, hash_password
-
 
 router = APIRouter()
 
@@ -85,9 +84,7 @@ class GatewayKeyCreate(BaseModel):
 
 
 @router.post("/subjects")
-async def create_subject(
-    payload: SubjectCreate, session: AsyncSession = Depends(session_dep)
-):
+async def create_subject(payload: SubjectCreate, session: AsyncSession = Depends(session_dep)):
     data = payload.model_dump(exclude={"password"})
     if data.get("login_username"):
         data["login_username"] = _validate_login_username(data["login_username"])
@@ -130,15 +127,11 @@ async def list_subjects(
                 col(Subject.login_username).ilike(needle),
             )
         )
-    total = await _count_rows(
-        session, select(func.count()).select_from(stmt.subquery())
-    )
+    total = await _count_rows(session, select(func.count()).select_from(stmt.subquery()))
     rows = (
         (
             await session.execute(
-                stmt.order_by(col(Subject.created_at).desc())
-                .offset(offset)
-                .limit(limit)
+                stmt.order_by(col(Subject.created_at).desc()).offset(offset).limit(limit)
             )
         )
         .scalars()
@@ -212,9 +205,7 @@ async def set_subject_state(
 
 
 @router.delete("/subjects/{subject_id}")
-async def delete_subject(
-    subject_id: UUID, session: AsyncSession = Depends(session_dep)
-):
+async def delete_subject(subject_id: UUID, session: AsyncSession = Depends(session_dep)):
     subject = await _get_or_404(session, Subject, subject_id)
     if subject.is_admin:
         raise HTTPException(
@@ -224,9 +215,7 @@ async def delete_subject(
 
     request_count = await _count_rows(
         session,
-        select(func.count(col(RequestFact.id))).where(
-            col(RequestFact.subject_id) == subject.id
-        ),
+        select(func.count(col(RequestFact.id))).where(col(RequestFact.subject_id) == subject.id),
     )
     if request_count:
         raise HTTPException(
@@ -238,11 +227,7 @@ async def delete_subject(
         )
 
     owned_projects = (
-        (
-            await session.execute(
-                select(Project).where(col(Project.owner_subject_id) == subject.id)
-            )
-        )
+        (await session.execute(select(Project).where(col(Project.owner_subject_id) == subject.id)))
         .scalars()
         .all()
     )
@@ -271,9 +256,7 @@ async def delete_subject(
         outcome="success",
         detail={"login_username": subject.login_username, "name": subject.name},
     )
-    await session.execute(
-        delete(UserSession).where(col(UserSession.subject_id) == subject.id)
-    )
+    await session.execute(delete(UserSession).where(col(UserSession.subject_id) == subject.id))
     await session.execute(
         delete(TeamMembership).where(col(TeamMembership.subject_id) == subject.id)
     )
@@ -290,9 +273,7 @@ async def delete_subject(
     )
     for project in owned_projects:
         await _delete_project_without_usage(session, project)
-    await session.execute(
-        delete(GatewayKey).where(col(GatewayKey.subject_id) == subject.id)
-    )
+    await session.execute(delete(GatewayKey).where(col(GatewayKey.subject_id) == subject.id))
     await session.execute(
         update(AuditEvent)
         .where(col(AuditEvent.actor_subject_id) == subject.id)
@@ -304,9 +285,7 @@ async def delete_subject(
 
 
 @router.post("/projects")
-async def create_project(
-    payload: ProjectCreate, session: AsyncSession = Depends(session_dep)
-):
+async def create_project(payload: ProjectCreate, session: AsyncSession = Depends(session_dep)):
     project = Project(**payload.model_dump())
     session.add(project)
     await session.flush()
@@ -378,9 +357,7 @@ async def list_project_memberships(
     session: AsyncSession = Depends(session_dep),
 ):
     stmt = select(ProjectMembership).order_by(col(ProjectMembership.created_at).desc())
-    total = await _count_rows(
-        session, select(func.count()).select_from(ProjectMembership)
-    )
+    total = await _count_rows(session, select(func.count()).select_from(ProjectMembership))
     rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
     return paginated(rows, total, limit, offset)
 

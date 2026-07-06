@@ -4,7 +4,6 @@ import sys
 from pathlib import Path
 from uuid import uuid4
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
@@ -21,9 +20,7 @@ async def main() -> None:
 
     async with AsyncSessionLocal() as session:
         dev_key = (
-            await session.execute(
-                select(GatewayKey).where(col(GatewayKey.name) == "dev-key")
-            )
+            await session.execute(select(GatewayKey).where(col(GatewayKey.name) == "dev-key"))
         ).scalar_one()
         _, raw_key = await create_gateway_key(
             session,
@@ -46,9 +43,7 @@ async def main() -> None:
             headers={"Authorization": f"Bearer {raw_key}"},
             json={
                 "model": "dev-model",
-                "messages": [
-                    {"role": "user", "content": "Reply with one short sentence."}
-                ],
+                "messages": [{"role": "user", "content": "Reply with one short sentence."}],
                 "max_tokens": 64,
                 "temperature": 0,
             },
@@ -59,9 +54,7 @@ async def main() -> None:
             json.dumps(
                 {
                     "model": payload.get("model"),
-                    "finish_reason": (payload.get("choices") or [{}])[0].get(
-                        "finish_reason"
-                    ),
+                    "finish_reason": (payload.get("choices") or [{}])[0].get("finish_reason"),
                     "usage": payload.get("usage"),
                 },
                 ensure_ascii=False,

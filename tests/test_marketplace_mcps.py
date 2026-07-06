@@ -1,25 +1,26 @@
 from __future__ import annotations
 
 import pytest
+from sqlmodel import col
+from sqlmodel import select as sqlselect
 
-from tests.test_marketplace_skills import _admin_headers, _login_user_with_key
-from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.db.models import Subject, Team
+from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.services.registry import (
     create_or_append_mcp_version,
     ensure_mcp_team_grant,
 )
-from sqlmodel import select as sqlselect
-from sqlmodel import col
 from tests.test_backend_integration import _auth_headers
+from tests.test_marketplace_skills import _admin_headers, _login_user_with_key
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
 async def _make_user(login_username: str | None = None):
     from uuid import uuid4
-    from llm_gateway.db.session import AsyncSessionLocal
+
     from llm_gateway.db.models import Subject, SubjectType
+    from llm_gateway.db.session import AsyncSessionLocal
 
     suffix = uuid4().hex
     async with AsyncSessionLocal() as session:
@@ -63,10 +64,11 @@ def _mcp_config(
 
 
 async def test_create_mcp_creates_artifact_and_first_version():
-    from llm_gateway.db.session import AsyncSessionLocal
-    from llm_gateway.db.models import McpVersion
-    from llm_gateway.services.registry import create_or_append_mcp_version
     import sqlmodel
+
+    from llm_gateway.db.models import McpVersion
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.registry import create_or_append_mcp_version
 
     owner = await _make_user()
     slug = _unique_slug("weather-mcp")
@@ -127,6 +129,7 @@ async def test_append_mcp_version_updates_latest():
 
 async def test_mcp_duplicate_version_raises_conflict():
     from fastapi import HTTPException
+
     from llm_gateway.db.session import AsyncSessionLocal
     from llm_gateway.services.registry import create_or_append_mcp_version
 
@@ -202,8 +205,9 @@ async def test_mcp_cross_owner_slug_coexists():
 
 async def test_mcp_grant_upsert_and_visibility():
     import uuid as _uuid
-    from llm_gateway.db.session import AsyncSessionLocal
+
     from llm_gateway.db.models import Team, TeamMembership
+    from llm_gateway.db.session import AsyncSessionLocal
     from llm_gateway.services.registry import (
         create_or_append_mcp_version,
         ensure_mcp_team_grant,
@@ -225,9 +229,7 @@ async def test_mcp_grant_upsert_and_visibility():
             notes=None,
             config=_mcp_config(),
         )
-        assert not await subject_can_access_mcp(
-            session, subject_id=consumer.id, mcp=mcp
-        )
+        assert not await subject_can_access_mcp(session, subject_id=consumer.id, mcp=mcp)
         team = Team(name=f"mcp-team-{_uuid.uuid4().hex}")
         session.add(team)
         await session.flush()
@@ -270,9 +272,7 @@ async def test_dataplane_mcp_list_detail_and_redaction(client):
 
     # a DIFFERENT registered user (also a guest member) can list + read detail
     _, other_gw, _, _ = await _login_user_with_key(client)
-    resp = await client.get(
-        f"/v1/registry/mcps?q={slug}", headers=_auth_headers(other_gw)
-    )
+    resp = await client.get(f"/v1/registry/mcps?q={slug}", headers=_auth_headers(other_gw))
     assert resp.status_code == 200, resp.text
     slugs = [m["slug"] for m in resp.json()["items"]]
     assert slug in slugs, slugs
@@ -358,9 +358,7 @@ async def test_self_service_mcp_publish_and_reveal(client):
     assert mcp["latest_version"] == "1.0.0"
 
     # OWNER detail via data plane REVEALS cleartext env (reveal logic in Task 3)
-    detail = await client.get(
-        f"/v1/registry/mcps/{username}/{slug}", headers=_auth_headers(gw_key)
-    )
+    detail = await client.get(f"/v1/registry/mcps/{username}/{slug}", headers=_auth_headers(gw_key))
     assert detail.status_code == 200, detail.text
     assert detail.json()["latest"]["env"] == {"SECRET": "top-secret"}
     assert detail.json()["latest"]["tools"] == [{"name": "get_weather"}]

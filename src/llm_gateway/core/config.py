@@ -18,27 +18,15 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://llm_gateway:llm_gateway@localhost:5432/llm_gateway",
         alias="LLM_GATEWAY_DATABASE_URL",
     )
-    redis_url: str = Field(
-        default="redis://localhost:6379/0", alias="LLM_GATEWAY_REDIS_URL"
-    )
-    trusted_proxy_headers: bool = Field(
-        default=True, alias="LLM_GATEWAY_TRUST_PROXY_HEADERS"
-    )
+    redis_url: str = Field(default="redis://localhost:6379/0", alias="LLM_GATEWAY_REDIS_URL")
+    trusted_proxy_headers: bool = Field(default=True, alias="LLM_GATEWAY_TRUST_PROXY_HEADERS")
     trusted_proxy_cidrs: str = Field(
         default="127.0.0.0/8,::1/128", alias="LLM_GATEWAY_TRUST_PROXY_CIDRS"
     )
-    rate_limit_fail_closed: bool = Field(
-        default=True, alias="LLM_GATEWAY_RATE_LIMIT_FAIL_CLOSED"
-    )
-    default_request_limit_per_minute: int = Field(
-        default=120, alias="LLM_GATEWAY_DEFAULT_RPM"
-    )
-    default_concurrency_limit: int = Field(
-        default=8, alias="LLM_GATEWAY_DEFAULT_CONCURRENCY"
-    )
-    request_fact_timeout_seconds: int = Field(
-        default=30, alias="LLM_GATEWAY_FACT_TIMEOUT_SECONDS"
-    )
+    rate_limit_fail_closed: bool = Field(default=True, alias="LLM_GATEWAY_RATE_LIMIT_FAIL_CLOSED")
+    default_request_limit_per_minute: int = Field(default=120, alias="LLM_GATEWAY_DEFAULT_RPM")
+    default_concurrency_limit: int = Field(default=8, alias="LLM_GATEWAY_DEFAULT_CONCURRENCY")
+    request_fact_timeout_seconds: int = Field(default=30, alias="LLM_GATEWAY_FACT_TIMEOUT_SECONDS")
     # Seconds between SSE keepalive comment frames sent to the client while the
     # upstream is silent (e.g. during long reasoning). Keeps the gateway->client
     # leg alive across proxies/dev servers that drop idle streaming connections.
@@ -53,9 +41,7 @@ class Settings(BaseSettings):
     # DB connection pool sizing for the async engine.
     db_pool_size: int = Field(default=20, alias="LLM_GATEWAY_DB_POOL_SIZE")
     db_max_overflow: int = Field(default=40, alias="LLM_GATEWAY_DB_MAX_OVERFLOW")
-    db_pool_recycle_seconds: int = Field(
-        default=1800, alias="LLM_GATEWAY_DB_POOL_RECYCLE_SECONDS"
-    )
+    db_pool_recycle_seconds: int = Field(default=1800, alias="LLM_GATEWAY_DB_POOL_RECYCLE_SECONDS")
     # Optional separate (read-only replica) DSN for heavy DuckDB analytics; falls
     # back to the main database_url when unset.
     analytics_database_url: str | None = Field(
@@ -97,9 +83,7 @@ class Settings(BaseSettings):
     health_check_timeout_seconds: float = Field(
         default=3.0, alias="LLM_GATEWAY_HEALTH_CHECK_TIMEOUT_SECONDS"
     )
-    health_check_enabled: bool = Field(
-        default=True, alias="LLM_GATEWAY_HEALTH_CHECK_ENABLED"
-    )
+    health_check_enabled: bool = Field(default=True, alias="LLM_GATEWAY_HEALTH_CHECK_ENABLED")
     # TTL on the Redis UNHEALTHY marker. A failed probe refreshes it; a passing
     # probe deletes it; if the sidecar dies the marker expires on its own so the
     # upstream auto-recovers without human intervention ("能用就行"). Must exceed
@@ -112,9 +96,7 @@ class Settings(BaseSettings):
     # treats it as a checker-side incident (event-loop freeze, network blip) and
     # skips batch-marking rather than taking out a fleet of cross-machine,
     # cross-model upstreams that are unlikely to have failed simultaneously.
-    health_check_quorum_min: int = Field(
-        default=2, alias="LLM_GATEWAY_HEALTH_CHECK_QUORUM_MIN"
-    )
+    health_check_quorum_min: int = Field(default=2, alias="LLM_GATEWAY_HEALTH_CHECK_QUORUM_MIN")
 
     def should_require_nondefault_admin_credentials(self) -> bool:
         if self.require_nondefault_admin_credentials is not None:

@@ -41,9 +41,7 @@ async def test_unknown_user_and_wrong_password_return_same_error(client):
         "/auth/login", json={"username": "z99999999", "password": "wrongpass1"}
     )
     # Bootstrap admin exists in the migrated DB; a wrong password must also 401.
-    wrong = await client.post(
-        "/auth/login", json={"username": "admin", "password": "wrongpass1"}
-    )
+    wrong = await client.post("/auth/login", json={"username": "admin", "password": "wrongpass1"})
     assert unknown.status_code == 401
     assert wrong.status_code == 401
     assert unknown.json()["detail"] == wrong.json()["detail"] == "invalid_login"

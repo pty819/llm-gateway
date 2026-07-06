@@ -10,8 +10,9 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 import sqlmodel
 import sqlmodel.sql.sqltypes
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision: str = "20260524_0001"
 down_revision: str | None = None
@@ -20,12 +21,8 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    subject_type = postgresql.ENUM(
-        "USER", "SERVICE", name="subjecttype", create_type=False
-    )
-    resource_state = postgresql.ENUM(
-        "ACTIVE", "DISABLED", name="resourcestate", create_type=False
-    )
+    subject_type = postgresql.ENUM("USER", "SERVICE", name="subjecttype", create_type=False)
+    resource_state = postgresql.ENUM("ACTIVE", "DISABLED", name="resourcestate", create_type=False)
     ip_policy_mode = postgresql.ENUM(
         "ALL_PASS", "ALLOWLIST", name="ippolicymode", create_type=False
     )
@@ -46,9 +43,7 @@ def upgrade() -> None:
         name="requestoutcome",
         create_type=False,
     )
-    usage_source = postgresql.ENUM(
-        "LITELLM", "MISSING", name="usagesource", create_type=False
-    )
+    usage_source = postgresql.ENUM("LITELLM", "MISSING", name="usagesource", create_type=False)
     for enum in [
         subject_type,
         resource_state,
@@ -98,18 +93,14 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(), nullable=False),
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("alias", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-        sa.Column(
-            "upstream_model_name", sqlmodel.sql.sqltypes.AutoString(), nullable=False
-        ),
+        sa.Column("upstream_model_name", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column("litellm_model", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column("state", resource_state, nullable=False),
         sa.Column("supports_streaming", sa.Boolean(), nullable=False),
         sa.Column("supports_tools", sa.Boolean(), nullable=False),
         sa.Column("supports_reasoning", sa.Boolean(), nullable=False),
         sa.Column("ip_policy_mode", ip_policy_mode, nullable=False),
-        sa.Column(
-            "ip_allowlist_cidrs", postgresql.JSONB(astext_type=sa.Text()), nullable=True
-        ),
+        sa.Column("ip_allowlist_cidrs", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("notes", sqlmodel.sql.sqltypes.AutoString(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("alias"),
@@ -129,12 +120,8 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["subject_id"], ["subjects.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(
-        "ix_project_memberships_project_id", "project_memberships", ["project_id"]
-    )
-    op.create_index(
-        "ix_project_memberships_subject_id", "project_memberships", ["subject_id"]
-    )
+    op.create_index("ix_project_memberships_project_id", "project_memberships", ["project_id"])
+    op.create_index("ix_project_memberships_subject_id", "project_memberships", ["subject_id"])
 
     op.create_table(
         "gateway_keys",
@@ -169,15 +156,11 @@ def upgrade() -> None:
         sa.Column("api_key_value", sqlmodel.sql.sqltypes.AutoString(), nullable=True),
         sa.Column("health_path", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column("state", resource_state, nullable=False),
-        sa.Column(
-            "extra_headers", postgresql.JSONB(astext_type=sa.Text()), nullable=True
-        ),
+        sa.Column("extra_headers", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.ForeignKeyConstraint(["model_alias_id"], ["model_aliases.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(
-        "ix_upstream_targets_model_alias_id", "upstream_targets", ["model_alias_id"]
-    )
+    op.create_index("ix_upstream_targets_model_alias_id", "upstream_targets", ["model_alias_id"])
     op.create_index("ix_upstream_targets_state", "upstream_targets", ["state"])
 
     op.create_table(
@@ -187,9 +170,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("model_alias_id", sa.Uuid(), nullable=False),
         sa.Column("name", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-        sa.Column(
-            "worker_urls", postgresql.JSONB(astext_type=sa.Text()), nullable=True
-        ),
+        sa.Column("worker_urls", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("policy", router_policy, nullable=False),
         sa.Column("host", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column("port", sa.Integer(), nullable=False),
@@ -225,13 +206,9 @@ def upgrade() -> None:
     op.create_index(
         "ix_model_entitlements_model_alias_id", "model_entitlements", ["model_alias_id"]
     )
-    op.create_index(
-        "ix_model_entitlements_project_id", "model_entitlements", ["project_id"]
-    )
+    op.create_index("ix_model_entitlements_project_id", "model_entitlements", ["project_id"])
     op.create_index("ix_model_entitlements_state", "model_entitlements", ["state"])
-    op.create_index(
-        "ix_model_entitlements_subject_id", "model_entitlements", ["subject_id"]
-    )
+    op.create_index("ix_model_entitlements_subject_id", "model_entitlements", ["subject_id"])
 
     op.create_table(
         "rate_policies",
@@ -263,9 +240,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("ix_audit_events_action", "audit_events", ["action"])
-    op.create_index(
-        "ix_audit_events_actor_subject_id", "audit_events", ["actor_subject_id"]
-    )
+    op.create_index("ix_audit_events_actor_subject_id", "audit_events", ["actor_subject_id"])
     op.create_index("ix_audit_events_created_at", "audit_events", ["created_at"])
     op.create_index("ix_audit_events_outcome", "audit_events", ["outcome"])
     op.create_index("ix_audit_events_resource_id", "audit_events", ["resource_id"])
@@ -297,9 +272,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("ix_request_facts_ended_at", "request_facts", ["ended_at"])
-    op.create_index(
-        "ix_request_facts_endpoint_family", "request_facts", ["endpoint_family"]
-    )
+    op.create_index("ix_request_facts_endpoint_family", "request_facts", ["endpoint_family"])
     op.create_index("ix_request_facts_error_class", "request_facts", ["error_class"])
     op.create_index("ix_request_facts_model_alias", "request_facts", ["model_alias"])
     op.create_index("ix_request_facts_outcome", "request_facts", ["outcome"])
@@ -309,9 +282,7 @@ def upgrade() -> None:
     op.create_index("ix_request_facts_streaming", "request_facts", ["streaming"])
     op.create_index("ix_request_facts_subject_id", "request_facts", ["subject_id"])
     op.create_index("ix_request_facts_subject_type", "request_facts", ["subject_type"])
-    op.create_index(
-        "ix_request_facts_upstream_target_id", "request_facts", ["upstream_target_id"]
-    )
+    op.create_index("ix_request_facts_upstream_target_id", "request_facts", ["upstream_target_id"])
     op.create_index("ix_request_facts_usage_source", "request_facts", ["usage_source"])
 
 

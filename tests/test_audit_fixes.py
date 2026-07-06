@@ -3,11 +3,9 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
-
-from llm_gateway.db.models import EndpointFamily, RequestOutcome
-
 from conftest import fetch_request_fact
 
+from llm_gateway.db.models import EndpointFamily, RequestOutcome
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
@@ -92,9 +90,7 @@ async def test_stream_concurrency_limit_returns_429_before_sse_and_records_fact(
     assert fact.error_detail == "concurrency_exceeded"
 
 
-async def test_model_entitlement_requires_exactly_one_existing_scope(
-    client, gateway_fixture
-):
+async def test_model_entitlement_requires_exactly_one_existing_scope(client, gateway_fixture):
     from llm_gateway.core.config import get_settings
 
     headers = {"x-admin-token": get_settings().admin_token}

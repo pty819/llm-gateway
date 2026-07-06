@@ -1,6 +1,5 @@
 from uuid import uuid4
 
-
 from llm_gateway.db.models import Subject, SubjectType
 from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.services.facts import admin_actor_subject_id, record_audit_event

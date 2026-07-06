@@ -1,10 +1,9 @@
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
 import inspect
 import time
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from typing import Any
-from uuid import UUID
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
@@ -83,9 +82,7 @@ async def resolve_effective_rate_policy(
         )
         for policy in result.scalars().all():
             if policy.requests_per_minute is not None:
-                requests_per_minute = min(
-                    requests_per_minute, policy.requests_per_minute
-                )
+                requests_per_minute = min(requests_per_minute, policy.requests_per_minute)
             if policy.concurrency_limit is not None:
                 concurrency_limit = min(concurrency_limit, policy.concurrency_limit)
     effective = EffectiveRatePolicy(
@@ -201,9 +198,7 @@ def _concurrency_slot_key(key_id: UUID) -> str:
     return f"{CONCURRENCY_SLOT_PREFIX}:{key_id}:slots"
 
 
-async def _prune_stale_slots(
-    redis: Redis, *, slot_key: str, ttl_seconds: int, now: float
-) -> None:
+async def _prune_stale_slots(redis: Redis, *, slot_key: str, ttl_seconds: int, now: float) -> None:
     await redis.zremrangebyscore(slot_key, "-inf", now - ttl_seconds)
 
 
@@ -226,9 +221,7 @@ async def _try_acquire_slot(
             str(ttl_seconds),
             str(limit),
         )
-        result: Any = (
-            await eval_result if inspect.isawaitable(eval_result) else eval_result
-        )
+        result: Any = await eval_result if inspect.isawaitable(eval_result) else eval_result
         return int(result or 0) > 0
 
     await _prune_stale_slots(redis, slot_key=slot_key, ttl_seconds=ttl_seconds, now=now)

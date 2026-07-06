@@ -17,21 +17,20 @@ from llm_gateway.db.models import (
     GatewayKey,
     ModelAlias,
     ModelEntitlement,
+    ModelTeamGrant,
     Project,
     ResourceState,
     Subject,
     Team,
     TeamMembership,
-    ModelTeamGrant,
     utcnow,
 )
-from llm_gateway.services.resource_payloads import apply_model_patch, paginated
 from llm_gateway.services.facts import record_audit_event
+from llm_gateway.services.resource_payloads import apply_model_patch, paginated
 from llm_gateway.services.security import (
     ensure_model_team_grant,
     ensure_team_membership,
 )
-
 
 router = APIRouter()
 
@@ -106,9 +105,7 @@ async def list_model_entitlements(session: AsyncSession = Depends(session_dep)):
 
 
 @router.post("/teams")
-async def create_team(
-    payload: TeamCreate, session: AsyncSession = Depends(session_dep)
-):
+async def create_team(payload: TeamCreate, session: AsyncSession = Depends(session_dep)):
     team = Team(**payload.model_dump())
     session.add(team)
     await session.flush()

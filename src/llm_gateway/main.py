@@ -8,7 +8,6 @@ from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.services.facts_queue import drain_now
 from llm_gateway.services.security import ensure_builtin_identity
 
-
 _DEFAULT_ADMIN_TOKEN = "dev-admin-token"
 _DEFAULT_ADMIN_PASSWORD = "dev-admin-password"
 

@@ -66,9 +66,7 @@ async def resolve_route_context(
     if not model_alias or model_alias.state != ResourceState.ACTIVE:
         raise PolicyDenied("model_alias_not_found_or_inactive")
 
-    if not await subject_can_use_model(
-        session, auth=auth, model_alias_id=model_alias.id
-    ):
+    if not await subject_can_use_model(session, auth=auth, model_alias_id=model_alias.id):
         raise PolicyDenied("model_not_entitled")
 
     if not client_ip_allowed(model_alias, client_ip):
@@ -92,9 +90,7 @@ async def resolve_route_context(
     # Degrades open: if Redis is unreachable, trust PG config alone rather than
     # failing the request (a Redis outage must not take down the data plane).
     if redis is not None and upstreams:
-        unhealthy_ids = await filter_unhealthy_upstreams(
-            redis, [u.id for u in upstreams]
-        )
+        unhealthy_ids = await filter_unhealthy_upstreams(redis, [u.id for u in upstreams])
         if unhealthy_ids:
             upstreams = [u for u in upstreams if str(u.id) not in unhealthy_ids]
             if not upstreams:
@@ -147,14 +143,10 @@ async def subject_can_use_model(
     return team_result.scalars().first() is not None
 
 
-async def list_accessible_model_aliases(
-    session: AsyncSession, *, auth: AuthContext
-) -> list[str]:
+async def list_accessible_model_aliases(session: AsyncSession, *, auth: AuthContext) -> list[str]:
     legacy_stmt = (
         select(distinct(col(ModelAlias.alias)))
-        .join(
-            ModelEntitlement, col(ModelEntitlement.model_alias_id) == col(ModelAlias.id)
-        )
+        .join(ModelEntitlement, col(ModelEntitlement.model_alias_id) == col(ModelAlias.id))
         .where(
             col(ModelAlias.state) == ResourceState.ACTIVE,
             col(ModelEntitlement.state) == ResourceState.ACTIVE,
@@ -188,9 +180,7 @@ async def list_accessible_model_aliases_for_subject(
 ) -> list[str]:
     direct_stmt = (
         select(distinct(col(ModelAlias.alias)))
-        .join(
-            ModelEntitlement, col(ModelEntitlement.model_alias_id) == col(ModelAlias.id)
-        )
+        .join(ModelEntitlement, col(ModelEntitlement.model_alias_id) == col(ModelAlias.id))
         .where(
             col(ModelAlias.state) == ResourceState.ACTIVE,
             col(ModelEntitlement.state) == ResourceState.ACTIVE,
@@ -229,9 +219,7 @@ async def list_subject_team_names(session: AsyncSession, *, subject_id) -> list[
     return list((await session.execute(stmt)).scalars().all())
 
 
-async def list_subject_team_memberships(
-    session: AsyncSession, *, subject_id
-) -> list[dict]:
+async def list_subject_team_memberships(session: AsyncSession, *, subject_id) -> list[dict]:
     """Return the active teams a subject belongs to as ``{id, name}`` dicts.
 
     Mirrors list_subject_team_names but selects Team.id alongside Team.name so

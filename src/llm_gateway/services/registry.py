@@ -12,9 +12,9 @@ from sqlmodel import col
 
 from llm_gateway.db.models import (
     MCP,
-    MCPTransport,
     McpLike,
     McpTeamGrant,
+    MCPTransport,
     McpVersion,
     ResourceState,
     Skill,
@@ -27,7 +27,6 @@ from llm_gateway.db.models import (
     utcnow,
 )
 from llm_gateway.services.facts import record_audit_event
-
 
 SLUG_PATTERN = r"^[a-z][a-z0-9-]*$"
 
@@ -189,9 +188,7 @@ async def create_or_append_skill_version(
             )
         )
         if dup.scalars().first() is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT, detail="version_conflict"
-            )
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="version_conflict")
         existing.name = name
         existing.summary = summary
         existing.description = description
@@ -311,9 +308,7 @@ async def list_visible_skills(
         order = (col(Skill.like_count).desc(), col(Skill.updated_at).desc())
     else:
         order = (col(Skill.download_count).desc(), col(Skill.updated_at).desc())
-    list_stmt = (
-        select(Skill).where(*base_filter).order_by(*order).limit(limit).offset(offset)
-    )
+    list_stmt = select(Skill).where(*base_filter).order_by(*order).limit(limit).offset(offset)
     items = list((await session.execute(list_stmt)).scalars().all())
     return items, total
 
@@ -329,15 +324,11 @@ async def get_skill_version(
     return (await session.execute(stmt)).scalars().first()
 
 
-async def get_latest_active_version(
-    session: AsyncSession, *, skill: Skill
-) -> SkillVersion | None:
+async def get_latest_active_version(session: AsyncSession, *, skill: Skill) -> SkillVersion | None:
     """Resolve the latest_version pointer; if it points at a disabled row or is
     null, fall back to the most recent active version by created_at."""
     if skill.latest_version:
-        pointed = await get_skill_version(
-            session, skill_id=skill.id, version=skill.latest_version
-        )
+        pointed = await get_skill_version(session, skill_id=skill.id, version=skill.latest_version)
         if pointed:
             return pointed
     stmt = (
@@ -352,9 +343,7 @@ async def get_latest_active_version(
     return (await session.execute(stmt)).scalars().first()
 
 
-async def toggle_skill_like(
-    session: AsyncSession, *, subject_id: UUID, skill_id: UUID
-) -> Skill:
+async def toggle_skill_like(session: AsyncSession, *, subject_id: UUID, skill_id: UUID) -> Skill:
     """Idempotent like toggle: if not liked, create SkillLike + like_count += 1;
     if liked, delete it + like_count -= 1. Returns the updated skill."""
     skill = await session.get(Skill, skill_id)
@@ -379,9 +368,7 @@ async def toggle_skill_like(
     return skill
 
 
-async def is_skill_liked_by(
-    session: AsyncSession, *, subject_id: UUID, skill_id: UUID
-) -> bool:
+async def is_skill_liked_by(session: AsyncSession, *, subject_id: UUID, skill_id: UUID) -> bool:
     row = (
         (
             await session.execute(
@@ -397,9 +384,7 @@ async def is_skill_liked_by(
     return row is not None
 
 
-async def increment_skill_download_count(
-    session: AsyncSession, *, skill_id: UUID
-) -> None:
+async def increment_skill_download_count(session: AsyncSession, *, skill_id: UUID) -> None:
     """Atomic UPDATE skills SET download_count = download_count + 1."""
     from sqlalchemy import update
 
@@ -413,9 +398,7 @@ async def increment_skill_download_count(
 # ---- MCP artifact (connection config) ----
 
 
-async def subject_can_access_mcp(
-    session: AsyncSession, *, subject_id: UUID, mcp: MCP
-) -> bool:
+async def subject_can_access_mcp(session: AsyncSession, *, subject_id: UUID, mcp: MCP) -> bool:
     """Same visibility rule as skills: owner OR active team grant."""
     if mcp.owner_subject_id == subject_id:
         return True
@@ -462,9 +445,7 @@ def _validate_mcp_config(config: dict) -> dict:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="stdio_requires_command",
         )
-    if transport_enum in (MCPTransport.HTTP, MCPTransport.SSE) and not config.get(
-        "url"
-    ):
+    if transport_enum in (MCPTransport.HTTP, MCPTransport.SSE) and not config.get("url"):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="remote_requires_url",
@@ -538,9 +519,7 @@ async def create_or_append_mcp_version(
             )
         )
         if dup.scalars().first() is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT, detail="version_conflict"
-            )
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="version_conflict")
         existing.name = name
         existing.summary = summary
         existing.description = description
@@ -667,9 +646,7 @@ async def list_visible_mcps(
         order = (col(MCP.like_count).desc(), col(MCP.updated_at).desc())
     else:
         order = (col(MCP.download_count).desc(), col(MCP.updated_at).desc())
-    list_stmt = (
-        select(MCP).where(*base_filter).order_by(*order).limit(limit).offset(offset)
-    )
+    list_stmt = select(MCP).where(*base_filter).order_by(*order).limit(limit).offset(offset)
     items = list((await session.execute(list_stmt)).scalars().all())
     return items, total
 
@@ -685,14 +662,10 @@ async def get_mcp_version_row(
     return (await session.execute(stmt)).scalars().first()
 
 
-async def get_latest_active_mcp_version(
-    session: AsyncSession, *, mcp: MCP
-) -> McpVersion | None:
+async def get_latest_active_mcp_version(session: AsyncSession, *, mcp: MCP) -> McpVersion | None:
     """Resolve the latest_version pointer; fall back to most recent active by created_at."""
     if mcp.latest_version:
-        pointed = await get_mcp_version_row(
-            session, mcp_id=mcp.id, version=mcp.latest_version
-        )
+        pointed = await get_mcp_version_row(session, mcp_id=mcp.id, version=mcp.latest_version)
         if pointed:
             return pointed
     stmt = (
@@ -707,9 +680,7 @@ async def get_latest_active_mcp_version(
     return (await session.execute(stmt)).scalars().first()
 
 
-async def toggle_mcp_like(
-    session: AsyncSession, *, subject_id: UUID, mcp_id: UUID
-) -> MCP:
+async def toggle_mcp_like(session: AsyncSession, *, subject_id: UUID, mcp_id: UUID) -> MCP:
     """Idempotent like toggle: if not liked, create McpLike + like_count += 1;
     if liked, delete it + like_count -= 1. Returns the updated mcp."""
     mcp = await session.get(MCP, mcp_id)
@@ -734,9 +705,7 @@ async def toggle_mcp_like(
     return mcp
 
 
-async def is_mcp_liked_by(
-    session: AsyncSession, *, subject_id: UUID, mcp_id: UUID
-) -> bool:
+async def is_mcp_liked_by(session: AsyncSession, *, subject_id: UUID, mcp_id: UUID) -> bool:
     row = (
         (
             await session.execute(

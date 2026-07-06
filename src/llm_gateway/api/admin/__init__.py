@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends
 
-from llm_gateway.api.deps import admin_dep
 from llm_gateway.api.admin import (
     access,
     identity,
@@ -10,7 +9,7 @@ from llm_gateway.api.admin import (
     routing,
     settings,
 )
-
+from llm_gateway.api.deps import admin_dep
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(admin_dep)])
 router.include_router(identity.router)

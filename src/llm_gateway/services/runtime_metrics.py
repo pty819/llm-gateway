@@ -13,7 +13,6 @@ from redis.asyncio import Redis
 
 from llm_gateway.db.models import ModelAlias, UpstreamTarget
 
-
 ACTIVE_KEY = "llm_gateway:runtime:active_connections"
 DEFAULT_WINDOW_SECONDS = 10
 ACTIVE_STALE_SECONDS = 60 * 60
@@ -167,9 +166,7 @@ def metrics_url_from_base_url(base_url: str) -> str:
         path = path[: -len("/v1")]
     if not path:
         path = ""
-    return urlunparse(
-        parsed._replace(path=f"{path}/metrics", params="", query="", fragment="")
-    )
+    return urlunparse(parsed._replace(path=f"{path}/metrics", params="", query="", fragment=""))
 
 
 def metrics_url_for_target(target: VLLMMetricsTarget) -> str:
@@ -211,9 +208,7 @@ def summarize_vllm_metrics(
         )
 
     kind = _metrics_kind(metrics)
-    prompt_total = _metric_sum(
-        metrics, "vllm:prompt_tokens_total", "vllm:prompt_tokens"
-    )
+    prompt_total = _metric_sum(metrics, "vllm:prompt_tokens_total", "vllm:prompt_tokens")
     generation_total = _metric_sum(
         metrics, "vllm:generation_tokens_total", "vllm:generation_tokens"
     )
@@ -256,9 +251,7 @@ def summarize_router_metrics(metrics: dict[str, float]) -> dict[str, Any]:
         "min_load": metrics.get("vllm_router_min_load"),
         "cache_hits_total": cache_hits,
         "cache_misses_total": cache_misses,
-        "cache_hit_ratio": (
-            cache_hits_value / cache_queries if cache_queries > 0 else None
-        ),
+        "cache_hit_ratio": (cache_hits_value / cache_queries if cache_queries > 0 else None),
     }
 
 
@@ -288,9 +281,7 @@ async def _collect_vllm_target(
         "upstream_id": target.upstream_id,
         "upstream_name": target.upstream_name,
         "model_alias": target.model_alias,
-        "vllm": await _cached_vllm_metrics(
-            redis, target=target, now=now, fetcher=fetcher
-        ),
+        "vllm": await _cached_vllm_metrics(redis, target=target, now=now, fetcher=fetcher),
     }
 
 
@@ -317,24 +308,18 @@ async def _cached_vllm_metrics(
 
     try:
         metrics_text = (
-            await fetcher(target)
-            if fetcher is not None
-            else await _fetch_vllm_metrics_text(target)
+            await fetcher(target) if fetcher is not None else await _fetch_vllm_metrics_text(target)
         )
         metrics = parse_vllm_prometheus_metrics(metrics_text)
         if metrics:
             tokens_per_second = await _vllm_token_rate(
                 redis, target=target, metrics=metrics, now=now
             )
-            snapshot = summarize_vllm_metrics(
-                metrics, tokens_per_second=tokens_per_second
-            )
+            snapshot = summarize_vllm_metrics(metrics, tokens_per_second=tokens_per_second)
             snapshot["metrics_url"] = metrics_url_for_target(target)
             snapshot["scraped_at"] = _iso_from_epoch(now)
         else:
-            snapshot = _ignored_metrics_snapshot(
-                target, reason="unsupported_metrics", now=now
-            )
+            snapshot = _ignored_metrics_snapshot(target, reason="unsupported_metrics", now=now)
     except Exception as exc:
         snapshot = _ignored_metrics_snapshot(target, reason=str(exc), now=now)
     await redis.setex(
@@ -530,9 +515,7 @@ def _decode_value(value: Any) -> str:
     return str(value)
 
 
-def _upstream_row(
-    rows: dict[str, dict[str, Any]], item: dict[str, Any]
-) -> dict[str, Any]:
+def _upstream_row(rows: dict[str, dict[str, Any]], item: dict[str, Any]) -> dict[str, Any]:
     upstream_id = str(item["upstream_id"])
     row = rows.setdefault(
         upstream_id,

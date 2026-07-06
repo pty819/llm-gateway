@@ -106,9 +106,7 @@ def redact_mcp_version(version, *, reveal: bool = False) -> dict[str, Any]:
         "headers": dict(version.headers or {}),
         "tools": list(version.tools or []),
         "upload_subject_id": str(version.upload_subject_id),
-        "state": version.state.value
-        if hasattr(version.state, "value")
-        else version.state,
+        "state": version.state.value if hasattr(version.state, "value") else version.state,
         "created_at": version.created_at.isoformat() if version.created_at else None,
     }
     if not reveal:
@@ -153,9 +151,7 @@ def mcp_detail(
         "readme": readme,
         "liked_by_me": liked_by_me,
         "versions": [redact_mcp_version(v, reveal=reveal) for v in versions],
-        "latest": redact_mcp_version(latest_version, reveal=reveal)
-        if latest_version
-        else None,
+        "latest": redact_mcp_version(latest_version, reveal=reveal) if latest_version else None,
         "grants": [
             {
                 "id": str(g.id),

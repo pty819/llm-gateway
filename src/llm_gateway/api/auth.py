@@ -33,8 +33,8 @@ from llm_gateway.api.registry import (
 )
 from llm_gateway.core.config import Settings
 from llm_gateway.db.models import (
-    GatewayKey,
     MCP,
+    GatewayKey,
     McpTeamGrant,
     McpVersion,
     Project,
@@ -62,6 +62,7 @@ from llm_gateway.services.policy import (
     list_subject_team_memberships,
     list_subject_team_names,
 )
+from llm_gateway.services.rate_limit import RateLimitExceeded, check_login_rate
 from llm_gateway.services.registry import (
     SLUG_PATTERN,
     create_or_append_mcp_version,
@@ -88,7 +89,6 @@ from llm_gateway.services.resource_payloads import (
     skill_detail,
     skill_summary,
 )
-from llm_gateway.services.rate_limit import RateLimitExceeded, check_login_rate
 from llm_gateway.services.security import (
     DUMMY_PASSWORD_HASH,
     UserSessionContext,
@@ -100,7 +100,6 @@ from llm_gateway.services.security import (
     revoke_user_session,
     verify_password,
 )
-
 
 router = APIRouter(prefix="/auth")
 
@@ -150,9 +149,7 @@ async def register(
     try:
         await check_login_rate(redis, client_ip=client_ip)
     except RateLimitExceeded as exc:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
     try:
         subject, project, key, raw_key = await create_registered_user(
             session,
@@ -204,13 +201,9 @@ async def login(
     try:
         await check_login_rate(redis, client_ip=client_ip)
     except RateLimitExceeded as exc:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
 
-    result = await session.execute(
-        select(Subject).where(col(Subject.login_username) == username)
-    )
+    result = await session.execute(select(Subject).where(col(Subject.login_username) == username))
     subject = result.scalar_one_or_none()
     user_eligible = (
         subject is not None
@@ -220,15 +213,11 @@ async def login(
     # Always run a full PBKDF2 verification so the response timing cannot reveal
     # whether the username exists: unknown users verify against a dummy hash.
     stored_hash = (
-        subject.password_hash
-        if (subject and subject.password_hash)
-        else DUMMY_PASSWORD_HASH
+        subject.password_hash if (subject and subject.password_hash) else DUMMY_PASSWORD_HASH
     )
     password_ok = verify_password(payload.password, stored_hash)
     if not user_eligible or not password_ok:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_login"
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_login")
     user_session, raw_session = await create_user_session(
         session,
         subject_id=subject.id,
@@ -258,9 +247,7 @@ async def logout(
     raw_token = request.headers.get("x-session-token")
     if not raw_token:
         auth = request.headers.get("authorization", "")
-        raw_token = (
-            auth[7:].strip() if auth.lower().startswith("bearer sess-") else None
-        )
+        raw_token = auth[7:].strip() if auth.lower().startswith("bearer sess-") else None
     if raw_token:
         await revoke_user_session(session, raw_token)
         await session.commit()
@@ -318,11 +305,7 @@ async def list_managed_candidate_subjects(
             col(Subject.name).ilike(needle) | col(Subject.login_username).ilike(needle)
         )
     rows = (
-        (
-            await session.execute(
-                stmt.order_by(col(Subject.name)).limit(max(1, min(limit, 50)))
-            )
-        )
+        (await session.execute(stmt.order_by(col(Subject.name)).limit(max(1, min(limit, 50)))))
         .scalars()
         .all()
     )
@@ -369,9 +352,7 @@ async def list_managed_project_memberships(
             .order_by(col(ProjectMembership.created_at).desc())
         )
     ).all()
-    return [
-        project_membership_payload(membership, subject) for membership, subject in rows
-    ]
+    return [project_membership_payload(membership, subject) for membership, subject in rows]
 
 
 @router.get("/managed/team-memberships")
@@ -389,9 +370,7 @@ async def list_managed_team_memberships(
             .order_by(col(TeamMembership.created_at).desc())
         )
     ).all()
-    return [
-        team_membership_payload(membership, subject) for membership, subject in rows
-    ]
+    return [team_membership_payload(membership, subject) for membership, subject in rows]
 
 
 @router.get("/managed/usage/summary")
@@ -689,9 +668,7 @@ async def update_profile(
 ):
     full_name = payload.full_name.strip()
     if not full_name:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="full_name_required"
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="full_name_required")
     context.subject.name = full_name
     context.subject.updated_at = utcnow()
     await record_audit_event(
@@ -750,11 +727,7 @@ async def set_own_key_state(
     # 避免向用户泄露其他 key 的存在性（最小信息泄露）。
     key = await session.get(GatewayKey, key_id)
     personal_project = await _personal_project(session, context.subject)
-    if (
-        key is None
-        or key.subject_id != context.subject.id
-        or key.project_id != personal_project.id
-    ):
+    if key is None or key.subject_id != context.subject.id or key.project_id != personal_project.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="key_not_found")
     key.state = payload.state
     key.updated_at = utcnow()
@@ -787,12 +760,8 @@ async def _profile_payload(session: AsyncSession, subject: Subject) -> dict[str,
     return {
         "subject": _public_subject(subject),
         "teams": await list_subject_team_names(session, subject_id=subject.id),
-        "team_memberships": await list_subject_team_memberships(
-            session, subject_id=subject.id
-        ),
-        "models": await list_accessible_model_aliases_for_subject(
-            session, subject_id=subject.id
-        ),
+        "team_memberships": await list_subject_team_memberships(session, subject_id=subject.id),
+        "models": await list_accessible_model_aliases_for_subject(session, subject_id=subject.id),
         "keys": [redact_gateway_key(key) for key in keys],
         "managed": {
             "projects": await _managed_projects_payload(session, subject.id),
@@ -815,14 +784,10 @@ async def _managed_projects_payload(
         .order_by(col(Project.name))
     )
     rows = (await session.execute(stmt)).all()
-    return [
-        {"project": project, "membership": membership} for project, membership in rows
-    ]
+    return [{"project": project, "membership": membership} for project, membership in rows]
 
 
-async def _managed_teams_payload(
-    session: AsyncSession, subject_id: UUID
-) -> list[dict[str, Any]]:
+async def _managed_teams_payload(session: AsyncSession, subject_id: UUID) -> list[dict[str, Any]]:
     stmt = (
         select(Team, TeamMembership)
         .join(TeamMembership, col(TeamMembership.team_id) == col(Team.id))
@@ -848,9 +813,7 @@ async def _managed_team_ids(session: AsyncSession, subject_id: UUID) -> list[UUI
     return [row["team"].id for row in rows]
 
 
-async def _require_any_managed_resource(
-    session: AsyncSession, subject_id: UUID
-) -> None:
+async def _require_any_managed_resource(session: AsyncSession, subject_id: UUID) -> None:
     if await _managed_project_ids(session, subject_id):
         return
     if await _managed_team_ids(session, subject_id):
@@ -872,9 +835,7 @@ async def _require_project_manager(
         )
 
 
-async def _require_team_manager(
-    session: AsyncSession, subject_id: UUID, team_id: UUID
-) -> None:
+async def _require_team_manager(session: AsyncSession, subject_id: UUID, team_id: UUID) -> None:
     team_ids = await _managed_team_ids(session, subject_id)
     if team_id not in team_ids:
         raise HTTPException(
@@ -927,15 +888,11 @@ async def _usage_summary_from_postgres(
         func.coalesce(func.sum(RequestFact.completion_tokens), 0),
         func.coalesce(func.sum(total_tokens_expr), 0),
         func.coalesce(
-            func.sum(
-                case((col(RequestFact.outcome) == RequestOutcome.SUCCESS, 1), else_=0)
-            ),
+            func.sum(case((col(RequestFact.outcome) == RequestOutcome.SUCCESS, 1), else_=0)),
             0,
         ),
         func.coalesce(
-            func.sum(
-                case((col(RequestFact.outcome) != RequestOutcome.SUCCESS, 1), else_=0)
-            ),
+            func.sum(case((col(RequestFact.outcome) != RequestOutcome.SUCCESS, 1), else_=0)),
             0,
         ),
     )
@@ -1010,27 +967,15 @@ async def _usage_ranking_from_postgres(
             Subject.name.label("subject_name"),
             Subject.login_username.label("login_username"),
             func.count(col(RequestFact.id)).label("request_count"),
-            func.coalesce(func.sum(RequestFact.prompt_tokens), 0).label(
-                "prompt_tokens"
-            ),
-            func.coalesce(func.sum(RequestFact.completion_tokens), 0).label(
-                "completion_tokens"
-            ),
+            func.coalesce(func.sum(RequestFact.prompt_tokens), 0).label("prompt_tokens"),
+            func.coalesce(func.sum(RequestFact.completion_tokens), 0).label("completion_tokens"),
             func.coalesce(func.sum(total_tokens_expr), 0).label("total_tokens"),
             func.coalesce(
-                func.sum(
-                    case(
-                        (col(RequestFact.outcome) == RequestOutcome.SUCCESS, 1), else_=0
-                    )
-                ),
+                func.sum(case((col(RequestFact.outcome) == RequestOutcome.SUCCESS, 1), else_=0)),
                 0,
             ).label("success_count"),
             func.coalesce(
-                func.sum(
-                    case(
-                        (col(RequestFact.outcome) != RequestOutcome.SUCCESS, 1), else_=0
-                    )
-                ),
+                func.sum(case((col(RequestFact.outcome) != RequestOutcome.SUCCESS, 1), else_=0)),
                 0,
             ).label("failure_count"),
         )
@@ -1255,9 +1200,7 @@ async def browse_skill_detail(
         .all()
     )
     owner_obj = await session.get(Subject, skill.owner_subject_id)
-    liked_by_me = await is_skill_liked_by(
-        session, subject_id=ctx.subject.id, skill_id=skill.id
-    )
+    liked_by_me = await is_skill_liked_by(session, subject_id=ctx.subject.id, skill_id=skill.id)
     return skill_detail(
         skill,
         versions,
@@ -1310,9 +1253,7 @@ async def browse_skill_like(
     skill = await _get_visible_skill_or_404(
         session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
     )
-    skill = await toggle_skill_like(
-        session, subject_id=ctx.subject.id, skill_id=skill.id
-    )
+    skill = await toggle_skill_like(session, subject_id=ctx.subject.id, skill_id=skill.id)
     await session.commit()
     return {"liked_by_me": True, "like_count": skill.like_count}
 
@@ -1327,9 +1268,7 @@ async def browse_skill_unlike(
     skill = await _get_visible_skill_or_404(
         session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
     )
-    skill = await toggle_skill_like(
-        session, subject_id=ctx.subject.id, skill_id=skill.id
-    )
+    skill = await toggle_skill_like(session, subject_id=ctx.subject.id, skill_id=skill.id)
     await session.commit()
     return {"liked_by_me": False, "like_count": skill.like_count}
 
@@ -1385,9 +1324,7 @@ async def create_my_skill_grant(
     team = await session.get(Team, payload.team_id)
     if team is None:
         raise HTTPException(status_code=404, detail="team_not_found")
-    grant = await ensure_skill_team_grant(
-        session, skill_id=skill.id, team_id=payload.team_id
-    )
+    grant = await ensure_skill_team_grant(session, skill_id=skill.id, team_id=payload.team_id)
     await session.commit()
     await session.refresh(grant)
     return {
@@ -1395,9 +1332,7 @@ async def create_my_skill_grant(
             "id": str(grant.id),
             "skill_id": str(grant.skill_id),
             "team_id": str(grant.team_id),
-            "state": grant.state.value
-            if hasattr(grant.state, "value")
-            else grant.state,
+            "state": grant.state.value if hasattr(grant.state, "value") else grant.state,
         }
     }
 
@@ -1426,9 +1361,7 @@ async def patch_my_skill_grant_state(
             "id": str(grant.id),
             "skill_id": str(grant.skill_id),
             "team_id": str(grant.team_id),
-            "state": grant.state.value
-            if hasattr(grant.state, "value")
-            else grant.state,
+            "state": grant.state.value if hasattr(grant.state, "value") else grant.state,
         }
     }
 
@@ -1558,20 +1491,14 @@ async def browse_mcp_detail(
         .all()
     )
     grants = list(
-        (
-            await session.execute(
-                select(McpTeamGrant).where(col(McpTeamGrant.mcp_id) == mcp.id)
-            )
-        )
+        (await session.execute(select(McpTeamGrant).where(col(McpTeamGrant.mcp_id) == mcp.id)))
         .scalars()
         .all()
     )
     latest = await get_latest_active_mcp_version(session, mcp=mcp)
     owner_obj = await session.get(Subject, mcp.owner_subject_id)
     reveal = mcp.owner_subject_id == ctx.subject.id
-    liked_by_me = await is_mcp_liked_by(
-        session, subject_id=ctx.subject.id, mcp_id=mcp.id
-    )
+    liked_by_me = await is_mcp_liked_by(session, subject_id=ctx.subject.id, mcp_id=mcp.id)
     return mcp_detail(
         mcp,
         versions,
@@ -1634,11 +1561,7 @@ async def list_my_mcp_grants(
     from sqlmodel import col as _col
 
     rows = (
-        (
-            await session.execute(
-                _select(McpTeamGrant).where(_col(McpTeamGrant.mcp_id) == mcp.id)
-            )
-        )
+        (await session.execute(_select(McpTeamGrant).where(_col(McpTeamGrant.mcp_id) == mcp.id)))
         .scalars()
         .all()
     )
@@ -1673,9 +1596,7 @@ async def create_my_mcp_grant(
             "id": str(grant.id),
             "mcp_id": str(grant.mcp_id),
             "team_id": str(grant.team_id),
-            "state": grant.state.value
-            if hasattr(grant.state, "value")
-            else grant.state,
+            "state": grant.state.value if hasattr(grant.state, "value") else grant.state,
         }
     }
 
@@ -1704,8 +1625,6 @@ async def patch_my_mcp_grant_state(
             "id": str(grant.id),
             "mcp_id": str(grant.mcp_id),
             "team_id": str(grant.team_id),
-            "state": grant.state.value
-            if hasattr(grant.state, "value")
-            else grant.state,
+            "state": grant.state.value if hasattr(grant.state, "value") else grant.state,
         }
     }

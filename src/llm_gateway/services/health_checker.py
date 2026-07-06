@@ -14,7 +14,6 @@ from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.services import upstream_health
 from llm_gateway.services.facts import record_audit_event
 
-
 logger = logging.getLogger(__name__)
 
 HEALTHY_STATUSES = frozenset({200, 404})
@@ -220,10 +219,7 @@ async def _run_once(
         return
 
     verdicts = await asyncio.gather(
-        *[
-            _probe_upstream(upstream, timeout_seconds=timeout_seconds)
-            for upstream in upstreams
-        ]
+        *[_probe_upstream(upstream, timeout_seconds=timeout_seconds) for upstream in upstreams]
     )
 
     unhealthy: list[tuple[object, HealthVerdict]] = [
@@ -247,9 +243,7 @@ async def _run_once(
             try:
                 await _clear_healthy(redis, upstream_id=upstream.id)
             except Exception:
-                logger.exception(
-                    "health_check_clear_failed upstream_id=%s", upstream.id
-                )
+                logger.exception("health_check_clear_failed upstream_id=%s", upstream.id)
             continue
         try:
             await _mark_unhealthy(

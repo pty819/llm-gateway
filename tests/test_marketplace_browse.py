@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-
 import pytest
-
 from sqlmodel import col
 from sqlmodel import select as sqlselect
 

@@ -15,7 +15,6 @@ from collections.abc import Sequence
 
 from alembic import op
 
-
 revision: str = "20260629_0010"
 down_revision: str | None = "20260615_0009"
 branch_labels: str | Sequence[str] | None = None
@@ -50,6 +49,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     for index_name, columns, kwargs in reversed(_DROPPED_INDEXES):
-        op.create_index(
-            index_name, "request_facts", columns, if_not_exists=True, **kwargs
-        )
+        op.create_index(index_name, "request_facts", columns, if_not_exists=True, **kwargs)

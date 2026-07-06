@@ -122,18 +122,14 @@ async def test_probe_upstream_returns_connect_timeout_verdict(monkeypatch):
     )
 
     verdict = await health_checker._probe_upstream(upstream, timeout_seconds=3.0)
-    assert verdict == HealthVerdict(
-        healthy=False, status_code=None, reason="connect_timeout"
-    )
+    assert verdict == HealthVerdict(healthy=False, status_code=None, reason="connect_timeout")
 
 
 async def test_probe_upstream_injects_authorization_header(monkeypatch):
     """api_key_value/ref 必须以 Bearer 注入，复用 upstream_client._api_key 语义。"""
     from llm_gateway.services import health_checker
 
-    upstream = _FakeUpstream(
-        base_url="http://upstream.local", api_key_value="secret-key"
-    )
+    upstream = _FakeUpstream(base_url="http://upstream.local", api_key_value="secret-key")
     captured = {}
 
     class _InspectClient:
@@ -280,9 +276,7 @@ async def test_mark_unhealthy_swallows_audit_failure(monkeypatch):
 
         yield _Session()
 
-    monkeypatch.setattr(
-        "llm_gateway.services.health_checker.AsyncSessionLocal", _session
-    )
+    monkeypatch.setattr("llm_gateway.services.health_checker.AsyncSessionLocal", _session)
     verdict = HealthVerdict(False, 500, "http_5xx")
     # Must not raise
     await health_checker._mark_unhealthy(
@@ -327,9 +321,7 @@ async def test_run_once_marks_failing_upstream_and_clears_healthy(monkeypatch):
     async def _fake_collect_active_upstreams(session):
         return list(active)
 
-    monkeypatch.setattr(
-        health_checker, "_collect_active_upstreams", _fake_collect_active_upstreams
-    )
+    monkeypatch.setattr(health_checker, "_collect_active_upstreams", _fake_collect_active_upstreams)
 
     async def _fake_probe_upstream(upstream, *, timeout_seconds):
         if upstream is bad:
@@ -370,9 +362,7 @@ async def test_run_once_treats_404_as_healthy_and_does_not_disable(monkeypatch):
     async def _fake_collect_active_upstreams(session):
         return list(active)
 
-    monkeypatch.setattr(
-        health_checker, "_collect_active_upstreams", _fake_collect_active_upstreams
-    )
+    monkeypatch.setattr(health_checker, "_collect_active_upstreams", _fake_collect_active_upstreams)
 
     async def _fake_probe_upstream(upstream, *, timeout_seconds):
         return HealthVerdict(True, 404, "ok")
@@ -414,9 +404,7 @@ async def test_run_once_continues_when_mark_raises(monkeypatch):
     async def _fake_collect_active_upstreams(session):
         return list(active)
 
-    monkeypatch.setattr(
-        health_checker, "_collect_active_upstreams", _fake_collect_active_upstreams
-    )
+    monkeypatch.setattr(health_checker, "_collect_active_upstreams", _fake_collect_active_upstreams)
 
     async def _fake_probe_upstream(upstream, *, timeout_seconds):
         if upstream is healthy:
@@ -428,9 +416,7 @@ async def test_run_once_continues_when_mark_raises(monkeypatch):
     real_mark = health_checker._mark_unhealthy
     call_count = {"n": 0}
 
-    async def _flaky_mark(
-        redis_arg, *, upstream_id, upstream_name, verdict, ttl_seconds
-    ):
+    async def _flaky_mark(redis_arg, *, upstream_id, upstream_name, verdict, ttl_seconds):
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise RuntimeError("redis hiccup")
@@ -474,9 +460,7 @@ async def test_run_once_noop_when_no_active_upstreams(monkeypatch):
     async def _fake_collect_active_upstreams(session):
         return []
 
-    monkeypatch.setattr(
-        health_checker, "_collect_active_upstreams", _fake_collect_active_upstreams
-    )
+    monkeypatch.setattr(health_checker, "_collect_active_upstreams", _fake_collect_active_upstreams)
     probe_calls = []
 
     async def _fake_probe_upstream(upstream, *, timeout_seconds):
@@ -519,9 +503,7 @@ async def test_quorum_breach_suppresses_batch_mark(monkeypatch):
     async def _fake_collect_active_upstreams(session):
         return list(active)
 
-    monkeypatch.setattr(
-        health_checker, "_collect_active_upstreams", _fake_collect_active_upstreams
-    )
+    monkeypatch.setattr(health_checker, "_collect_active_upstreams", _fake_collect_active_upstreams)
 
     async def _fake_probe_upstream(upstream, *, timeout_seconds):
         # All three fail — classic checker-side incident
@@ -570,9 +552,7 @@ async def test_quorum_below_threshold_still_marks(monkeypatch):
     async def _fake_collect_active_upstreams(session):
         return list(active)
 
-    monkeypatch.setattr(
-        health_checker, "_collect_active_upstreams", _fake_collect_active_upstreams
-    )
+    monkeypatch.setattr(health_checker, "_collect_active_upstreams", _fake_collect_active_upstreams)
 
     async def _fake_probe_upstream(upstream, *, timeout_seconds):
         if upstream is bad:
@@ -639,9 +619,7 @@ async def test_start_always_starts_loop_skips_probes_when_disabled(monkeypatch):
 
     probe_calls = []
 
-    async def _fake_run_once(
-        *, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min
-    ):
+    async def _fake_run_once(*, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min):
         probe_calls.append(1)
 
     monkeypatch.setattr(health_checker, "_run_once", _fake_run_once)
@@ -666,9 +644,7 @@ async def test_start_runs_loop_then_stop_terminates(monkeypatch):
 
     iterations = []
 
-    async def _fake_run_once(
-        *, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min
-    ):
+    async def _fake_run_once(*, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min):
         iterations.append(1)
 
     monkeypatch.setattr(health_checker, "_run_once", _fake_run_once)
@@ -723,15 +699,11 @@ def _noop_coro_factory():
 def test_classify_health_none_status_and_no_exception_is_unknown_error():
     """M-1 regression guard: classify_health must not raise on (None, None)."""
     verdict = classify_health(None, exc=None)
-    assert verdict == HealthVerdict(
-        healthy=False, status_code=None, reason="unknown_error"
-    )
+    assert verdict == HealthVerdict(healthy=False, status_code=None, reason="unknown_error")
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_run_once_integration_marks_redis_and_leaves_pg_active(
-    gateway_fixture, monkeypatch
-):
+async def test_run_once_integration_marks_redis_and_leaves_pg_active(gateway_fixture, monkeypatch):
     """I-1: integration test exercising the real DB → httpx → Redis → audit path.
 
     Unlike the unit tests above (which mock _probe/_collect/session/redis), this
@@ -786,9 +758,7 @@ async def test_run_once_integration_marks_redis_and_leaves_pg_active(
         row = await session.get(UpstreamTarget, fixture_upstream_id)
         return [row] if row is not None else []
 
-    monkeypatch.setattr(
-        health_checker, "_collect_active_upstreams", _collect_fixture_upstream
-    )
+    monkeypatch.setattr(health_checker, "_collect_active_upstreams", _collect_fixture_upstream)
 
     # 1 of 1 is below quorum_min=2, so the marker IS applied (single genuine
     # failure, not a batch).

@@ -37,9 +37,7 @@ async def _get_visible_skill_or_404(
     owner = await resolve_owner_subject(session, owner=owner_name)
     if owner is None:
         raise HTTPException(status_code=404, detail="artifact_not_found")
-    stmt = select(Skill).where(
-        col(Skill.owner_subject_id) == owner.id, col(Skill.slug) == slug
-    )
+    stmt = select(Skill).where(col(Skill.owner_subject_id) == owner.id, col(Skill.slug) == slug)
     skill = (await session.execute(stmt)).scalars().first()
     if skill is None or skill.state != ResourceState.ACTIVE:
         raise HTTPException(status_code=404, detail="artifact_not_found")
@@ -118,9 +116,7 @@ async def get_skill_detail_route(
         .all()
     )
     owner_obj = await session.get(Subject, skill.owner_subject_id)
-    return skill_detail(
-        skill, versions, grants, owner_name=owner_obj.name if owner_obj else None
-    )
+    return skill_detail(skill, versions, grants, owner_name=owner_obj.name if owner_obj else None)
 
 
 @router.get("/skills/{owner}/{slug}/versions/{version}/download")
@@ -168,9 +164,7 @@ async def _get_visible_mcp_or_404(
     owner = await resolve_owner_subject(session, owner=owner_name)
     if owner is None:
         raise HTTPException(status_code=404, detail="artifact_not_found")
-    stmt = select(MCP).where(
-        col(MCP.owner_subject_id) == owner.id, col(MCP.slug) == slug
-    )
+    stmt = select(MCP).where(col(MCP.owner_subject_id) == owner.id, col(MCP.slug) == slug)
     mcp = (await session.execute(stmt)).scalars().first()
     if mcp is None or mcp.state != ResourceState.ACTIVE:
         raise HTTPException(status_code=404, detail="artifact_not_found")
@@ -240,11 +234,7 @@ async def get_mcp_detail_route(
         .all()
     )
     grants = list(
-        (
-            await session.execute(
-                select(McpTeamGrant).where(col(McpTeamGrant.mcp_id) == mcp.id)
-            )
-        )
+        (await session.execute(select(McpTeamGrant).where(col(McpTeamGrant.mcp_id) == mcp.id)))
         .scalars()
         .all()
     )

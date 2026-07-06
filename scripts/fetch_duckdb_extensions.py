@@ -4,7 +4,6 @@ import argparse
 import urllib.request
 from pathlib import Path
 
-
 DUCKDB_VERSION = "v1.5.3"
 EXTENSION_NAME = "postgres_scanner"
 DEFAULT_PLATFORMS = ("linux_amd64", "osx_arm64")
@@ -30,12 +29,7 @@ def main() -> None:
 
 
 def fetch_platform(platform_name: str) -> None:
-    target = (
-        VENDOR_ROOT
-        / DUCKDB_VERSION
-        / platform_name
-        / f"{EXTENSION_NAME}.duckdb_extension.gz"
-    )
+    target = VENDOR_ROOT / DUCKDB_VERSION / platform_name / f"{EXTENSION_NAME}.duckdb_extension.gz"
     target.parent.mkdir(parents=True, exist_ok=True)
     url = (
         f"https://extensions.duckdb.org/{DUCKDB_VERSION}/{platform_name}/"

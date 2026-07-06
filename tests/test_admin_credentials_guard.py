@@ -52,6 +52,4 @@ def test_guard_allows_nondefault_credentials_outside_local():
 
 def test_guard_respects_explicit_override_to_false():
     # An operator can explicitly opt out even outside local.
-    _guard_default_admin_credentials(
-        _Settings(environment="production", require_flag=False)
-    )
+    _guard_default_admin_credentials(_Settings(environment="production", require_flag=False))

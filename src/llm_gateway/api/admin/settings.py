@@ -17,7 +17,6 @@ from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.services import health_checker
 from llm_gateway.services.facts import record_audit_event
 
-
 router = APIRouter()
 
 

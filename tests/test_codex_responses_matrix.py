@@ -5,12 +5,10 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from conftest import fetch_request_fact
 
 from llm_gateway.db.models import EndpointFamily, RequestOutcome, UsageSource
 from llm_gateway.services.upstream_client import UpstreamCallResult as LiteLLMCallResult
-
-from conftest import fetch_request_fact
-
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
@@ -56,9 +54,7 @@ async def test_codex_responses_tools_reasoning_and_usage_are_passed_through(
 ):
     seen: dict[str, Any] = {}
 
-    async def fake_upstream_request_once(
-        *, endpoint_family, model_alias, upstream, body
-    ):
+    async def fake_upstream_request_once(*, endpoint_family, model_alias, upstream, body):
         assert endpoint_family == EndpointFamily.OPENAI_RESPONSES
         seen["model_alias"] = model_alias.alias
         seen["base_url"] = upstream.base_url
@@ -87,9 +83,7 @@ async def test_codex_responses_tools_reasoning_and_usage_are_passed_through(
             },
         )
 
-    monkeypatch.setattr(
-        "llm_gateway.api.proxy.upstream_request_once", fake_upstream_request_once
-    )
+    monkeypatch.setattr("llm_gateway.api.proxy.upstream_request_once", fake_upstream_request_once)
 
     request_id = f"pytest-codex-matrix-{uuid4()}"
     response = await client.post(
@@ -164,9 +158,7 @@ async def test_codex_responses_stream_records_ttft_and_stream_duration(
 async def test_codex_responses_long_context_shape_is_forwarded(
     client, gateway_fixture, monkeypatch
 ):
-    async def fake_upstream_request_once(
-        *, endpoint_family, model_alias, upstream, body
-    ):
+    async def fake_upstream_request_once(*, endpoint_family, model_alias, upstream, body):
         assert endpoint_family == EndpointFamily.OPENAI_RESPONSES
         text = body["input"][0]["content"][0]["text"]
         assert "line-199" in text
@@ -175,9 +167,7 @@ async def test_codex_responses_long_context_shape_is_forwarded(
             usage={"input_tokens": 1000, "output_tokens": 1, "total_tokens": 1001},
         )
 
-    monkeypatch.setattr(
-        "llm_gateway.api.proxy.upstream_request_once", fake_upstream_request_once
-    )
+    monkeypatch.setattr("llm_gateway.api.proxy.upstream_request_once", fake_upstream_request_once)
 
     request_id = f"pytest-codex-long-{uuid4()}"
     body = _codex_responses_body(gateway_fixture.model_alias)
@@ -195,18 +185,12 @@ async def test_codex_responses_long_context_shape_is_forwarded(
     assert fact.total_tokens == 1001
 
 
-async def test_codex_responses_adapter_error_records_failure(
-    client, gateway_fixture, monkeypatch
-):
-    async def fake_upstream_request_once(
-        *, endpoint_family, model_alias, upstream, body
-    ):
+async def test_codex_responses_adapter_error_records_failure(client, gateway_fixture, monkeypatch):
+    async def fake_upstream_request_once(*, endpoint_family, model_alias, upstream, body):
         assert endpoint_family == EndpointFamily.OPENAI_RESPONSES
         raise RuntimeError("synthetic adapter failure")
 
-    monkeypatch.setattr(
-        "llm_gateway.api.proxy.upstream_request_once", fake_upstream_request_once
-    )
+    monkeypatch.setattr("llm_gateway.api.proxy.upstream_request_once", fake_upstream_request_once)
 
     request_id = f"pytest-codex-error-{uuid4()}"
     response = await client.post(

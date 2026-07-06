@@ -8,9 +8,9 @@ import pytest
 
 from llm_gateway.services.runtime_metrics import (
     ACTIVE_KEY,
-    RuntimeRouteInfo,
     VLLM_METRICS_CACHE_PREFIX,
     VLLM_METRICS_LOCK_PREFIX,
+    RuntimeRouteInfo,
     VLLMMetricsTarget,
     mark_connection_closed,
     mark_connection_open,
@@ -22,7 +22,6 @@ from llm_gateway.services.upstream_routing import (
     select_upstream_for_key,
     sticky_route_key,
 )
-
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
@@ -72,9 +71,7 @@ class FakeRedis:
                 zset.pop(member, None)
 
     async def zrange(self, name: str, start: int, end: int) -> list[str]:
-        items = sorted(
-            self.zsets.setdefault(name, {}).items(), key=lambda item: item[1]
-        )
+        items = sorted(self.zsets.setdefault(name, {}).items(), key=lambda item: item[1])
         if end == -1:
             return [member for member, _ in items[start:]]
         return [member for member, _ in items[start : end + 1]]
@@ -119,16 +116,10 @@ class FailingRedis(FakeRedis):
 
 async def test_runtime_snapshot_groups_active_connections():
     redis = cast(Any, FakeRedis())
-    info_a = RuntimeRouteInfo(
-        upstream_id="up-a", upstream_name="上游 A", model_alias="model-a"
-    )
-    info_b = RuntimeRouteInfo(
-        upstream_id="up-b", upstream_name="上游 B", model_alias="model-b"
-    )
+    info_a = RuntimeRouteInfo(upstream_id="up-a", upstream_name="上游 A", model_alias="model-a")
+    info_b = RuntimeRouteInfo(upstream_id="up-b", upstream_name="上游 B", model_alias="model-b")
 
-    member_a = await mark_connection_open(
-        redis, request_id="req-a", info=info_a, now=100.0
-    )
+    member_a = await mark_connection_open(redis, request_id="req-a", info=info_a, now=100.0)
     await mark_connection_open(redis, request_id="req-b", info=info_b, now=100.0)
 
     snapshot = await runtime_snapshot(redis, window_seconds=10, now=100.0)
@@ -150,9 +141,7 @@ async def test_runtime_snapshot_groups_active_connections():
 
 async def test_runtime_snapshot_prunes_stale_active_connections():
     redis = cast(Any, FakeRedis())
-    info = RuntimeRouteInfo(
-        upstream_id="up-stale", upstream_name="Stale", model_alias="model"
-    )
+    info = RuntimeRouteInfo(upstream_id="up-stale", upstream_name="Stale", model_alias="model")
     await mark_connection_open(redis, request_id="stale", info=info, now=1.0)
 
     snapshot = await runtime_snapshot(redis, window_seconds=10, now=3_700.0)
@@ -162,9 +151,7 @@ async def test_runtime_snapshot_prunes_stale_active_connections():
 
 
 async def test_metrics_url_from_base_url_strips_openai_v1_path():
-    assert (
-        metrics_url_from_base_url("http://gpu-a:8000/v1") == "http://gpu-a:8000/metrics"
-    )
+    assert metrics_url_from_base_url("http://gpu-a:8000/v1") == "http://gpu-a:8000/metrics"
     assert (
         metrics_url_from_base_url("http://gpu-a:8000/custom/v1")
         == "http://gpu-a:8000/custom/metrics"
@@ -237,20 +224,14 @@ vllm:prompt_tokens {total}
 vllm:generation_tokens 0
 """
 
-    first = await runtime_snapshot(
-        redis, vllm_targets=[target], metrics_fetcher=fetcher, now=100.0
-    )
+    first = await runtime_snapshot(redis, vllm_targets=[target], metrics_fetcher=fetcher, now=100.0)
     second = await runtime_snapshot(
         redis, vllm_targets=[target], metrics_fetcher=fetcher, now=101.0
     )
     for key in list(redis.values):
-        if key.startswith(VLLM_METRICS_CACHE_PREFIX) or key.startswith(
-            VLLM_METRICS_LOCK_PREFIX
-        ):
+        if key.startswith(VLLM_METRICS_CACHE_PREFIX) or key.startswith(VLLM_METRICS_LOCK_PREFIX):
             redis.values.pop(key)
-    third = await runtime_snapshot(
-        redis, vllm_targets=[target], metrics_fetcher=fetcher, now=110.0
-    )
+    third = await runtime_snapshot(redis, vllm_targets=[target], metrics_fetcher=fetcher, now=110.0)
 
     assert calls == 2
     assert third["upstreams"][0]["vllm"]["kind"] == "vllm"
@@ -324,9 +305,7 @@ vllm_router_running_requests{worker="a"} 2
         redis, vllm_targets=[target], metrics_fetcher=fetcher, now=100.0
     )
 
-    assert snapshot["upstreams"][0]["vllm"]["metrics_url"] == (
-        "http://router-a:29000/metrics"
-    )
+    assert snapshot["upstreams"][0]["vllm"]["metrics_url"] == ("http://router-a:29000/metrics")
     assert snapshot["upstreams"][0]["vllm"]["kind"] == "vllm_router"
 
 
@@ -397,9 +376,7 @@ async def test_select_upstream_uses_load_score_then_sticky_route():
         str(upstream_a.id): 0.8,
         str(upstream_b.id): 0.2,
     }
-    sticky_payload = redis.values[
-        sticky_route_key(key_id=key_id, model_alias_id=model.id)
-    ]
+    sticky_payload = redis.values[sticky_route_key(key_id=key_id, model_alias_id=model.id)]
     assert str(upstream_b.id) in sticky_payload
 
     redis.values[f"{VLLM_METRICS_CACHE_PREFIX}:{upstream_a.id}"] = (
@@ -448,9 +425,7 @@ async def test_select_upstream_ignores_sticky_route_not_in_active_candidates():
     )
 
     assert selected.id == upstream.id
-    sticky_payload = redis.values[
-        sticky_route_key(key_id=key_id, model_alias_id=model.id)
-    ]
+    sticky_payload = redis.values[sticky_route_key(key_id=key_id, model_alias_id=model.id)]
     assert str(upstream.id) in sticky_payload
 
 

@@ -16,7 +16,6 @@ from llm_gateway.services.runtime_metrics import (
     VLLM_METRICS_CACHE_PREFIX,
 )
 
-
 STICKY_ROUTE_PREFIX = "llm_gateway:routing:sticky"
 
 
@@ -136,9 +135,7 @@ async def load_upstream_loads(
 async def _read_sticky_upstream_id(
     redis: Redis, *, key_id: UUID, model_alias_id: UUID
 ) -> str | None:
-    raw = await redis.get(
-        sticky_route_key(key_id=key_id, model_alias_id=model_alias_id)
-    )
+    raw = await redis.get(sticky_route_key(key_id=key_id, model_alias_id=model_alias_id))
     if not raw:
         return None
     try:
@@ -192,15 +189,11 @@ def _lowest_load_choice(
     )
 
 
-def _stable_fallback_choice(
-    upstreams: list[UpstreamTarget], *, key: str
-) -> UpstreamTarget:
+def _stable_fallback_choice(upstreams: list[UpstreamTarget], *, key: str) -> UpstreamTarget:
     return min(upstreams, key=lambda upstream: _stable_hash(f"{key}:{upstream.id}"))
 
 
-def _empty_loads(
-    upstreams: list[UpstreamTarget], *, selected_id: str
-) -> list[UpstreamLoad]:
+def _empty_loads(upstreams: list[UpstreamTarget], *, selected_id: str) -> list[UpstreamLoad]:
     return [
         UpstreamLoad(
             upstream_id=str(upstream.id),

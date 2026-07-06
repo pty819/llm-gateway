@@ -5,6 +5,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 import pytest
+from conftest import fetch_request_fact
 from sqlmodel import col
 
 from llm_gateway.db.models import (
@@ -15,9 +16,6 @@ from llm_gateway.db.models import (
     utcnow,
 )
 from llm_gateway.services.upstream_client import UpstreamCallResult as LiteLLMCallResult
-
-from conftest import fetch_request_fact
-
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
@@ -64,9 +62,7 @@ async def test_health_and_admin_diagnostics(client, monkeypatch):
     async def no_metric_targets(redis=None):
         return []
 
-    monkeypatch.setattr(
-        "llm_gateway.api.realtime._load_vllm_metric_targets", no_metric_targets
-    )
+    monkeypatch.setattr("llm_gateway.api.realtime._load_vllm_metric_targets", no_metric_targets)
 
     ready = await client.get("/health/ready")
     assert ready.status_code == 200
@@ -90,10 +86,11 @@ async def test_health_and_admin_diagnostics(client, monkeypatch):
 
 
 async def test_self_service_register_login_and_guest_team_model_access(client):
+    from sqlalchemy import select
+
     from llm_gateway.core.config import get_settings
     from llm_gateway.db.models import Team
     from llm_gateway.db.session import AsyncSessionLocal
-    from sqlalchemy import select
 
     headers = {"x-admin-token": get_settings().admin_token}
     suffix = uuid4().hex
@@ -188,14 +185,10 @@ async def test_admin_session_can_manage_team_union_permissions(client):
     raw_key = registered.json()["gateway_key"]["plaintext_key"]
 
     team1 = (
-        await client.post(
-            "/admin/teams", headers=session_headers, json={"name": f"team1-{suffix}"}
-        )
+        await client.post("/admin/teams", headers=session_headers, json={"name": f"team1-{suffix}"})
     ).json()
     team3 = (
-        await client.post(
-            "/admin/teams", headers=session_headers, json={"name": f"team3-{suffix}"}
-        )
+        await client.post("/admin/teams", headers=session_headers, json={"name": f"team3-{suffix}"})
     ).json()
 
     for team in [team1, team3]:
@@ -391,9 +384,7 @@ async def test_usage_ranking_falls_back_to_prompt_plus_completion_tokens_and_bou
     assert payload[0]["subject_id"] == str(gateway_fixture.subject_id)
     assert payload[0]["total_tokens"] >= 18
 
-    invalid_limit = await client.get(
-        "/admin/usage/ranking", headers=headers, params={"limit": 0}
-    )
+    invalid_limit = await client.get("/admin/usage/ranking", headers=headers, params={"limit": 0})
     assert invalid_limit.status_code == 422
 
 
@@ -530,11 +521,7 @@ async def test_delegated_project_manager_can_manage_members_and_usage(client):
         project = Project(name=f"managed-project-{uuid4().hex}")
         session.add(project)
         await session.flush()
-        session.add(
-            ProjectMembership(
-                project_id=project.id, subject_id=manager.id, role="manager"
-            )
-        )
+        session.add(ProjectMembership(project_id=project.id, subject_id=manager.id, role="manager"))
         session.add(
             RequestFact(
                 request_id=f"managed-project-usage-{uuid4()}",
@@ -556,9 +543,7 @@ async def test_delegated_project_manager_can_manage_members_and_usage(client):
         manager_session, manager_token = await create_user_session(
             session, subject_id=manager.id, ttl_hours=24
         )
-        _, outsider_token = await create_user_session(
-            session, subject_id=outsider.id, ttl_hours=24
-        )
+        _, outsider_token = await create_user_session(session, subject_id=outsider.id, ttl_hours=24)
         await session.commit()
 
     headers = {"x-session-token": manager_token}
@@ -639,9 +624,7 @@ async def test_delegated_project_manager_can_manage_members_and_usage(client):
     )
     assert removed.status_code == 200
 
-    denied = await client.get(
-        "/auth/managed/projects", headers={"x-session-token": outsider_token}
-    )
+    denied = await client.get("/auth/managed/projects", headers={"x-session-token": outsider_token})
     assert denied.status_code == 200
     forbidden = await client.post(
         "/auth/managed/project-memberships",
@@ -685,9 +668,7 @@ async def test_delegated_team_manager_can_manage_members_and_usage(client):
         team = Team(name=f"managed-team-{uuid4().hex}")
         session.add_all([project, team])
         await session.flush()
-        manager_membership = TeamMembership(
-            team_id=team.id, subject_id=manager.id, role="manager"
-        )
+        manager_membership = TeamMembership(team_id=team.id, subject_id=manager.id, role="manager")
         session.add(manager_membership)
         session.add(
             RequestFact(
@@ -707,9 +688,7 @@ async def test_delegated_team_manager_can_manage_members_and_usage(client):
                 total_tokens=11,
             )
         )
-        _, manager_token = await create_user_session(
-            session, subject_id=manager.id, ttl_hours=24
-        )
+        _, manager_token = await create_user_session(session, subject_id=manager.id, ttl_hours=24)
         await session.commit()
 
     headers = {"x-session-token": manager_token}
@@ -778,18 +757,14 @@ async def test_delegated_team_manager_can_manage_members_and_usage(client):
     assert disabled.json()["state"] == "disabled"
 
 
-async def test_openai_chat_completion_uses_real_upstream_and_records_usage(
-    client, gateway_fixture
-):
+async def test_openai_chat_completion_uses_real_upstream_and_records_usage(client, gateway_fixture):
     request_id = f"pytest-openai-{uuid4()}"
     response = await client.post(
         "/v1/chat/completions",
         headers=_auth_headers(gateway_fixture.raw_key, request_id),
         json={
             "model": gateway_fixture.model_alias,
-            "messages": [
-                {"role": "user", "content": "Reply with exactly one short sentence."}
-            ],
+            "messages": [{"role": "user", "content": "Reply with exactly one short sentence."}],
             "max_tokens": 32,
             "temperature": 0,
         },
@@ -814,9 +789,7 @@ async def test_invalid_gateway_key_records_auth_failure(client, gateway_fixture)
         headers={"Authorization": "Bearer gw-invalid", "x-request-id": request_id},
         json={
             "model": gateway_fixture.model_alias,
-            "messages": [
-                {"role": "user", "content": "This should not reach upstream."}
-            ],
+            "messages": [{"role": "user", "content": "This should not reach upstream."}],
             "max_tokens": 16,
         },
     )
@@ -837,9 +810,7 @@ async def test_openai_stream_completion_records_success(client, gateway_fixture)
         headers=_auth_headers(gateway_fixture.raw_key, request_id),
         json={
             "model": gateway_fixture.model_alias,
-            "messages": [
-                {"role": "user", "content": "Say stream-ok in a short sentence."}
-            ],
+            "messages": [{"role": "user", "content": "Say stream-ok in a short sentence."}],
             "max_tokens": 32,
             "temperature": 0,
             "stream": True,
@@ -857,9 +828,7 @@ async def test_openai_stream_completion_records_success(client, gateway_fixture)
     assert fact.streaming is True
 
 
-async def test_model_ip_allowlist_denies_disallowed_client(
-    external_ip_client, gateway_fixture
-):
+async def test_model_ip_allowlist_denies_disallowed_client(external_ip_client, gateway_fixture):
     from llm_gateway.db.models import IPPolicyMode, ModelAlias
     from llm_gateway.db.session import AsyncSessionLocal
 
@@ -876,9 +845,7 @@ async def test_model_ip_allowlist_denies_disallowed_client(
         headers=_auth_headers(gateway_fixture.raw_key, request_id),
         json={
             "model": gateway_fixture.model_alias,
-            "messages": [
-                {"role": "user", "content": "This should be denied before upstream."}
-            ],
+            "messages": [{"role": "user", "content": "This should be denied before upstream."}],
             "max_tokens": 16,
         },
     )
@@ -900,17 +867,13 @@ async def test_model_ip_allowlist_accepts_forwarded_client_from_trusted_vite_pro
     from llm_gateway.db.session import AsyncSessionLocal
     from llm_gateway.main import app
 
-    async def fake_upstream_request_once(
-        *, endpoint_family, model_alias, upstream, body
-    ):
+    async def fake_upstream_request_once(*, endpoint_family, model_alias, upstream, body):
         assert endpoint_family == EndpointFamily.OPENAI_CHAT
         return LiteLLMCallResult(
             response={
                 "id": "chatcmpl-test",
                 "object": "chat.completion",
-                "choices": [
-                    {"index": 0, "message": {"role": "assistant", "content": "ok"}}
-                ],
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}],
                 "usage": {
                     "prompt_tokens": 3,
                     "completion_tokens": 1,
@@ -920,9 +883,7 @@ async def test_model_ip_allowlist_accepts_forwarded_client_from_trusted_vite_pro
             usage={"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
         )
 
-    monkeypatch.setattr(
-        "llm_gateway.api.proxy.upstream_request_once", fake_upstream_request_once
-    )
+    monkeypatch.setattr("llm_gateway.api.proxy.upstream_request_once", fake_upstream_request_once)
 
     def trusted_proxy_settings() -> Settings:
         settings = Settings()
@@ -971,24 +932,18 @@ async def test_openai_chat_completion_records_realtime_runtime_metrics(
     async def no_metric_targets(redis=None):
         return []
 
-    monkeypatch.setattr(
-        "llm_gateway.api.realtime._load_vllm_metric_targets", no_metric_targets
-    )
+    monkeypatch.setattr("llm_gateway.api.realtime._load_vllm_metric_targets", no_metric_targets)
 
     observed_during_call: dict[str, object] = {}
 
-    async def fake_upstream_request_once(
-        *, endpoint_family, model_alias, upstream, body
-    ):
+    async def fake_upstream_request_once(*, endpoint_family, model_alias, upstream, body):
         assert endpoint_family == EndpointFamily.OPENAI_CHAT
         observed_during_call.update(await runtime_snapshot(redis_client))
         return LiteLLMCallResult(
             response={
                 "id": "chatcmpl-runtime-metrics",
                 "object": "chat.completion",
-                "choices": [
-                    {"index": 0, "message": {"role": "assistant", "content": "ok"}}
-                ],
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}],
                 "usage": {
                     "prompt_tokens": 3,
                     "completion_tokens": 1,
@@ -999,9 +954,7 @@ async def test_openai_chat_completion_records_realtime_runtime_metrics(
         )
 
     await redis_client.delete(ACTIVE_KEY)
-    monkeypatch.setattr(
-        "llm_gateway.api.proxy.upstream_request_once", fake_upstream_request_once
-    )
+    monkeypatch.setattr("llm_gateway.api.proxy.upstream_request_once", fake_upstream_request_once)
 
     request_id = f"pytest-runtime-metrics-{uuid4()}"
     response = await client.post(
@@ -1016,9 +969,7 @@ async def test_openai_chat_completion_records_realtime_runtime_metrics(
     assert response.status_code == 200, response.text
     assert observed_during_call["active_connections"] == 1
     active_rows = cast(list[dict[str, Any]], observed_during_call["upstreams"])
-    assert any(
-        item["upstream_id"] == str(gateway_fixture.upstream_id) for item in active_rows
-    )
+    assert any(item["upstream_id"] == str(gateway_fixture.upstream_id) for item in active_rows)
 
     snapshot = await client.get(
         "/admin/realtime/snapshot",
@@ -1031,14 +982,11 @@ async def test_openai_chat_completion_records_realtime_runtime_metrics(
     assert payload["total_tokens_per_second"] is None
     assert payload["active_connections"] == 0
     assert all(
-        item["upstream_id"] != str(gateway_fixture.upstream_id)
-        for item in payload["upstreams"]
+        item["upstream_id"] != str(gateway_fixture.upstream_id) for item in payload["upstreams"]
     )
 
 
-async def test_realtime_snapshot_includes_cached_vllm_metrics(
-    client, gateway_fixture, monkeypatch
-):
+async def test_realtime_snapshot_includes_cached_vllm_metrics(client, gateway_fixture, monkeypatch):
     from llm_gateway.core.config import get_settings
     from llm_gateway.services.rate_limit import redis_client
     from llm_gateway.services.runtime_metrics import (
@@ -1076,9 +1024,7 @@ vllm:generation_tokens_total 100
         f"{VLLM_METRICS_LOCK_PREFIX}:{gateway_fixture.upstream_id}",
         f"{VLLM_METRICS_COUNTER_PREFIX}:{gateway_fixture.upstream_id}",
     )
-    monkeypatch.setattr(
-        "llm_gateway.api.realtime._load_vllm_metric_targets", metric_targets
-    )
+    monkeypatch.setattr("llm_gateway.api.realtime._load_vllm_metric_targets", metric_targets)
     monkeypatch.setattr(
         "llm_gateway.services.runtime_metrics._fetch_vllm_metrics_text",
         fake_metrics_text,
@@ -1359,14 +1305,10 @@ async def test_admin_can_delete_used_upstream_without_deleting_request_facts(
     suffix = uuid4().hex
     request_id = f"pytest-used-upstream-delete-{uuid4()}"
     async with AsyncSessionLocal() as session:
-        subject = Subject(
-            name=f"delete-upstream-subject-{suffix}", type=SubjectType.USER
-        )
+        subject = Subject(name=f"delete-upstream-subject-{suffix}", type=SubjectType.USER)
         session.add(subject)
         await session.flush()
-        project = Project(
-            name=f"delete-upstream-project-{suffix}", owner_subject_id=subject.id
-        )
+        project = Project(name=f"delete-upstream-project-{suffix}", owner_subject_id=subject.id)
         session.add(project)
         await session.flush()
         model = ModelAlias(
@@ -1433,9 +1375,7 @@ async def test_admin_can_cascade_delete_used_model_alias_preserving_usage(
         subject = Subject(name=f"delete-alias-subject-{suffix}", type=SubjectType.USER)
         session.add(subject)
         await session.flush()
-        project = Project(
-            name=f"delete-alias-project-{suffix}", owner_subject_id=subject.id
-        )
+        project = Project(name=f"delete-alias-project-{suffix}", owner_subject_id=subject.id)
         session.add(project)
         await session.flush()
         model = ModelAlias(
@@ -1475,9 +1415,7 @@ async def test_admin_can_cascade_delete_used_model_alias_preserving_usage(
         model_alias = model.alias
 
     headers = {"x-admin-token": get_settings().admin_token}
-    blocked = await client.delete(
-        f"/admin/model-aliases/{model_alias_id}", headers=headers
-    )
+    blocked = await client.delete(f"/admin/model-aliases/{model_alias_id}", headers=headers)
     assert blocked.status_code == 409
     assert blocked.json()["detail"]["code"] == "model_alias_has_upstreams"
 

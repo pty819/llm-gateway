@@ -4,10 +4,9 @@ import io
 import zipfile
 
 import pytest
+from sqlmodel import col
+from sqlmodel import select as sqlselect
 
-from sqlmodel import col, select as sqlselect
-
-from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.db.models import (
     ResourceState,
     Subject,
@@ -15,6 +14,7 @@ from llm_gateway.db.models import (
     Team,
     TeamMembership,
 )
+from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.services.registry import (
     create_or_append_skill_version,
     ensure_skill_team_grant,
@@ -58,7 +58,6 @@ async def _make_user(login_username: str | None = None) -> Subject:
 
 async def _login_user_with_key(client):
     """Register a fresh user; return (session_headers, raw_gateway_key, username, subject_id)."""
-    from tests.test_backend_integration import _employee_username
     from llm_gateway.core.config import get_settings
     from llm_gateway.db.session import AsyncSessionLocal
     from llm_gateway.services.security import (
@@ -66,6 +65,7 @@ async def _login_user_with_key(client):
         create_registered_user,
         create_user_session,
     )
+    from tests.test_backend_integration import _employee_username
 
     username = _employee_username()
     async with AsyncSessionLocal() as session:
@@ -96,9 +96,10 @@ async def _login_user_with_key(client):
 
 
 async def test_resolve_owner_by_login_username_then_name():
-    from llm_gateway.db.session import AsyncSessionLocal
-    from llm_gateway.db.models import Subject, SubjectType
     from uuid import uuid4
+
+    from llm_gateway.db.models import Subject, SubjectType
+    from llm_gateway.db.session import AsyncSessionLocal
 
     suffix = uuid4().hex
     async with AsyncSessionLocal() as session:
@@ -140,12 +141,11 @@ async def test_upload_creates_skill_and_first_version():
         await session.commit()
         assert skill.latest_version == "1.0.0"
         assert skill.owner_subject_id == owner.id
-        from llm_gateway.db.models import SkillVersion
         import sqlmodel
 
-        versions = (
-            (await session.execute(sqlmodel.select(SkillVersion))).scalars().all()
-        )
+        from llm_gateway.db.models import SkillVersion
+
+        versions = (await session.execute(sqlmodel.select(SkillVersion))).scalars().all()
         mine = [v for v in versions if v.skill_id == skill.id]
         assert len(mine) == 1
         assert mine[0].size_bytes > 0
@@ -273,9 +273,7 @@ async def test_grant_upsert_and_visibility():
             notes=None,
             zip_bytes=_make_zip(),
         )
-        assert not await subject_can_access_skill(
-            session, subject_id=consumer.id, skill=skill
-        )
+        assert not await subject_can_access_skill(session, subject_id=consumer.id, skill=skill)
         team = Team(name=f"team-{_uuid.uuid4().hex}")
         session.add(team)
         await session.flush()
@@ -284,9 +282,7 @@ async def test_grant_upsert_and_visibility():
         await ensure_skill_team_grant(session, skill_id=skill.id, team_id=team.id)
         await session.commit()
         await session.refresh(skill)
-        assert await subject_can_access_skill(
-            session, subject_id=consumer.id, skill=skill
-        )
+        assert await subject_can_access_skill(session, subject_id=consumer.id, skill=skill)
 
 
 async def test_list_visible_guest_grant_equals_public():
@@ -402,15 +398,16 @@ async def test_latest_active_version_falls_back_when_pointer_disabled():
 
 
 async def test_dataplane_list_and_download_for_guest_grant(client):
-    from tests.test_backend_integration import _auth_headers
-    from llm_gateway.db.session import AsyncSessionLocal
+    from sqlmodel import col
+    from sqlmodel import select as sqlselect
+
     from llm_gateway.db.models import Subject, Team
+    from llm_gateway.db.session import AsyncSessionLocal
     from llm_gateway.services.registry import (
         create_or_append_skill_version,
         ensure_skill_team_grant,
     )
-    from sqlmodel import select as sqlselect
-    from sqlmodel import col
+    from tests.test_backend_integration import _auth_headers
 
     sess_headers, gw_key, username, owner_id = await _login_user_with_key(client)
 
@@ -436,9 +433,7 @@ async def test_dataplane_list_and_download_for_guest_grant(client):
 
     # a DIFFERENT registered user (also a guest member) can list + download
     _, other_gw, _, _ = await _login_user_with_key(client)
-    resp = await client.get(
-        f"/v1/registry/skills?q={slug}", headers=_auth_headers(other_gw)
-    )
+    resp = await client.get(f"/v1/registry/skills?q={slug}", headers=_auth_headers(other_gw))
     assert resp.status_code == 200, resp.text
     slugs = [s["slug"] for s in resp.json()["items"]]
     assert slug in slugs, slugs
@@ -538,10 +533,11 @@ async def test_self_service_cross_owner_slug_coexists(client):
 
 
 async def test_self_service_grants_lifecycle(client):
-    from llm_gateway.db.session import AsyncSessionLocal
-    from llm_gateway.db.models import Team
-    from sqlmodel import select as sqlselect
     from sqlmodel import col
+    from sqlmodel import select as sqlselect
+
+    from llm_gateway.db.models import Team
+    from llm_gateway.db.session import AsyncSessionLocal
 
     sess_headers, *_ = await _login_user_with_key(client)
     slug = _unique_slug("g")
@@ -565,9 +561,7 @@ async def test_self_service_grants_lifecycle(client):
     assert r.status_code == 200, r.text
     grant_id = r.json()["grant"]["id"]
 
-    g = await client.get(
-        f"/auth/registry/skills/me/{slug}/grants", headers=sess_headers
-    )
+    g = await client.get(f"/auth/registry/skills/me/{slug}/grants", headers=sess_headers)
     assert g.status_code == 200
     assert any(gr["id"] == grant_id for gr in g.json()["items"])
 
@@ -605,10 +599,11 @@ async def test_self_service_non_owner_cannot_grant(client):
         data={"slug": slug, "name": "Owned", "version": "1.0.0"},
         files={"file": ("o.zip", _make_zip(), "application/zip")},
     )
-    from llm_gateway.db.session import AsyncSessionLocal
-    from llm_gateway.db.models import Team
-    from sqlmodel import select as sqlselect
     from sqlmodel import col
+    from sqlmodel import select as sqlselect
+
+    from llm_gateway.db.models import Team
+    from llm_gateway.db.session import AsyncSessionLocal
 
     async with AsyncSessionLocal() as session:
         guest = (
@@ -673,10 +668,11 @@ async def test_admin_can_disable_any_skill(client):
 
 
 async def test_admin_can_create_grant_for_any_skill(client):
-    from llm_gateway.db.session import AsyncSessionLocal
-    from llm_gateway.db.models import Team
-    from sqlmodel import select as sqlselect
     from sqlmodel import col
+    from sqlmodel import select as sqlselect
+
+    from llm_gateway.db.models import Team
+    from llm_gateway.db.session import AsyncSessionLocal
 
     sess_headers, *_ = await _login_user_with_key(client)
     slug = _unique_slug("grantable")

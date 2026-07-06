@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 from sqlalchemy import select
 from sqlmodel import col
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(ROOT) not in sys.path:
@@ -106,9 +105,7 @@ async def gateway_fixture() -> GatewayFixture:
         session.add(upstream)
         await session.flush()
 
-        entitlement = ModelEntitlement(
-            project_id=project.id, model_alias_id=model_alias.id
-        )
+        entitlement = ModelEntitlement(project_id=project.id, model_alias_id=model_alias.id)
         session.add(entitlement)
         key, raw_key = await create_gateway_key(
             session,

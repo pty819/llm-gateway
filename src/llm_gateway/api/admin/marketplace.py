@@ -126,11 +126,7 @@ def _mcp_grant_dict(g: McpTeamGrant) -> dict:
 @router.get("/mcp-team-grants")
 async def list_mcp_team_grants(session: AsyncSession = Depends(session_dep)):
     rows = (
-        (
-            await session.execute(
-                select(McpTeamGrant).order_by(col(McpTeamGrant.created_at).desc())
-            )
-        )
+        (await session.execute(select(McpTeamGrant).order_by(col(McpTeamGrant.created_at).desc())))
         .scalars()
         .all()
     )

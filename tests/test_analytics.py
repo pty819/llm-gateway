@@ -4,7 +4,6 @@ from datetime import timedelta
 
 import pytest
 
-
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
@@ -92,12 +91,8 @@ async def test_usage_totals_aggregates_all_metrics():
         project_id = project.id
         subject_id = subject.id
 
-    await _seed_request_fact(
-        subject_id=subject_id, project_id=project_id, total_tokens=500
-    )
-    await _seed_request_fact(
-        subject_id=subject_id, project_id=project_id, total_tokens=300
-    )
+    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=500)
+    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=300)
 
     now = utcnow()
     async with AsyncSessionLocal() as session:
@@ -243,9 +238,7 @@ async def test_usage_ranking_uses_core_metrics_excludes_cached():
         project_id = project.id
 
     # 用大 token 数确保 alice 排进 top N（跨测试 DB 有大量历史数据）
-    await _seed_request_fact(
-        subject_id=alice_id, project_id=project_id, total_tokens=999999
-    )
+    await _seed_request_fact(subject_id=alice_id, project_id=project_id, total_tokens=999999)
 
     now = utcnow()
     async with AsyncSessionLocal() as session:
@@ -285,12 +278,8 @@ async def test_time_buckets_groups_by_hour_and_returns_iso():
         project_id = project.id
         subject_id = subject.id
 
-    await _seed_request_fact(
-        subject_id=subject_id, project_id=project_id, total_tokens=100
-    )
-    await _seed_request_fact(
-        subject_id=subject_id, project_id=project_id, total_tokens=200
-    )
+    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=100)
+    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=200)
 
     now = utcnow()
     async with AsyncSessionLocal() as session:
@@ -381,9 +370,7 @@ async def test_drilldown_by_subject_joins_subjects_and_str_id():
         project_id = project.id
         subject_id = subject.id
 
-    await _seed_request_fact(
-        subject_id=subject_id, project_id=project_id, total_tokens=100
-    )
+    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=100)
 
     now = utcnow()
     async with AsyncSessionLocal() as session:
@@ -419,9 +406,7 @@ async def test_drilldown_by_project_joins_projects():
         project_id = project.id
         subject_id = subject.id
 
-    await _seed_request_fact(
-        subject_id=subject_id, project_id=project_id, total_tokens=100
-    )
+    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=100)
 
     now = utcnow()
     async with AsyncSessionLocal() as session:
@@ -455,9 +440,7 @@ async def test_drilldown_by_outcome():
         project_id = project.id
         subject_id = subject.id
 
-    await _seed_request_fact(
-        subject_id=subject_id, project_id=project_id, total_tokens=100
-    )
+    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=100)
     await _seed_request_fact(
         subject_id=subject_id,
         project_id=project_id,
@@ -501,9 +484,7 @@ async def test_usage_ranking_excludes_null_subject():
         project_id = project.id
 
     # alice 有 subject_id（大 token 确保进 top）
-    await _seed_request_fact(
-        subject_id=alice_id, project_id=project_id, total_tokens=999999
-    )
+    await _seed_request_fact(subject_id=alice_id, project_id=project_id, total_tokens=999999)
 
     # 直接造一行 subject_id=NULL 的 fact（_seed_request_fact 不支持 NULL）
     from llm_gateway.db.models import EndpointFamily, RequestOutcome

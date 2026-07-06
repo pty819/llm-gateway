@@ -1,19 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import case, cast, desc, func, select, text
-from sqlalchemy import Numeric, Text
+from sqlalchemy import Numeric, Text, case, cast, desc, func, select, text
 from sqlmodel import col
 
 from llm_gateway.db.models import Project, RequestFact, Subject
 
-
 # outcome 是 PG enum，func.lower 不能直接作用于 enum，必须先 cast 成 text。
-_SUCCESS_CASE = case(
-    (func.lower(cast(col(RequestFact.outcome), Text)) == "success", 1), else_=0
-)
+_SUCCESS_CASE = case((func.lower(cast(col(RequestFact.outcome), Text)) == "success", 1), else_=0)
 
 
 def _round2_avg(column):
@@ -39,9 +35,7 @@ def _core_metric_columns() -> list:
     return [
         func.count(col(RequestFact.id)).label("request_count"),
         func.coalesce(func.sum(RequestFact.prompt_tokens), 0).label("prompt_tokens"),
-        func.coalesce(func.sum(RequestFact.completion_tokens), 0).label(
-            "completion_tokens"
-        ),
+        func.coalesce(func.sum(RequestFact.completion_tokens), 0).label("completion_tokens"),
         func.coalesce(func.sum(total_tokens_expr), 0).label("total_tokens"),
         func.coalesce(func.sum(_SUCCESS_CASE), 0).label("success_count"),
         func.coalesce(
@@ -71,9 +65,7 @@ def _full_metric_columns() -> list:
     return [
         func.count(col(RequestFact.id)).label("request_count"),
         func.coalesce(func.sum(RequestFact.prompt_tokens), 0).label("prompt_tokens"),
-        func.coalesce(func.sum(RequestFact.completion_tokens), 0).label(
-            "completion_tokens"
-        ),
+        func.coalesce(func.sum(RequestFact.completion_tokens), 0).label("completion_tokens"),
         func.coalesce(func.sum(total_tokens_expr), 0).label("total_tokens"),
         func.coalesce(func.sum(RequestFact.cached_tokens), 0).label("cached_tokens"),
         func.coalesce(func.sum(_SUCCESS_CASE), 0).label("success_count"),
@@ -91,9 +83,7 @@ def _full_metric_columns() -> list:
         _round2_avg(RequestFact.stream_duration_ms).label("avg_stream_duration_ms"),
         func.coalesce(func.sum(RequestFact.retry_count), 0).label("retry_count"),
         func.coalesce(func.sum(RequestFact.fallback_count), 0).label("fallback_count"),
-        func.coalesce(func.sum(RequestFact.fallback_tokens), 0).label(
-            "fallback_tokens"
-        ),
+        func.coalesce(func.sum(RequestFact.fallback_tokens), 0).label("fallback_tokens"),
         _round2_avg(RequestFact.queue_ms).label("avg_queue_ms"),
         _round2_avg(RequestFact.prefill_ms).label("avg_prefill_ms"),
         _round2_avg(RequestFact.decode_ms).label("avg_decode_ms"),
@@ -138,9 +128,7 @@ def _row_to_dict(row) -> dict:
     的 float 输出——否则 FastAPI 会把 Decimal 序列化成 JSON 字符串，前端拿到
     "12.30" 而非 12.3。
     """
-    return {
-        k: (float(v) if isinstance(v, Decimal) else v) for k, v in row._mapping.items()
-    }
+    return {k: (float(v) if isinstance(v, Decimal) else v) for k, v in row._mapping.items()}
 
 
 async def _apply_statement_timeout(session) -> None:
@@ -163,7 +151,7 @@ def _ensure_utc_iso(value) -> str:
         return value
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
+            value = value.replace(tzinfo=UTC)
         return value.isoformat()
     return value
 
@@ -223,9 +211,7 @@ async def usage_summary(
     return [_row_to_dict(row) for row in rows]
 
 
-async def usage_ranking(
-    session, *, start=None, end=None, model=None, limit=20
-) -> list[dict]:
+async def usage_ranking(session, *, start=None, end=None, model=None, limit=20) -> list[dict]:
     """按 subject 分组排名。core 6 metric（不含 cached_tokens/延迟/vllm），
     JOIN subjects 取 name/login_username。固定过滤 subject_id IS NOT NULL（对齐 DuckDB）。"""
     await _apply_statement_timeout(session)
@@ -246,9 +232,7 @@ async def usage_ranking(
     )
     stmt = (
         stmt.where(col(RequestFact.subject_id).isnot(None))
-        .group_by(
-            col(RequestFact.subject_id), col(Subject.login_username), col(Subject.name)
-        )
+        .group_by(col(RequestFact.subject_id), col(Subject.login_username), col(Subject.name))
         .order_by(desc(text("total_tokens")), desc(text("request_count")))
         .limit(int(limit))
     )
@@ -262,9 +246,9 @@ def _dimension_columns(dimension: str):
         return (
             [
                 col(RequestFact.subject_id).label("dimension_id"),
-                func.coalesce(
-                    col(Subject.name), col(Subject.login_username), "无用户"
-                ).label("dimension_label"),
+                func.coalesce(col(Subject.name), col(Subject.login_username), "无用户").label(
+                    "dimension_label"
+                ),
             ],
             Subject,
             [
@@ -304,9 +288,9 @@ def _dimension_columns(dimension: str):
         return (
             [
                 col(RequestFact.streaming).label("dimension_id"),
-                case(
-                    (col(RequestFact.streaming) == True, "流式"), else_="非流式"
-                ).label("dimension_label"),
+                case((col(RequestFact.streaming) == True, "流式"), else_="非流式").label(
+                    "dimension_label"
+                ),
             ],
             None,
             [col(RequestFact.streaming)],
@@ -315,9 +299,7 @@ def _dimension_columns(dimension: str):
     return (
         [
             col(RequestFact.model_alias).label("dimension_id"),
-            func.coalesce(col(RequestFact.model_alias), "无模型").label(
-                "dimension_label"
-            ),
+            func.coalesce(col(RequestFact.model_alias), "无模型").label("dimension_label"),
         ],
         None,
         [col(RequestFact.model_alias)],
@@ -386,9 +368,7 @@ async def drilldown(
         stmt = stmt.outerjoin(Subject, RequestFact.subject_id == Subject.id)
     elif join_target is Project:
         stmt = stmt.outerjoin(Project, RequestFact.project_id == Project.id)
-    stmt = (
-        stmt.group_by(*group_by).order_by(desc(text("request_count"))).limit(int(limit))
-    )
+    stmt = stmt.group_by(*group_by).order_by(desc(text("request_count"))).limit(int(limit))
     rows = (await session.execute(stmt)).all()
     result = [_row_to_dict(row) for row in rows]
     for row in result:

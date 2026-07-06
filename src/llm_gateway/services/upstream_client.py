@@ -152,9 +152,7 @@ async def _chat_stream(
     url = _url(upstream, "/chat/completions")
     saw_done = False
     async with httpx.AsyncClient(timeout=_timeout()) as client:
-        async with client.stream(
-            "POST", url, json=payload, headers=_headers(upstream)
-        ) as response:
+        async with client.stream("POST", url, json=payload, headers=_headers(upstream)) as response:
             response.raise_for_status()
             async for frame, usage in _iter_sse_frames(response):
                 if "data: [DONE]" in frame:
@@ -193,9 +191,7 @@ async def _responses_stream(
     url = _url(upstream, "/responses")
     saw_done = False
     async with httpx.AsyncClient(timeout=_timeout()) as client:
-        async with client.stream(
-            "POST", url, json=payload, headers=_headers(upstream)
-        ) as response:
+        async with client.stream("POST", url, json=payload, headers=_headers(upstream)) as response:
             response.raise_for_status()
             async for frame, usage in _iter_sse_frames(response):
                 if "data: [DONE]" in frame:
@@ -214,13 +210,9 @@ async def upstream_request_once(
     body: dict[str, Any],
 ) -> UpstreamCallResult:
     if endpoint_family == EndpointFamily.OPENAI_CHAT:
-        return await _chat_once(
-            model_alias=model_alias, upstream=upstream, body=body
-        )
+        return await _chat_once(model_alias=model_alias, upstream=upstream, body=body)
     if endpoint_family == EndpointFamily.OPENAI_RESPONSES:
-        return await _responses_once(
-            model_alias=model_alias, upstream=upstream, body=body
-        )
+        return await _responses_once(model_alias=model_alias, upstream=upstream, body=body)
     raise ValueError(f"unsupported endpoint family: {endpoint_family}")
 
 
@@ -232,15 +224,11 @@ async def upstream_request_stream(
     body: dict[str, Any],
 ) -> AsyncGenerator[tuple[str, dict[str, Any] | None], None]:
     if endpoint_family == EndpointFamily.OPENAI_CHAT:
-        async for item in _chat_stream(
-            model_alias=model_alias, upstream=upstream, body=body
-        ):
+        async for item in _chat_stream(model_alias=model_alias, upstream=upstream, body=body):
             yield item
         return
     if endpoint_family == EndpointFamily.OPENAI_RESPONSES:
-        async for item in _responses_stream(
-            model_alias=model_alias, upstream=upstream, body=body
-        ):
+        async for item in _responses_stream(model_alias=model_alias, upstream=upstream, body=body):
             yield item
         return
     raise ValueError(f"unsupported endpoint family: {endpoint_family}")

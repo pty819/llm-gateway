@@ -1,10 +1,9 @@
-import sys
 import asyncio
+import sys
 from pathlib import Path
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -34,8 +33,9 @@ async def _schema_state() -> tuple[bool, bool]:
 
 
 def main() -> None:
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     config = Config(str(ROOT / "alembic.ini"))
     has_subjects, has_alembic_version = asyncio.run(_schema_state())

@@ -1,9 +1,9 @@
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from alembic import context
 from llm_gateway.core.config import get_settings
 from llm_gateway.db.models import SQLModel
 

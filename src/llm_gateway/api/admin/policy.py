@@ -12,9 +12,8 @@ from llm_gateway.api.admin._common import (
 )
 from llm_gateway.api.deps import session_dep
 from llm_gateway.db.models import RatePolicy, ResourceState
-from llm_gateway.services.resource_payloads import apply_model_patch
 from llm_gateway.services.facts import record_audit_event
-
+from llm_gateway.services.resource_payloads import apply_model_patch
 
 router = APIRouter()
 
@@ -54,9 +53,7 @@ async def create_rate_policy(
 
 @router.get("/rate-policies")
 async def list_rate_policies(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(
-        select(RatePolicy).order_by(col(RatePolicy.created_at).desc())
-    )
+    result = await session.execute(select(RatePolicy).order_by(col(RatePolicy.created_at).desc()))
     return result.scalars().all()
 
 
@@ -68,9 +65,7 @@ async def update_rate_policy(
 ):
     policy = await _get_or_404(session, RatePolicy, policy_id)
     apply_model_patch(policy, payload)
-    await _audit_update(
-        session, "rate_policy.update", "rate_policy", policy.id, payload
-    )
+    await _audit_update(session, "rate_policy.update", "rate_policy", policy.id, payload)
     await session.commit()
     await session.refresh(policy)
     return policy

@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 from uuid import uuid4
 
-
 from llm_gateway.services import upstream_health
 
 

@@ -83,9 +83,7 @@ class Project(TimestampMixin, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     name: str = Field(index=True, unique=True)
     state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
-    owner_subject_id: UUID | None = Field(
-        default=None, foreign_key="subjects.id", index=True
-    )
+    owner_subject_id: UUID | None = Field(default=None, foreign_key="subjects.id", index=True)
     notes: str | None = None
 
 
@@ -134,9 +132,7 @@ class ModelEntitlement(TimestampMixin, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     subject_id: UUID | None = Field(default=None, foreign_key="subjects.id", index=True)
     project_id: UUID | None = Field(default=None, foreign_key="projects.id", index=True)
-    gateway_key_id: UUID | None = Field(
-        default=None, foreign_key="gateway_keys.id", index=True
-    )
+    gateway_key_id: UUID | None = Field(default=None, foreign_key="gateway_keys.id", index=True)
     model_alias_id: UUID = Field(foreign_key="model_aliases.id", index=True)
     state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
 
@@ -320,9 +316,7 @@ class SkillLike(TimestampMixin, table=True):
 
 class McpLike(TimestampMixin, table=True):
     __tablename__ = "mcp_likes"
-    __table_args__ = (
-        UniqueConstraint("subject_id", "mcp_id", name="uq_mcp_likes_subject_mcp"),
-    )
+    __table_args__ = (UniqueConstraint("subject_id", "mcp_id", name="uq_mcp_likes_subject_mcp"),)
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     subject_id: UUID = Field(foreign_key="subjects.id", index=True)
@@ -334,9 +328,7 @@ class AuditEvent(SQLModel, table=True):
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     created_at: datetime = Field(default_factory=utcnow, index=True)
-    actor_subject_id: UUID | None = Field(
-        default=None, foreign_key="subjects.id", index=True
-    )
+    actor_subject_id: UUID | None = Field(default=None, foreign_key="subjects.id", index=True)
     action: str = Field(index=True)
     resource_type: str = Field(index=True)
     resource_id: UUID | None = Field(default=None, index=True)
@@ -376,8 +368,6 @@ class RequestFact(SQLModel, table=True):
     prefill_ms: int | None = None
     decode_ms: int | None = None
     kv_cache_usage: float | None = None
-    performance_detail: dict[str, Any] = Field(
-        default_factory=dict, sa_column=Column(JSONB)
-    )
+    performance_detail: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSONB))
     error_class: str | None = Field(default=None, index=True)
     error_detail: str | None = None

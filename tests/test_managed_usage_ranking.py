@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-
 import pytest
-
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
@@ -18,8 +16,8 @@ async def _seed_request_fact(
     outcome="success",
 ):
     """Insert a minimal RequestFact row for aggregation tests."""
-    from llm_gateway.db.session import AsyncSessionLocal
     from llm_gateway.db.models import EndpointFamily, RequestOutcome, utcnow
+    from llm_gateway.db.session import AsyncSessionLocal
     from llm_gateway.services.facts import record_request_fact
 
     now = utcnow()
@@ -52,9 +50,9 @@ async def test_usage_ranking_groups_by_subject_and_sorts_by_total_tokens():
     """直接调用查询函数：两个 subject 在同一 project，按 total_tokens 降序。"""
     from uuid import uuid4
 
+    from llm_gateway.api.auth import _usage_ranking_from_postgres
     from llm_gateway.db.models import Project, Subject, SubjectType, utcnow
     from llm_gateway.db.session import AsyncSessionLocal
-    from llm_gateway.api.auth import _usage_ranking_from_postgres
 
     async with AsyncSessionLocal() as session:
         project = Project(name=f"rank-test-{uuid4().hex}", owner_subject_id=None)
@@ -69,12 +67,8 @@ async def test_usage_ranking_groups_by_subject_and_sorts_by_total_tokens():
         alice_id = alice.id
         bob_id = bob.id
 
-    await _seed_request_fact(
-        project_id=project_id, subject_id=alice_id, total_tokens=500
-    )
-    await _seed_request_fact(
-        project_id=project_id, subject_id=alice_id, total_tokens=300
-    )
+    await _seed_request_fact(project_id=project_id, subject_id=alice_id, total_tokens=500)
+    await _seed_request_fact(project_id=project_id, subject_id=alice_id, total_tokens=300)
     await _seed_request_fact(project_id=project_id, subject_id=bob_id, total_tokens=100)
 
     now = utcnow()
@@ -101,9 +95,9 @@ async def test_usage_ranking_filters_by_model():
     """传 model 参数时只聚合该 model 的用量。"""
     from uuid import uuid4
 
+    from llm_gateway.api.auth import _usage_ranking_from_postgres
     from llm_gateway.db.models import Project, Subject, SubjectType, utcnow
     from llm_gateway.db.session import AsyncSessionLocal
-    from llm_gateway.api.auth import _usage_ranking_from_postgres
 
     async with AsyncSessionLocal() as session:
         project = Project(name=f"rank-model-{uuid4().hex}", owner_subject_id=None)
@@ -149,9 +143,9 @@ async def test_usage_ranking_filters_by_model():
 async def test_usage_ranking_empty_project_returns_empty_list():
     from uuid import uuid4
 
+    from llm_gateway.api.auth import _usage_ranking_from_postgres
     from llm_gateway.db.models import utcnow
     from llm_gateway.db.session import AsyncSessionLocal
-    from llm_gateway.api.auth import _usage_ranking_from_postgres
 
     now = utcnow()
     start = now - timedelta(days=1)
@@ -187,14 +181,13 @@ async def _create_user_with_session(full_name):
     Mirrors the register endpoint minus the rate-limit check; used by helpers
     below so the full suite doesn't trip the per-IP register cap.
     """
-    from tests.test_backend_integration import _employee_username
-
     from llm_gateway.core.config import get_settings
     from llm_gateway.db.session import AsyncSessionLocal
     from llm_gateway.services.security import (
         create_registered_user,
         create_user_session,
     )
+    from tests.test_backend_integration import _employee_username
 
     username = _employee_username()
     async with AsyncSessionLocal() as session:
@@ -228,12 +221,10 @@ async def _make_project_manager(client, project_name):
     """
     from uuid import uuid4
 
-    from llm_gateway.db.session import AsyncSessionLocal
     from llm_gateway.db.models import Project, ProjectMembership
+    from llm_gateway.db.session import AsyncSessionLocal
 
-    manager_headers, username, subject_id = await _create_user_with_session(
-        project_name
-    )
+    manager_headers, username, subject_id = await _create_user_with_session(project_name)
 
     suffix = uuid4().hex
     async with AsyncSessionLocal() as session:
@@ -257,9 +248,7 @@ async def test_manager_can_query_ranking_for_managed_project(client):
         client, "Manager1"
     )
 
-    await _seed_request_fact(
-        project_id=project_id, subject_id=manager_subject_id, total_tokens=200
-    )
+    await _seed_request_fact(project_id=project_id, subject_id=manager_subject_id, total_tokens=200)
 
     response = await client.get(
         "/auth/managed/usage/ranking",
@@ -383,9 +372,7 @@ async def _seed_team_fact(*, subject_id, model_alias="team-model", total_tokens=
         await session.commit()
 
 
-async def _make_team_manager_with_members(
-    client, manager_name="TeamMgr", member_count=2
-):
+async def _make_team_manager_with_members(client, manager_name="TeamMgr", member_count=2):
     """Create a user, make them manager of a fresh team, and add ``member_count``
     plain member subjects (ACTIVE, role=member). Returns
     (manager_headers, team_id, [member_subject_id, ...]).
@@ -395,19 +382,13 @@ async def _make_team_manager_with_members(
     from llm_gateway.db.models import Subject, SubjectType, Team, TeamMembership
     from llm_gateway.db.session import AsyncSessionLocal
 
-    manager_headers, _, manager_subject_id = await _create_user_with_session(
-        manager_name
-    )
+    manager_headers, _, manager_subject_id = await _create_user_with_session(manager_name)
 
     async with AsyncSessionLocal() as session:
         team = Team(name=f"mgr-team-{uuid4().hex}")
         session.add(team)
         await session.flush()
-        session.add(
-            TeamMembership(
-                team_id=team.id, subject_id=manager_subject_id, role="manager"
-            )
-        )
+        session.add(TeamMembership(team_id=team.id, subject_id=manager_subject_id, role="manager"))
         member_ids: list = []
         for i in range(member_count):
             member = Subject(
@@ -417,9 +398,7 @@ async def _make_team_manager_with_members(
             )
             session.add(member)
             await session.flush()
-            session.add(
-                TeamMembership(team_id=team.id, subject_id=member.id, role="member")
-            )
+            session.add(TeamMembership(team_id=team.id, subject_id=member.id, role="member"))
             member_ids.append(member.id)
         await session.commit()
         team_id = team.id
@@ -498,9 +477,7 @@ async def test_team_ranking_excludes_disabled_members(client):
         headers=manager_headers,
     )
     assert memberships.status_code == 200
-    member_membership = next(
-        m for m in memberships.json() if m["subject_id"] == str(member_a)
-    )
+    member_membership = next(m for m in memberships.json() if m["subject_id"] == str(member_a))
     disabled = await client.patch(
         f"/auth/managed/team-memberships/{member_membership['id']}",
         headers=manager_headers,

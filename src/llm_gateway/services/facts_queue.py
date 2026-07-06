@@ -34,9 +34,7 @@ async def drain_now(timeout_seconds: float = 10.0) -> None:
     deadline = loop.time() + timeout_seconds
     while _pending:
         if loop.time() >= deadline:
-            logger.warning(
-                "drain_now timed out with %d facts still pending", len(_pending)
-            )
+            logger.warning("drain_now timed out with %d facts still pending", len(_pending))
             return
         if _draining:
             await asyncio.sleep(0.02)

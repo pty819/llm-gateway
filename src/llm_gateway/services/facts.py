@@ -1,6 +1,6 @@
+import contextvars
 from datetime import datetime
 from typing import Any
-import contextvars
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,7 +12,6 @@ from llm_gateway.db.models import (
     SubjectType,
     UsageSource,
 )
-
 
 # Request-scoped actor for admin audit events. Set by the admin dependency
 # (session-based admin actions record the human subject; token-based system
@@ -68,21 +67,15 @@ def _duration_ms(started_at: datetime, ended_at: datetime) -> int:
 
 
 def prompt_tokens_from_usage(usage: dict[str, Any] | None) -> int | None:
-    return token_from_usage(usage, "prompt_tokens") or token_from_usage(
-        usage, "input_tokens"
-    )
+    return token_from_usage(usage, "prompt_tokens") or token_from_usage(usage, "input_tokens")
 
 
 def completion_tokens_from_usage(usage: dict[str, Any] | None) -> int | None:
-    return token_from_usage(usage, "completion_tokens") or token_from_usage(
-        usage, "output_tokens"
-    )
+    return token_from_usage(usage, "completion_tokens") or token_from_usage(usage, "output_tokens")
 
 
 def total_tokens_from_usage(usage: dict[str, Any] | None) -> int | None:
-    return token_from_usage(usage, "total_tokens") or token_from_usage(
-        usage, "total_tokens_used"
-    )
+    return token_from_usage(usage, "total_tokens") or token_from_usage(usage, "total_tokens_used")
 
 
 def cached_tokens_from_usage(usage: dict[str, Any] | None) -> int | None:
@@ -105,9 +98,7 @@ def performance_int_from_usage(usage: dict[str, Any] | None, key: str) -> int | 
     )
 
 
-def performance_float_from_usage(
-    usage: dict[str, Any] | None, key: str
-) -> float | None:
+def performance_float_from_usage(usage: dict[str, Any] | None, key: str) -> float | None:
     if not usage:
         return None
     value = usage.get(key)
@@ -141,9 +132,7 @@ async def record_request_fact(
 ) -> RequestFact:
     usage_source = UsageSource.LITELLM if usage else UsageSource.MISSING
     latency_ms = _duration_ms(started_at, ended_at)
-    time_to_first_token_ms = (
-        _duration_ms(started_at, first_token_at) if first_token_at else None
-    )
+    time_to_first_token_ms = _duration_ms(started_at, first_token_at) if first_token_at else None
     fact = RequestFact(
         request_id=request_id,
         started_at=started_at,
@@ -208,9 +197,7 @@ def _redact_audit_detail(value: Any) -> Any:
     if isinstance(value, dict):
         return {
             key: (
-                "<redacted>"
-                if key.lower() in _AUDIT_SENSITIVE_KEYS
-                else _redact_audit_detail(item)
+                "<redacted>" if key.lower() in _AUDIT_SENSITIVE_KEYS else _redact_audit_detail(item)
             )
             for key, item in value.items()
         }

@@ -16,9 +16,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.execute(
-        "alter table upstream_targets add column if not exists metrics_url varchar"
-    )
+    op.execute("alter table upstream_targets add column if not exists metrics_url varchar")
 
 
 def downgrade() -> None:

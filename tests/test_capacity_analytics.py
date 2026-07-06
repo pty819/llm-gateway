@@ -7,13 +7,10 @@ import pytest
 
 from llm_gateway.db.models import EndpointFamily, RequestFact, RequestOutcome, utcnow
 
-
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
-async def test_admin_capacity_analytics_time_buckets_and_drilldown(
-    client, gateway_fixture
-):
+async def test_admin_capacity_analytics_time_buckets_and_drilldown(client, gateway_fixture):
     from llm_gateway.core.config import get_settings
     from llm_gateway.db.session import AsyncSessionLocal
 
@@ -73,9 +70,7 @@ async def test_admin_capacity_analytics_time_buckets_and_drilldown(
         "bucket": "hour",
         "model": gateway_fixture.model_alias,
     }
-    buckets = await client.get(
-        "/admin/analytics/time-buckets", headers=headers, params=params
-    )
+    buckets = await client.get("/admin/analytics/time-buckets", headers=headers, params=params)
     assert buckets.status_code == 200, buckets.text
     bucket_payload = buckets.json()
     assert len(bucket_payload) >= 1
@@ -99,9 +94,7 @@ async def test_admin_capacity_analytics_time_buckets_and_drilldown(
     assert drilldown.status_code == 200, drilldown.text
     drilldown_payload = drilldown.json()
     model_row = next(
-        item
-        for item in drilldown_payload
-        if item["dimension_id"] == gateway_fixture.model_alias
+        item for item in drilldown_payload if item["dimension_id"] == gateway_fixture.model_alias
     )
     assert model_row["dimension_label"] == gateway_fixture.model_alias
     assert model_row["request_count"] >= 2

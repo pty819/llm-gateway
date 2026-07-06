@@ -12,7 +12,6 @@ from llm_gateway.services.rate_limit import (
     release_concurrency_slot,
 )
 
-
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
@@ -55,52 +54,36 @@ async def test_concurrency_slots_prune_stale_entries_after_gateway_crash():
     redis = cast(Any, FakeRedis())
     key_id = uuid4()
 
-    await acquire_concurrency_slot(
-        redis, key_id=key_id, limit=1, ttl_seconds=10, now=100.0
-    )
+    await acquire_concurrency_slot(redis, key_id=key_id, limit=1, ttl_seconds=10, now=100.0)
 
     with pytest.raises(RateLimitExceeded, match="concurrency_exceeded"):
-        await acquire_concurrency_slot(
-            redis, key_id=key_id, limit=1, ttl_seconds=10, now=105.0
-        )
+        await acquire_concurrency_slot(redis, key_id=key_id, limit=1, ttl_seconds=10, now=105.0)
 
-    await acquire_concurrency_slot(
-        redis, key_id=key_id, limit=1, ttl_seconds=10, now=111.0
-    )
+    await acquire_concurrency_slot(redis, key_id=key_id, limit=1, ttl_seconds=10, now=111.0)
 
 
 async def test_releasing_concurrency_slot_is_idempotent():
     redis = cast(Any, FakeRedis())
     key_id = uuid4()
 
-    slot = await acquire_concurrency_slot(
-        redis, key_id=key_id, limit=1, ttl_seconds=10, now=100.0
-    )
+    slot = await acquire_concurrency_slot(redis, key_id=key_id, limit=1, ttl_seconds=10, now=100.0)
 
     await release_concurrency_slot(redis, slot)
     await release_concurrency_slot(redis, slot)
-    await acquire_concurrency_slot(
-        redis, key_id=key_id, limit=1, ttl_seconds=10, now=101.0
-    )
+    await acquire_concurrency_slot(redis, key_id=key_id, limit=1, ttl_seconds=10, now=101.0)
 
 
 async def test_concurrency_slot_context_releases_only_its_own_member():
     redis = cast(Any, FakeRedis())
     key_id = uuid4()
 
-    async with concurrency_slot(
-        redis, key_id=key_id, limit=2, ttl_seconds=10, now=100.0
-    ):
+    async with concurrency_slot(redis, key_id=key_id, limit=2, ttl_seconds=10, now=100.0):
         second = await acquire_concurrency_slot(
             redis, key_id=key_id, limit=2, ttl_seconds=10, now=101.0
         )
 
     with pytest.raises(RateLimitExceeded, match="concurrency_exceeded"):
-        await acquire_concurrency_slot(
-            redis, key_id=key_id, limit=1, ttl_seconds=10, now=102.0
-        )
+        await acquire_concurrency_slot(redis, key_id=key_id, limit=1, ttl_seconds=10, now=102.0)
 
     await release_concurrency_slot(redis, second)
-    await acquire_concurrency_slot(
-        redis, key_id=key_id, limit=1, ttl_seconds=10, now=103.0
-    )
+    await acquire_concurrency_slot(redis, key_id=key_id, limit=1, ttl_seconds=10, now=103.0)

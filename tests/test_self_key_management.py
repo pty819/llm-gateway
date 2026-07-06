@@ -4,7 +4,6 @@ from uuid import uuid4
 
 import pytest
 
-
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
@@ -16,14 +15,13 @@ async def _login_self_service_user(client):
     same 127.0.0.1). The key-management endpoints under test only need a valid
     session + a key on the user's personal project, which we build directly.
     """
-    from tests.test_backend_integration import _employee_username
-
     from llm_gateway.core.config import get_settings
     from llm_gateway.db.session import AsyncSessionLocal
     from llm_gateway.services.security import (
         create_registered_user,
         create_user_session,
     )
+    from tests.test_backend_integration import _employee_username
 
     username = _employee_username()
     async with AsyncSessionLocal() as session:
@@ -167,25 +165,22 @@ async def test_disable_key_on_non_personal_project_returns_404(client):
     not be self-disableable. Covers the project_id permission clause, which is
     the security-critical branch (subject_id matches but project_id does not)."""
     from llm_gateway.core.config import get_settings
-    from llm_gateway.db.session import AsyncSessionLocal
     from llm_gateway.db.models import Project
+    from llm_gateway.db.session import AsyncSessionLocal
 
     headers, username = await _login_self_service_user(client)
     # Resolve the user's subject_id and create a separate (non-personal) project.
     from sqlalchemy import select
     from sqlmodel import col
+
     from llm_gateway.db.models import Subject
 
     async with AsyncSessionLocal() as session:
         subject = (
-            await session.execute(
-                select(Subject).where(col(Subject.login_username) == username)
-            )
+            await session.execute(select(Subject).where(col(Subject.login_username) == username))
         ).scalar_one()
         subject_id = subject.id
-        other_project = Project(
-            name=f"other-team-project-{uuid4().hex}", owner_subject_id=None
-        )
+        other_project = Project(name=f"other-team-project-{uuid4().hex}", owner_subject_id=None)
         session.add(other_project)
         await session.commit()
         other_project_id = other_project.id

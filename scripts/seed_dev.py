@@ -3,7 +3,6 @@ import os
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
@@ -48,9 +47,7 @@ async def main() -> None:
 
     async with AsyncSessionLocal() as session:
         subject = (
-            await session.execute(
-                select(Subject).where(col(Subject.name) == "dev-user")
-            )
+            await session.execute(select(Subject).where(col(Subject.name) == "dev-user"))
         ).scalar_one_or_none()
         if not subject:
             subject = Subject(name="dev-user", type=SubjectType.USER)
@@ -58,9 +55,7 @@ async def main() -> None:
             await session.flush()
 
         project = (
-            await session.execute(
-                select(Project).where(col(Project.name) == "dev-project")
-            )
+            await session.execute(select(Project).where(col(Project.name) == "dev-project"))
         ).scalar_one_or_none()
         if not project:
             project = Project(name="dev-project", owner_subject_id=subject.id)
@@ -68,9 +63,7 @@ async def main() -> None:
             await session.flush()
 
         model_alias = (
-            await session.execute(
-                select(ModelAlias).where(col(ModelAlias.alias) == "dev-model")
-            )
+            await session.execute(select(ModelAlias).where(col(ModelAlias.alias) == "dev-model"))
         ).scalar_one_or_none()
         if not model_alias:
             model_alias = ModelAlias(
@@ -112,9 +105,7 @@ async def main() -> None:
             )
         ).scalar_one_or_none()
         if not entitlement:
-            entitlement = ModelEntitlement(
-                project_id=project.id, model_alias_id=model_alias.id
-            )
+            entitlement = ModelEntitlement(project_id=project.id, model_alias_id=model_alias.id)
             session.add(entitlement)
 
         existing_key = (

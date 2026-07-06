@@ -8,7 +8,6 @@ import time
 from ipaddress import ip_address
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend"
 

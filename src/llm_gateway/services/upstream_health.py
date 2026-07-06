@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -42,7 +42,7 @@ def _payload(reason: str, status_code: int | None) -> str:
         {
             "reason": reason,
             "status_code": status_code,
-            "since": datetime.now(timezone.utc).isoformat(),
+            "since": datetime.now(UTC).isoformat(),
         }
     )
 

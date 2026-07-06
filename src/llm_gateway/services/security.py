@@ -25,7 +25,6 @@ from llm_gateway.db.models import (
     utcnow,
 )
 
-
 KEY_PREFIX_LENGTH = 12
 EMPLOYEE_USERNAME_PATTERN = re.compile(r"^[a-z]\d{8}$", re.IGNORECASE)
 
@@ -100,9 +99,7 @@ def verify_password(password: str, stored_hash: str) -> bool:
     return hmac.compare_digest(candidate, digest)
 
 
-async def authenticate_gateway_key(
-    session: AsyncSession, raw_key: str
-) -> AuthContext | None:
+async def authenticate_gateway_key(session: AsyncSession, raw_key: str) -> AuthContext | None:
     from llm_gateway.services.cache import _CACHE_MISS, auth_cache
 
     cache_key = f"auth:{hash_gateway_key(raw_key)}"
@@ -121,9 +118,7 @@ async def authenticate_gateway_key(
             auth_cache.set(cache_key, _CACHE_MISS)
         return context
     prefix = key_prefix(raw_key)
-    result = await session.execute(
-        select(GatewayKey).where(col(GatewayKey.key_prefix) == prefix)
-    )
+    result = await session.execute(select(GatewayKey).where(col(GatewayKey.key_prefix) == prefix))
     candidates = result.scalars().all()
     now = utcnow()
     for candidate in candidates:
@@ -138,10 +133,7 @@ async def authenticate_gateway_key(
         if not subject or not project:
             auth_cache.set(cache_key, _CACHE_MISS)
             return None
-        if (
-            subject.state != ResourceState.ACTIVE
-            or project.state != ResourceState.ACTIVE
-        ):
+        if subject.state != ResourceState.ACTIVE or project.state != ResourceState.ACTIVE:
             auth_cache.set(cache_key, _CACHE_MISS)
             return None
         ctx = AuthContext(key=candidate, subject=subject, project=project)
@@ -326,9 +318,7 @@ async def ensure_builtin_identity(session: AsyncSession, settings: Settings) -> 
         is_builtin=True,
     )
     username = normalize_username(settings.bootstrap_admin_username)
-    result = await session.execute(
-        select(Subject).where(col(Subject.login_username) == username)
-    )
+    result = await session.execute(select(Subject).where(col(Subject.login_username) == username))
     admin = result.scalar_one_or_none()
     if not admin:
         admin = Subject(
@@ -349,18 +339,12 @@ async def ensure_builtin_identity(session: AsyncSession, settings: Settings) -> 
         admin.is_admin = True
         if admin.state != ResourceState.ACTIVE:
             admin.state = ResourceState.ACTIVE
-    await ensure_team_membership(
-        session, team_id=admin_team.id, subject_id=admin.id, role="admin"
-    )
-    await ensure_team_membership(
-        session, team_id=guest_team.id, subject_id=admin.id, role="member"
-    )
+    await ensure_team_membership(session, team_id=admin_team.id, subject_id=admin.id, role="admin")
+    await ensure_team_membership(session, team_id=guest_team.id, subject_id=admin.id, role="member")
 
     models = (await session.execute(select(ModelAlias))).scalars().all()
     for model_alias in models:
-        await ensure_model_team_grant(
-            session, model_alias_id=model_alias.id, team_id=admin_team.id
-        )
+        await ensure_model_team_grant(session, model_alias_id=model_alias.id, team_id=admin_team.id)
 
     return admin
 
@@ -381,9 +365,7 @@ async def create_registered_user(
     if not full_name:
         raise ValueError("full_name_required")
     existing = (
-        await session.execute(
-            select(Subject).where(col(Subject.login_username) == normalized)
-        )
+        await session.execute(select(Subject).where(col(Subject.login_username) == normalized))
     ).scalar_one_or_none()
     if existing:
         raise ValueError("username_already_registered")

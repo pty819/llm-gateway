@@ -24,12 +24,11 @@ from llm_gateway.db.models import (
     RouterPolicy,
     UpstreamTarget,
 )
-from llm_gateway.services.resource_payloads import apply_model_patch, redact_upstream
 from llm_gateway.services.facts import record_audit_event
-from llm_gateway.services.upstream_client import check_upstream_health
+from llm_gateway.services.resource_payloads import apply_model_patch, redact_upstream
 from llm_gateway.services.router_command import render_router_command
 from llm_gateway.services.security import ensure_model_team_grant, get_or_create_team
-
+from llm_gateway.services.upstream_client import check_upstream_health
 
 router = APIRouter()
 
@@ -114,9 +113,7 @@ async def create_model_alias(
         notes="Built-in administrators with access to all models.",
         is_builtin=True,
     )
-    await ensure_model_team_grant(
-        session, model_alias_id=model_alias.id, team_id=admin_team.id
-    )
+    await ensure_model_team_grant(session, model_alias_id=model_alias.id, team_id=admin_team.id)
     await record_audit_event(
         session,
         action="model_alias.create",
@@ -132,9 +129,7 @@ async def create_model_alias(
 
 @router.get("/model-aliases")
 async def list_model_aliases(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(
-        select(ModelAlias).order_by(col(ModelAlias.created_at).desc())
-    )
+    result = await session.execute(select(ModelAlias).order_by(col(ModelAlias.created_at).desc()))
     return result.scalars().all()
 
 
@@ -146,9 +141,7 @@ async def update_model_alias(
 ):
     model_alias = await _get_or_404(session, ModelAlias, model_alias_id)
     apply_model_patch(model_alias, payload)
-    await _audit_update(
-        session, "model_alias.update", "model_alias", model_alias.id, payload
-    )
+    await _audit_update(session, "model_alias.update", "model_alias", model_alias.id, payload)
     await session.commit()
     await session.refresh(model_alias)
     return model_alias
@@ -164,9 +157,7 @@ async def delete_model_alias(
     upstreams = (
         (
             await session.execute(
-                select(UpstreamTarget).where(
-                    col(UpstreamTarget.model_alias_id) == model_alias.id
-                )
+                select(UpstreamTarget).where(col(UpstreamTarget.model_alias_id) == model_alias.id)
             )
         )
         .scalars()
@@ -178,9 +169,7 @@ async def delete_model_alias(
             detail={
                 "code": "model_alias_has_upstreams",
                 "upstream_count": len(upstreams),
-                "upstreams": [
-                    {"id": str(item.id), "name": item.name} for item in upstreams
-                ],
+                "upstreams": [{"id": str(item.id), "name": item.name} for item in upstreams],
             },
         )
     await record_audit_event(
@@ -199,24 +188,16 @@ async def delete_model_alias(
     for upstream in upstreams:
         detached_usage_count += await _detach_upstream_usage(session, upstream)
     await session.execute(
-        delete(ModelEntitlement).where(
-            col(ModelEntitlement.model_alias_id) == model_alias.id
-        )
+        delete(ModelEntitlement).where(col(ModelEntitlement.model_alias_id) == model_alias.id)
     )
     await session.execute(
-        delete(ModelTeamGrant).where(
-            col(ModelTeamGrant.model_alias_id) == model_alias.id
-        )
+        delete(ModelTeamGrant).where(col(ModelTeamGrant.model_alias_id) == model_alias.id)
     )
     await session.execute(
-        delete(RouterCommandConfig).where(
-            col(RouterCommandConfig.model_alias_id) == model_alias.id
-        )
+        delete(RouterCommandConfig).where(col(RouterCommandConfig.model_alias_id) == model_alias.id)
     )
     await session.execute(
-        delete(UpstreamTarget).where(
-            col(UpstreamTarget.model_alias_id) == model_alias.id
-        )
+        delete(UpstreamTarget).where(col(UpstreamTarget.model_alias_id) == model_alias.id)
     )
     await session.delete(model_alias)
     await session.commit()
@@ -258,9 +239,7 @@ async def list_upstreams(session: AsyncSession = Depends(session_dep)):
 
 
 @router.get("/upstreams/{upstream_id}/health")
-async def upstream_health(
-    upstream_id: UUID, session: AsyncSession = Depends(session_dep)
-):
+async def upstream_health(upstream_id: UUID, session: AsyncSession = Depends(session_dep)):
     upstream = await _get_or_404(session, UpstreamTarget, upstream_id)
     result = await check_upstream_health(upstream)
     return {"upstream": redact_upstream(upstream), "health": result}
@@ -273,22 +252,16 @@ async def update_upstream(
     session: AsyncSession = Depends(session_dep),
 ):
     upstream = await _get_or_404(session, UpstreamTarget, upstream_id)
-    await _validate_homogeneous_upstream_payload(
-        session, payload=payload, existing=upstream
-    )
+    await _validate_homogeneous_upstream_payload(session, payload=payload, existing=upstream)
     apply_model_patch(upstream, payload)
-    await _audit_update(
-        session, "upstream.update", "upstream_target", upstream.id, payload
-    )
+    await _audit_update(session, "upstream.update", "upstream_target", upstream.id, payload)
     await session.commit()
     await session.refresh(upstream)
     return redact_upstream(upstream)
 
 
 @router.delete("/upstreams/{upstream_id}")
-async def delete_upstream(
-    upstream_id: UUID, session: AsyncSession = Depends(session_dep)
-):
+async def delete_upstream(upstream_id: UUID, session: AsyncSession = Depends(session_dep)):
     upstream = await _get_or_404(session, UpstreamTarget, upstream_id)
     detached_usage_count = await _detach_upstream_usage(session, upstream)
     await record_audit_event(
@@ -335,10 +308,7 @@ async def list_router_command_configs(session: AsyncSession = Depends(session_de
         select(RouterCommandConfig).order_by(col(RouterCommandConfig.created_at).desc())
     )
     configs = result.scalars().all()
-    return [
-        {"config": config, "command": render_router_command(config)}
-        for config in configs
-    ]
+    return [{"config": config, "command": render_router_command(config)} for config in configs]
 
 
 @router.patch("/router-command-configs/{config_id}")

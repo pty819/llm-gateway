@@ -17,16 +17,18 @@ from llm_gateway.api.deps import (
     settings_dep,
 )
 from llm_gateway.core.config import Settings
-from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.db.models import EndpointFamily, RequestOutcome, utcnow
-from llm_gateway.services.upstream_client import (
-    upstream_request_once,
-    upstream_request_stream,
-)
+from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.services.policy import (
     PolicyDenied,
     list_accessible_model_aliases,
     resolve_route_context,
+)
+from llm_gateway.services.proxy_accounting import (
+    outcome_for_http_status,
+    record_proxy_error,
+    record_proxy_fact,
+    requested_model_alias,
 )
 from llm_gateway.services.rate_limit import (
     RateLimitExceeded,
@@ -36,17 +38,14 @@ from llm_gateway.services.rate_limit import (
     release_concurrency_slot,
     resolve_effective_rate_policy,
 )
-from llm_gateway.services.proxy_accounting import (
-    outcome_for_http_status,
-    record_proxy_error,
-    record_proxy_fact,
-    requested_model_alias,
-)
 from llm_gateway.services.runtime_metrics import tracked_runtime_connection
 from llm_gateway.services.security import AuthContext, authenticate_gateway_key
 from llm_gateway.services.streaming import HEARTBEAT_FRAME, iter_with_heartbeat
+from llm_gateway.services.upstream_client import (
+    upstream_request_once,
+    upstream_request_stream,
+)
 from llm_gateway.services.upstream_routing import touch_sticky_route
-
 
 router = APIRouter()
 
@@ -62,9 +61,7 @@ def _plain(value: Any) -> Any:
 def _requested_model(body: dict[str, Any]) -> str:
     model = body.get("model")
     if not isinstance(model, str) or not model:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="missing_model"
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_model")
     return model
 
 
@@ -99,13 +96,9 @@ async def _prepare(
         )
         return route, rate_policy
     except PolicyDenied as exc:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail=exc.reason
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.reason) from exc
     except RateLimitExceeded as exc:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
 
 
 async def _resolve_proxy_context(
@@ -241,9 +234,7 @@ async def _proxy_endpoint(
             key_id=auth.key.id,
             limit=rate_policy.concurrency_limit,
         ):
-            async with tracked_runtime_connection(
-                redis, request_id=request_id, route=route
-            ):
+            async with tracked_runtime_connection(redis, request_id=request_id, route=route):
                 result = await upstream_request_once(
                     endpoint_family=endpoint_family,
                     model_alias=route.model_alias,
@@ -307,9 +298,7 @@ async def _stream_endpoint(
     outcome = RequestOutcome.SUCCESS
     error: BaseException | None = None
     try:
-        async with tracked_runtime_connection(
-            redis, request_id=request_id, route=route
-        ):
+        async with tracked_runtime_connection(redis, request_id=request_id, route=route):
             async for event, event_usage in iter_with_heartbeat(
                 upstream_request_stream(
                     endpoint_family=endpoint_family,
@@ -465,9 +454,7 @@ async def _raise_rate_limited_after_route(
         outcome=RequestOutcome.RATE_LIMITED,
         exc=exc,
     )
-    raise HTTPException(
-        status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
-    ) from exc
+    raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
 
 
 async def _touch_route_sticky(redis: Redis, *, auth: AuthContext, route) -> None:
@@ -493,13 +480,9 @@ def _error_response(status_code: int, error_class: str, exc: Exception) -> JSONR
     )
 
 
-async def _authenticate_proxy_request(
-    request: Request, session: AsyncSession
-) -> AuthContext:
+async def _authenticate_proxy_request(request: Request, session: AsyncSession) -> AuthContext:
     raw_key = bearer_token(request)
     context = await authenticate_gateway_key(session, raw_key)
     if not context:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_gateway_key"
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_gateway_key")
     return context

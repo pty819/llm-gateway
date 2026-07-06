@@ -7,7 +7,6 @@ from llm_gateway.services.cache import auth_cache
 from llm_gateway.services.policy import resolve_route_context
 from llm_gateway.services.security import authenticate_gateway_key
 
-
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 

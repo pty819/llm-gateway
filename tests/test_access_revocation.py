@@ -44,8 +44,7 @@ async def test_disabling_entitlement_revokes_access_immediately(gateway_fixture)
             await session.execute(
                 select(ModelEntitlement).where(
                     col(ModelEntitlement.project_id) == gateway_fixture.project_id,
-                    col(ModelEntitlement.model_alias_id)
-                    == gateway_fixture.model_alias_id,
+                    col(ModelEntitlement.model_alias_id) == gateway_fixture.model_alias_id,
                 )
             )
         ).scalar_one()

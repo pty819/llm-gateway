@@ -10,7 +10,6 @@ import pytest
 from llm_gateway.db.models import EndpointFamily, ModelAlias, UpstreamTarget
 from llm_gateway.services import upstream_client
 
-
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
@@ -324,9 +323,7 @@ async def test_unified_dispatch_routes_chat_and_responses(monkeypatch):
 
     async def fake_responses(*, model_alias, upstream, body):
         seen.append(EndpointFamily.OPENAI_RESPONSES)
-        return upstream_client.UpstreamCallResult(
-            response={"kind": "responses"}, usage=None
-        )
+        return upstream_client.UpstreamCallResult(response={"kind": "responses"}, usage=None)
 
     monkeypatch.setattr(upstream_client, "_chat_once", fake_chat)
     monkeypatch.setattr(upstream_client, "_responses_once", fake_responses)

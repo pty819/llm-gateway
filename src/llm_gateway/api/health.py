@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from llm_gateway.api.deps import admin_dep, redis_dep, session_dep, settings_dep
 from llm_gateway.core.config import Settings
 
-
 router = APIRouter()
 
 
