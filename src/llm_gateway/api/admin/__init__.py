@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 
 from llm_gateway.api.deps import admin_dep
 from llm_gateway.api.admin import (
-    access, identity, marketplace, observability, policy, routing,
+    access, identity, marketplace, observability, policy, routing, settings,
 )
 
 
@@ -13,3 +13,4 @@ router.include_router(access.router)
 router.include_router(observability.router)
 router.include_router(policy.router)
 router.include_router(marketplace.router)
+router.include_router(settings.router)

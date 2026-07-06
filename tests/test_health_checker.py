@@ -162,13 +162,16 @@ async def test_probe_upstream_injects_authorization_header(monkeypatch):
 
 
 class _FakeRedis:
-    """Minimal in-memory Redis covering set(ex=)/delete/exists/mget/aclose."""
+    """Minimal in-memory Redis covering set(ex=)/get/delete/exists/mget/aclose."""
 
     def __init__(self):
         self.store: dict[str, str] = {}
 
     async def set(self, key, value, ex=None):
         self.store[key] = value if isinstance(value, str) else value.decode()
+
+    async def get(self, key):
+        return self.store.get(key)
 
     async def delete(self, key):
         return self.store.pop(key, None) is not None
@@ -614,23 +617,37 @@ def test_quorum_breach_logic():
 # --- Lifecycle (start/stop) ------------------------------------------------
 
 
-async def test_start_skips_loop_when_disabled(monkeypatch):
-    """health_check_enabled=False → start() 不进入循环。"""
+async def test_start_always_starts_loop_skips_probes_when_disabled(monkeypatch):
+    """start() always starts the loop; when disabled the loop sleeps without
+    probing. This lets an admin re-enable at runtime without restarting.
+
+    The old behavior short-circuited start() when env said disabled, which
+    meant a runtime toggle couldn't revive the checker. Now the loop runs
+    regardless and re-checks effective_enabled each cycle.
+    """
     from llm_gateway.services import health_checker
 
+    # Env default = disabled, no Redis override → effective = disabled
     monkeypatch.setattr(health_checker, "_settings_enabled", lambda: False)
-    loop_calls = []
+    monkeypatch.setattr(health_checker, "_settings_interval", lambda: 0.01)
+    monkeypatch.setattr(health_checker, "_settings_timeout", lambda: 3.0)
+    monkeypatch.setattr(health_checker, "_settings_unhealthy_ttl", lambda: 30)
+    monkeypatch.setattr(health_checker, "_settings_quorum_min", lambda: 2)
+    monkeypatch.setattr(health_checker, "_build_redis", lambda: _FakeRedis())
 
-    async def _fake_main_loop():
-        loop_calls.append("ran")
+    probe_calls = []
 
-    monkeypatch.setattr(health_checker, "_main_loop", _fake_main_loop)
+    async def _fake_run_once(*, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min):
+        probe_calls.append(1)
+
+    monkeypatch.setattr(health_checker, "_run_once", _fake_run_once)
 
     health_checker._task = None
     await health_checker.start()
-
-    assert loop_calls == []
-    assert health_checker._task is None
+    assert health_checker._task is not None  # loop IS running
+    await asyncio.sleep(0.05)
+    await health_checker.stop()
+    assert probe_calls == []  # but no probes happened (disabled)
 
 
 async def test_start_runs_loop_then_stop_terminates(monkeypatch):

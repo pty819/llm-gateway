@@ -308,6 +308,58 @@ def _settings_quorum_min() -> int:
     return get_settings().health_check_quorum_min
 
 
+# --- Runtime enable override (Redis) ---
+#
+# The env-var default (health_check_enabled) is frozen at sidecar start by the
+# lru_cached Settings singleton. A Redis override key lets an admin toggle the
+# checker at runtime without restarting the sidecar: SET "0" to force-disable
+# (emergency stop), DEL to withdraw the override and fall back to the env
+# default. The sidecar re-reads this every cycle in _main_loop, so a toggle
+# takes effect within one interval (≤3s).
+
+_ENABLED_OVERRIDE_KEY = "llm_gateway:health_check:enabled"
+_DISABLED_SENTINEL = "0"
+
+
+async def is_enabled_override(redis: Redis) -> bool | None:
+    """Return the runtime override state, or None if no override is set.
+
+    True = forced enabled, False = forced disabled, None = no override (use
+    the env-var default). Today only the disable sentinel is written, so the
+    return is False or None; True is reserved for a future "force-on even when
+    env says off" if that need arises.
+    """
+    value = await redis.get(_ENABLED_OVERRIDE_KEY)
+    if value is None:
+        return None
+    return value != _DISABLED_SENTINEL
+
+
+async def set_enabled_override(redis: Redis, enabled: bool) -> None:
+    """Set the runtime override. enabled=False forces the checker off."""
+    if enabled:
+        await redis.delete(_ENABLED_OVERRIDE_KEY)
+    else:
+        await redis.set(_ENABLED_OVERRIDE_KEY, _DISABLED_SENTINEL)
+
+
+async def clear_enabled_override(redis: Redis) -> None:
+    """Withdraw the runtime override, falling back to the env-var default."""
+    await redis.delete(_ENABLED_OVERRIDE_KEY)
+
+
+async def effective_enabled(redis: Redis) -> tuple[bool, str]:
+    """Resolve the effective enabled state + its source.
+
+    Returns (enabled, source) where source is "redis_override" or "env_default".
+    Redis override takes precedence over the env-var default.
+    """
+    override = await is_enabled_override(redis)
+    if override is not None:
+        return override, "redis_override"
+    return _settings_enabled(), "env_default"
+
+
 def _build_redis() -> Redis:
     """Construct a process-local Redis client for the sidecar.
 
@@ -329,17 +381,20 @@ _task: asyncio.Task | None = None
 
 
 async def start() -> None:
-    """Start the background health-check loop (no-op if disabled).
+    """Start the background health-check loop.
 
     Used by the sidecar process. The main gateway process no longer calls this
     — health checking lives in the sidecar so a main-process event-loop freeze
     can never produce a fleet-wide false-positive disable.
+
+    Always starts the loop task regardless of the env-var default: the loop
+    re-checks effective_enabled (Redis override > env default) each cycle, so
+    an admin toggle takes effect within one interval without a sidecar restart.
+    If both env default and Redis say disabled, the loop just sleeps without
+    probing — cheap, and ready to resume instantly when re-enabled.
     """
     global _task
     if _task is not None:
-        return
-    if not _settings_enabled():
-        logger.info("health_check_disabled_by_config")
         return
     _task = asyncio.create_task(_main_loop())
     logger.info(
@@ -370,6 +425,11 @@ async def stop() -> None:
 async def _main_loop() -> None:
     """Run _run_once every interval until cancelled.
 
+    Each cycle resolves effective_enabled (Redis override > env default) so an
+    admin toggle takes effect within one interval without restarting the
+    sidecar. When disabled the loop sleeps without probing — cheap, and ready
+    to resume instantly when re-enabled.
+
     CancelledError re-raises so stop()'s await sees it cleanly; any other
     exception from a single iteration is logged and the loop continues — a
     transient Redis/DB hiccup must not kill the whole checker.
@@ -378,12 +438,16 @@ async def _main_loop() -> None:
     try:
         while True:
             try:
-                await _run_once(
-                    redis=redis,
-                    timeout_seconds=_settings_timeout(),
-                    unhealthy_ttl_seconds=_settings_unhealthy_ttl(),
-                    quorum_min=_settings_quorum_min(),
-                )
+                enabled, source = await effective_enabled(redis)
+                if enabled:
+                    await _run_once(
+                        redis=redis,
+                        timeout_seconds=_settings_timeout(),
+                        unhealthy_ttl_seconds=_settings_unhealthy_ttl(),
+                        quorum_min=_settings_quorum_min(),
+                    )
+                else:
+                    logger.debug("health_check_skipped (disabled, source=%s)", source)
             except asyncio.CancelledError:
                 raise
             except Exception:

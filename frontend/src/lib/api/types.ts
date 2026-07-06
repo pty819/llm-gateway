@@ -314,6 +314,11 @@ export type Diagnostics = {
 	litellm_version: string;
 };
 
+export type HealthCheckConfig = {
+	enabled: boolean;
+	source: 'redis_override' | 'env_default';
+};
+
 export type AuthProfile = {
 	subject: Subject;
 	teams: string[];

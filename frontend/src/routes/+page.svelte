@@ -23,6 +23,7 @@
 		Diagnostics,
 		GatewayKey,
 		GatewayKeyCreateResponse,
+		HealthCheckConfig,
 		Inventory,
 		IPPolicyMode,
 		LoginResponse,
@@ -121,6 +122,8 @@
 	let plaintextKey = $state('');
 	let ready = $state<ReadyStatus | null>(null);
 	let diagnostics = $state<Diagnostics | null>(null);
+	let healthCheckConfig = $state<HealthCheckConfig | null>(null);
+	let healthCheckToggling = $state(false);
 	let realtime = $state<RuntimeMetricsSnapshot | null>(null);
 	let realtimeStatus = $state('未连接');
 	let realtimeAbort: AbortController | null = null;
@@ -534,6 +537,15 @@
 		}
 	}
 
+	async function toggleHealthCheck() {
+		if (!healthCheckConfig || healthCheckToggling) return;
+		healthCheckToggling = true;
+		await run(async () => {
+			healthCheckConfig = await api.setHealthCheckConfig(!healthCheckConfig.enabled);
+		});
+		healthCheckToggling = false;
+	}
+
 	async function refreshAll() {
 		await run(async () => {
 			await refreshReady();
@@ -555,7 +567,8 @@
 				modelTeamGrants,
 				upstreams,
 				ratePolicies,
-				audit
+				audit,
+				hcConfig
 			] = await Promise.all([
 				api.get<PaginatedResponse<Subject>>('/admin/subjects'),
 				api.get<PaginatedResponse<Project>>('/admin/projects'),
@@ -568,8 +581,10 @@
 				api.get<Inventory['modelTeamGrants']>('/admin/model-team-grants'),
 				api.get<Inventory['upstreams']>('/admin/upstreams'),
 				api.get<Inventory['ratePolicies']>('/admin/rate-policies'),
-				api.get<Inventory['audit']>('/admin/audit-events')
+				api.get<Inventory['audit']>('/admin/audit-events'),
+				api.get<HealthCheckConfig>('/admin/health-check')
 			]);
+			healthCheckConfig = hcConfig;
 			inventory = {
 				subjects: subjectsPage.items,
 				projects: projectsPage.items,
@@ -1586,6 +1601,17 @@
 				{:else if active === 'diagnostics'}
 					<PageTitle title={'诊断'} subtitle={'运行时依赖和上游健康检查。'} />
 					<div class="grid"><div class="metric"><span>Postgres</span><strong>{ready?.checks.postgres ? '正常' : '异常'}</strong></div><div class="metric"><span>Redis</span><strong>{ready?.checks.redis ? '正常' : '异常'}</strong></div><div class="metric"><span>环境</span><strong>{diagnostics?.environment}</strong></div><div class="metric"><span>LiteLLM</span><strong>{diagnostics?.litellm_version}</strong></div></div>
+					<section class="panel">
+						<h2>健康巡检</h2>
+						<p class="muted">自动探测每个活跃上游的 <code>/models</code>，故障时在 Redis 标记 UNHEALTHY 并从路由排除。关闭后 sidecar 仍运行但跳过探测，已有标记靠 TTL 自动过期恢复。</p>
+						<div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap">
+							<strong>自动巡检：{healthCheckConfig?.enabled ? '已开启' : '已关闭'}</strong>
+							{#if healthCheckConfig}
+								<span class="muted">来源：{healthCheckConfig.source === 'redis_override' ? '运行时覆盖' : '环境变量默认'}</span>
+								<button class="secondary" type="button" disabled={healthCheckToggling} onclick={toggleHealthCheck}>{healthCheckConfig.enabled ? '关闭巡检' : '开启巡检'}</button>
+							{/if}
+						</div>
+					</section>
 					<UpstreamTable rows={inventory.upstreams} healthResults={healthResults} modelLabel={modelLabel} onCheck={checkUpstream} onState={setUpstreamState} onPatch={patchUpstream} onDelete={deleteUpstream} onError={(m) => (pageError = m)} />
 				{/if}
 			</section>

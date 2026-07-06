@@ -1,5 +1,6 @@
 import type {
 	ApiError,
+	HealthCheckConfig,
 	McpConfigInput,
 	McpDetail,
 	McpSummary,
@@ -189,6 +190,14 @@ export class AdminApiClient {
 		return this.delete(
 			`/auth/registry/mcps/browse/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}/like`
 		);
+	}
+
+	async getHealthCheckConfig(): Promise<HealthCheckConfig> {
+		return this.get('/admin/health-check');
+	}
+
+	async setHealthCheckConfig(enabled: boolean): Promise<HealthCheckConfig> {
+		return this.patch('/admin/health-check', { enabled });
 	}
 
 	private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
