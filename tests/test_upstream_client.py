@@ -55,7 +55,25 @@ def _json_response(payload: dict[str, Any], status_code: int = 200) -> httpx.Res
 
 
 def _sse_response(lines: list[str]) -> httpx.Response:
+    """Build an SSE response body. Each string in ``lines`` is emitted as one
+    line followed by a blank-line frame terminator (``\\n\\n``)."""
     body = "".join(line + "\n\n" for line in lines)
+    return httpx.Response(
+        status_code=200,
+        content=body.encode(),
+        headers={"content-type": "text/event-stream"},
+    )
+
+
+def _sse_response_frames(frames: list[list[str]]) -> httpx.Response:
+    """Build an SSE response body from explicit multi-line frames.
+
+    Each frame is a list of lines (e.g. ``["event: x", "data: {...}"]``); the
+    lines are joined with ``\\n`` and the frame is terminated with ``\\n\\n``.
+    """
+    body = ""
+    for frame_lines in frames:
+        body += "\n".join(frame_lines) + "\n\n"
     return httpx.Response(
         status_code=200,
         content=body.encode(),
@@ -198,15 +216,28 @@ async def test_chat_stream_injects_include_usage_stream_options(monkeypatch):
     assert captured["body"]["stream_options"] == {"include_usage": True}
 
 
-async def test_responses_stream_forwards_sse_lines(monkeypatch):
-    lines = [
-        'data: {"type":"response.output_item.added"}',
-        'data: {"type":"response.completed","usage":{"input_tokens":7,"output_tokens":2}}',
-        "data: [DONE]",
+async def test_responses_stream_preserves_multiline_event_frames(monkeypatch):
+    """Responses API SSE frames have an ``event:`` line AND a ``data:`` line.
+    The gateway must forward them as a single frame (lines joined by ``\\n``,
+    terminated by ``\\n\\n``), not split them into separate frames."""
+    frames = [
+        [
+            "event: response.created",
+            'data: {"type":"response.created","id":"resp_1"}',
+        ],
+        [
+            "event: response.output_text.delta",
+            'data: {"type":"response.output_text.delta","delta":"Hello"}',
+        ],
+        [
+            "event: response.completed",
+            'data: {"type":"response.completed","usage":{"input_tokens":7,"output_tokens":2}}',
+        ],
+        ["data: [DONE]"],
     ]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return _sse_response(lines)
+        return _sse_response_frames(frames)
 
     _patch_client(monkeypatch, handler)
 
@@ -220,8 +251,17 @@ async def test_responses_stream_forwards_sse_lines(monkeypatch):
         )
     ]
 
-    assert len(chunks) == 3
-    assert chunks[1][1] == {"input_tokens": 7, "output_tokens": 2}
+    # 4 frames forwarded verbatim, each as one unit.
+    assert len(chunks) == 4
+    # First frame: event + data lines joined by \n, terminated by \n\n
+    assert chunks[0][0] == (
+        'event: response.created\n'
+        'data: {"type":"response.created","id":"resp_1"}\n\n'
+    )
+    # Usage extracted from the response.completed frame's data line.
+    assert chunks[2][1] == {"input_tokens": 7, "output_tokens": 2}
+    # [DONE] frame forwarded as-is, no extra [DONE] appended (saw_done=True).
+    assert chunks[3][0] == "data: [DONE]\n\n"
 
 
 async def test_check_upstream_health_gets_health_path(monkeypatch):

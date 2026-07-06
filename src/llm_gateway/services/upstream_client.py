@@ -78,6 +78,52 @@ def _prepare_payload(model_alias: ModelAlias, body: dict[str, Any]) -> dict[str,
     return payload
 
 
+async def _iter_sse_frames(
+    response: httpx.Response,
+) -> AsyncGenerator[tuple[str, dict[str, Any] | None], None]:
+    """Yield complete SSE frames from an upstream streaming response.
+
+    An SSE frame is one or more non-empty lines terminated by a blank line.
+    The frame is yielded verbatim (lines joined with ``\\n`` plus a trailing
+    ``\\n\\n``). This correctly handles both Chat Completions (one ``data:``
+    line per frame) and Responses API (``event:`` + ``data:`` lines per frame)
+    wire formats — the event/data binding within a frame is preserved.
+
+    If a ``data:`` line carries a JSON payload with a ``usage`` field, it is
+    extracted and yielded alongside the frame for accounting.
+    """
+    buffer: list[str] = []
+    async for line in response.aiter_lines():
+        if line == "":
+            if buffer:
+                frame = "\n".join(buffer) + "\n\n"
+                usage = _extract_usage_from_frame(buffer)
+                yield frame, usage
+                buffer = []
+            continue
+        buffer.append(line)
+    # Flush any trailing frame without a blank line terminator.
+    if buffer:
+        frame = "\n".join(buffer) + "\n\n"
+        usage = _extract_usage_from_frame(buffer)
+        yield frame, usage
+
+
+def _extract_usage_from_frame(lines: list[str]) -> dict[str, Any] | None:
+    """Parse the ``data:`` line of an SSE frame and extract usage if present."""
+    for line in lines:
+        if not line.startswith("data: ") or line.startswith("data: [DONE]"):
+            continue
+        try:
+            chunk = json.loads(line[len("data: ") :])
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        usage = extract_usage_dict(chunk.get("usage"))
+        if usage is not None:
+            return usage
+    return None
+
+
 async def _chat_once(
     *,
     model_alias: ModelAlias,
@@ -110,20 +156,10 @@ async def _chat_stream(
             "POST", url, json=payload, headers=_headers(upstream)
         ) as response:
             response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line:
-                    continue
-                if line.startswith("data: [DONE]"):
+            async for frame, usage in _iter_sse_frames(response):
+                if "data: [DONE]" in frame:
                     saw_done = True
-                usage: dict[str, Any] | None = None
-                if line.startswith("data: ") and not line.startswith("data: [DONE]"):
-                    raw = line[len("data: ") :]
-                    try:
-                        chunk = json.loads(raw)
-                        usage = extract_usage_dict(chunk.get("usage"))
-                    except (json.JSONDecodeError, AttributeError):
-                        pass
-                yield f"{line}\n\n", usage
+                yield frame, usage
                 await asyncio.sleep(0)
     # Not every upstream emits the [DONE] sentinel (e.g. MiniMax). Emit it
     # ourselves so OpenAI SDK clients that block on it can complete cleanly.
@@ -161,20 +197,10 @@ async def _responses_stream(
             "POST", url, json=payload, headers=_headers(upstream)
         ) as response:
             response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line:
-                    continue
-                if line.startswith("data: [DONE]"):
+            async for frame, usage in _iter_sse_frames(response):
+                if "data: [DONE]" in frame:
                     saw_done = True
-                usage: dict[str, Any] | None = None
-                if line.startswith("data: ") and not line.startswith("data: [DONE]"):
-                    raw = line[len("data: ") :]
-                    try:
-                        chunk = json.loads(raw)
-                        usage = extract_usage_dict(chunk.get("usage"))
-                    except (json.JSONDecodeError, AttributeError):
-                        pass
-                yield f"{line}\n\n", usage
+                yield frame, usage
                 await asyncio.sleep(0)
     if not saw_done:
         yield "data: [DONE]\n\n", None
