@@ -12,6 +12,7 @@ from llm_gateway.api.admin._common import (
 )
 from llm_gateway.api.deps import session_dep
 from llm_gateway.db.models import RatePolicy, ResourceState
+from llm_gateway.services.cache import policy_cache
 from llm_gateway.services.facts import record_audit_event
 from llm_gateway.services.resource_payloads import apply_model_patch
 
@@ -47,6 +48,9 @@ async def create_rate_policy(
         detail={"scope": policy.scope, "scope_id": str(policy.scope_id)},
     )
     await session.commit()
+    # RatePolicy writes don't touch Subject, so the subject-epoch cache key
+    # versioning won't rotate them — invalidate explicitly.
+    policy_cache.invalidate("rate:")
     await session.refresh(policy)
     return policy
 
@@ -67,5 +71,8 @@ async def update_rate_policy(
     apply_model_patch(policy, payload)
     await _audit_update(session, "rate_policy.update", "rate_policy", policy.id, payload)
     await session.commit()
+    # RatePolicy writes don't touch Subject, so the subject-epoch cache key
+    # versioning won't rotate them — invalidate explicitly.
+    policy_cache.invalidate("rate:")
     await session.refresh(policy)
     return policy

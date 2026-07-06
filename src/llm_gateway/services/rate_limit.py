@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from llm_gateway.core.config import Settings, get_settings
-from llm_gateway.db.models import RatePolicy, ResourceState
+from llm_gateway.db.models import RatePolicy, ResourceState, Subject
 
 
 def create_redis(settings: Settings | None = None) -> Redis:
@@ -62,7 +62,13 @@ async def resolve_effective_rate_policy(
 ) -> EffectiveRatePolicy:
     from llm_gateway.services.cache import policy_cache
 
-    cache_key = f"rate:{key_id}:{subject_id}:{project_id}"
+    # Version the cache key by subject.updated_at so any subject modification
+    # (e.g. disabling) rotates the key naturally. policy_cache does NOT re-validate
+    # on hit (unlike auth_cache), so without this a stale EffectiveRatePolicy would
+    # be served until the TTL expires.
+    subject = await session.get(Subject, subject_id)
+    subject_epoch = int(subject.updated_at.timestamp()) if subject and subject.updated_at else 0
+    cache_key = f"rate:{key_id}:{subject_id}:{project_id}:{subject_epoch}"
     cached = policy_cache.get(cache_key)
     if cached is not None:
         return cached
