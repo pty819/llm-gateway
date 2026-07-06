@@ -109,7 +109,13 @@ async def test_mcp_tools_list(client):
     tools = resp.json()["result"]["tools"]
     assert len(tools) == 5
     names = {t["name"] for t in tools}
-    assert names == {"search_skills", "get_skill", "download_skill", "list_mcps", "get_mcp"}
+    assert names == {
+        "search_skills",
+        "get_skill",
+        "download_skill",
+        "list_mcps",
+        "get_mcp",
+    }
     for t in tools:
         assert t["description"]
         assert t["inputSchema"]["type"] == "object"
@@ -127,7 +133,9 @@ async def test_mcp_search_skills(client):
     await _publish_skill_and_grant_to_guest(owner_id, slug)
 
     resp = await _mcp_call(
-        client, gw_key, "tools/call",
+        client,
+        gw_key,
+        "tools/call",
         {"name": "search_skills", "arguments": {"q": slug}},
     )
     assert resp.status_code == 200, resp.text
@@ -151,7 +159,9 @@ async def test_mcp_get_skill(client):
     await _publish_skill_and_grant_to_guest(owner_id, slug, readme_text=readme_text)
 
     resp = await _mcp_call(
-        client, gw_key, "tools/call",
+        client,
+        gw_key,
+        "tools/call",
         {"name": "get_skill", "arguments": {"owner": username, "slug": slug}},
     )
     assert resp.status_code == 200, resp.text
@@ -173,7 +183,9 @@ async def test_mcp_download_skill_returns_url(client):
     await _publish_skill_and_grant_to_guest(owner_id, slug)
 
     resp = await _mcp_call(
-        client, gw_key, "tools/call",
+        client,
+        gw_key,
+        "tools/call",
         {"name": "download_skill", "arguments": {"owner": username, "slug": slug}},
     )
     assert resp.status_code == 200, resp.text

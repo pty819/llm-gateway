@@ -21,7 +21,6 @@ async def _login_self_service_user(client):
     from llm_gateway.core.config import get_settings
     from llm_gateway.db.session import AsyncSessionLocal
     from llm_gateway.services.security import (
-        create_gateway_key,
         create_registered_user,
         create_user_session,
     )
@@ -143,15 +142,19 @@ async def test_disable_key_writes_audit_event(client):
 
     async with AsyncSessionLocal() as session:
         rows = (
-            await session.execute(
-                select(AuditEvent)
-                .where(
-                    AuditEvent.resource_id == key["id"],
-                    AuditEvent.action == "auth.key.set_state",
+            (
+                await session.execute(
+                    select(AuditEvent)
+                    .where(
+                        AuditEvent.resource_id == key["id"],
+                        AuditEvent.action == "auth.key.set_state",
+                    )
+                    .order_by(AuditEvent.created_at.desc())
                 )
-                .order_by(AuditEvent.created_at.desc())
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert rows, "expected an auth.key.set_state audit row"
         latest = rows[0]
         assert latest.outcome == "success"
@@ -188,9 +191,7 @@ async def test_disable_key_on_non_personal_project_returns_404(client):
         other_project_id = other_project.id
 
     # Admin issues a key for this user on the non-personal project.
-    admin_headers = {
-        "x-admin-token": get_settings().admin_token
-    }
+    admin_headers = {"x-admin-token": get_settings().admin_token}
     issue = await client.post(
         "/admin/gateway-keys",
         json={

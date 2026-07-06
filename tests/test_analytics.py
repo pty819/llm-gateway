@@ -9,18 +9,37 @@ pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
 _FULL_METRIC_KEYS = {
-    "request_count", "prompt_tokens", "completion_tokens", "total_tokens",
-    "cached_tokens", "success_count", "failure_count",
-    "avg_latency_ms", "avg_ttft_ms", "avg_stream_duration_ms",
-    "retry_count", "fallback_count", "fallback_tokens",
-    "avg_queue_ms", "avg_prefill_ms", "avg_decode_ms", "avg_kv_cache_usage",
+    "request_count",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "cached_tokens",
+    "success_count",
+    "failure_count",
+    "avg_latency_ms",
+    "avg_ttft_ms",
+    "avg_stream_duration_ms",
+    "retry_count",
+    "fallback_count",
+    "fallback_tokens",
+    "avg_queue_ms",
+    "avg_prefill_ms",
+    "avg_decode_ms",
+    "avg_kv_cache_usage",
     "vllm_metrics_count",
 }
 
 
-async def _seed_request_fact(*, subject_id, project_id=None, model_alias="test-model",
-                             total_tokens=100, prompt_tokens=10, completion_tokens=None,
-                             outcome="success"):
+async def _seed_request_fact(
+    *,
+    subject_id,
+    project_id=None,
+    model_alias="test-model",
+    total_tokens=100,
+    prompt_tokens=10,
+    completion_tokens=None,
+    outcome="success",
+):
     """Insert a minimal RequestFact row for aggregation tests."""
     from llm_gateway.db.models import EndpointFamily, RequestOutcome, utcnow
     from llm_gateway.db.session import AsyncSessionLocal
@@ -42,7 +61,9 @@ async def _seed_request_fact(*, subject_id, project_id=None, model_alias="test-m
             model_alias=model_alias,
             upstream_target_id=None,
             streaming=False,
-            outcome=RequestOutcome.SUCCESS if outcome == "success" else RequestOutcome.UPSTREAM_FAILURE,
+            outcome=RequestOutcome.SUCCESS
+            if outcome == "success"
+            else RequestOutcome.UPSTREAM_FAILURE,
             usage={
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
@@ -71,13 +92,19 @@ async def test_usage_totals_aggregates_all_metrics():
         project_id = project.id
         subject_id = subject.id
 
-    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=500)
-    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=300)
+    await _seed_request_fact(
+        subject_id=subject_id, project_id=project_id, total_tokens=500
+    )
+    await _seed_request_fact(
+        subject_id=subject_id, project_id=project_id, total_tokens=300
+    )
 
     now = utcnow()
     async with AsyncSessionLocal() as session:
         result = await usage_totals(
-            session, start=now - timedelta(days=1), end=now + timedelta(hours=1),
+            session,
+            start=now - timedelta(days=1),
+            end=now + timedelta(hours=1),
             project_id=project_id,
         )
 
@@ -99,7 +126,9 @@ async def test_usage_totals_returns_none_when_no_data():
     now = utcnow()
     async with AsyncSessionLocal() as session:
         result = await usage_totals(
-            session, start=now - timedelta(days=1), end=now + timedelta(hours=1),
+            session,
+            start=now - timedelta(days=1),
+            end=now + timedelta(hours=1),
             project_id=uuid4(),
         )
     assert result is None
@@ -126,14 +155,22 @@ async def test_usage_summary_groups_by_model_subject_project():
         alice_id = alice.id
         bob_id = bob.id
 
-    await _seed_request_fact(subject_id=alice_id, project_id=project_id, model_alias="m1", total_tokens=500)
-    await _seed_request_fact(subject_id=alice_id, project_id=project_id, model_alias="m2", total_tokens=100)
-    await _seed_request_fact(subject_id=bob_id, project_id=project_id, model_alias="m1", total_tokens=300)
+    await _seed_request_fact(
+        subject_id=alice_id, project_id=project_id, model_alias="m1", total_tokens=500
+    )
+    await _seed_request_fact(
+        subject_id=alice_id, project_id=project_id, model_alias="m2", total_tokens=100
+    )
+    await _seed_request_fact(
+        subject_id=bob_id, project_id=project_id, model_alias="m1", total_tokens=300
+    )
 
     now = utcnow()
     async with AsyncSessionLocal() as session:
         rows = await usage_summary(
-            session, start=now - timedelta(days=1), end=now + timedelta(hours=1),
+            session,
+            start=now - timedelta(days=1),
+            end=now + timedelta(hours=1),
             project_id=project_id,
         )
 
@@ -167,13 +204,21 @@ async def test_usage_summary_respects_limit():
         subject_id = subject.id
 
     for i in range(5):
-        await _seed_request_fact(subject_id=subject_id, project_id=project_id, model_alias=f"m{i}", total_tokens=100 * (i + 1))
+        await _seed_request_fact(
+            subject_id=subject_id,
+            project_id=project_id,
+            model_alias=f"m{i}",
+            total_tokens=100 * (i + 1),
+        )
 
     now = utcnow()
     async with AsyncSessionLocal() as session:
         rows = await usage_summary(
-            session, start=now - timedelta(days=1), end=now + timedelta(hours=1),
-            project_id=project_id, limit=2,
+            session,
+            start=now - timedelta(days=1),
+            end=now + timedelta(hours=1),
+            project_id=project_id,
+            limit=2,
         )
     assert len(rows) == 2
 
@@ -198,12 +243,16 @@ async def test_usage_ranking_uses_core_metrics_excludes_cached():
         project_id = project.id
 
     # 用大 token 数确保 alice 排进 top N（跨测试 DB 有大量历史数据）
-    await _seed_request_fact(subject_id=alice_id, project_id=project_id, total_tokens=999999)
+    await _seed_request_fact(
+        subject_id=alice_id, project_id=project_id, total_tokens=999999
+    )
 
     now = utcnow()
     async with AsyncSessionLocal() as session:
         rows = await usage_ranking(
-            session, start=now - timedelta(days=1), end=now + timedelta(hours=1),
+            session,
+            start=now - timedelta(days=1),
+            end=now + timedelta(hours=1),
             limit=20,
         )
 
@@ -236,13 +285,20 @@ async def test_time_buckets_groups_by_hour_and_returns_iso():
         project_id = project.id
         subject_id = subject.id
 
-    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=100)
-    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=200)
+    await _seed_request_fact(
+        subject_id=subject_id, project_id=project_id, total_tokens=100
+    )
+    await _seed_request_fact(
+        subject_id=subject_id, project_id=project_id, total_tokens=200
+    )
 
     now = utcnow()
     async with AsyncSessionLocal() as session:
         rows = await time_buckets(
-            session, bucket="hour", start=now - timedelta(days=1), end=now + timedelta(hours=1),
+            session,
+            bucket="hour",
+            start=now - timedelta(days=1),
+            end=now + timedelta(hours=1),
             project_id=project_id,
         )
 
@@ -282,14 +338,20 @@ async def test_drilldown_by_model():
         project_id = project.id
         subject_id = subject.id
 
-    await _seed_request_fact(subject_id=subject_id, project_id=project_id, model_alias="m1", total_tokens=100)
-    await _seed_request_fact(subject_id=subject_id, project_id=project_id, model_alias="m2", total_tokens=200)
+    await _seed_request_fact(
+        subject_id=subject_id, project_id=project_id, model_alias="m1", total_tokens=100
+    )
+    await _seed_request_fact(
+        subject_id=subject_id, project_id=project_id, model_alias="m2", total_tokens=200
+    )
 
     now = utcnow()
     async with AsyncSessionLocal() as session:
         rows = await drilldown(
-            session, dimension="model",
-            start=now - timedelta(days=1), end=now + timedelta(hours=1),
+            session,
+            dimension="model",
+            start=now - timedelta(days=1),
+            end=now + timedelta(hours=1),
             project_id=project_id,
         )
 
@@ -319,13 +381,17 @@ async def test_drilldown_by_subject_joins_subjects_and_str_id():
         project_id = project.id
         subject_id = subject.id
 
-    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=100)
+    await _seed_request_fact(
+        subject_id=subject_id, project_id=project_id, total_tokens=100
+    )
 
     now = utcnow()
     async with AsyncSessionLocal() as session:
         rows = await drilldown(
-            session, dimension="subject",
-            start=now - timedelta(days=1), end=now + timedelta(hours=1),
+            session,
+            dimension="subject",
+            start=now - timedelta(days=1),
+            end=now + timedelta(hours=1),
             project_id=project_id,
         )
 
@@ -353,13 +419,17 @@ async def test_drilldown_by_project_joins_projects():
         project_id = project.id
         subject_id = subject.id
 
-    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=100)
+    await _seed_request_fact(
+        subject_id=subject_id, project_id=project_id, total_tokens=100
+    )
 
     now = utcnow()
     async with AsyncSessionLocal() as session:
         rows = await drilldown(
-            session, dimension="project",
-            start=now - timedelta(days=1), end=now + timedelta(hours=1),
+            session,
+            dimension="project",
+            start=now - timedelta(days=1),
+            end=now + timedelta(hours=1),
             project_id=project_id,
         )
 
@@ -385,14 +455,23 @@ async def test_drilldown_by_outcome():
         project_id = project.id
         subject_id = subject.id
 
-    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=100)
-    await _seed_request_fact(subject_id=subject_id, project_id=project_id, total_tokens=50, outcome="upstream_failure")
+    await _seed_request_fact(
+        subject_id=subject_id, project_id=project_id, total_tokens=100
+    )
+    await _seed_request_fact(
+        subject_id=subject_id,
+        project_id=project_id,
+        total_tokens=50,
+        outcome="upstream_failure",
+    )
 
     now = utcnow()
     async with AsyncSessionLocal() as session:
         rows = await drilldown(
-            session, dimension="outcome",
-            start=now - timedelta(days=1), end=now + timedelta(hours=1),
+            session,
+            dimension="outcome",
+            start=now - timedelta(days=1),
+            end=now + timedelta(hours=1),
             project_id=project_id,
         )
 
@@ -422,10 +501,12 @@ async def test_usage_ranking_excludes_null_subject():
         project_id = project.id
 
     # alice 有 subject_id（大 token 确保进 top）
-    await _seed_request_fact(subject_id=alice_id, project_id=project_id, total_tokens=999999)
+    await _seed_request_fact(
+        subject_id=alice_id, project_id=project_id, total_tokens=999999
+    )
 
     # 直接造一行 subject_id=NULL 的 fact（_seed_request_fact 不支持 NULL）
-    from llm_gateway.db.models import EndpointFamily, RequestOutcome, utcnow
+    from llm_gateway.db.models import EndpointFamily, RequestOutcome
     from llm_gateway.db.session import AsyncSessionLocal
     from llm_gateway.services.facts import record_request_fact
 
@@ -450,7 +531,9 @@ async def test_usage_ranking_excludes_null_subject():
 
     async with AsyncSessionLocal() as session:
         rows = await usage_ranking(
-            session, start=now - timedelta(days=1), end=now + timedelta(hours=1),
+            session,
+            start=now - timedelta(days=1),
+            end=now + timedelta(hours=1),
             limit=100,
         )
 

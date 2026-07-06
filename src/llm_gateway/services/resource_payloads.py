@@ -51,8 +51,13 @@ def skill_summary(skill, owner_name: str | None = None) -> dict[str, Any]:
 
 
 def skill_detail(
-    skill, versions, grants, owner_name: str | None = None,
-    *, readme: str | None = None, liked_by_me: bool = False,
+    skill,
+    versions,
+    grants,
+    owner_name: str | None = None,
+    *,
+    readme: str | None = None,
+    liked_by_me: bool = False,
 ) -> dict[str, Any]:
     return {
         **skill_summary(skill, owner_name=owner_name),
@@ -91,7 +96,9 @@ def redact_mcp_version(version, *, reveal: bool = False) -> dict[str, Any]:
     '***' unless reveal=True (owner/admin only). tools are never redacted."""
     data = {
         "version": version.version,
-        "transport": version.transport.value if hasattr(version.transport, "value") else version.transport,
+        "transport": version.transport.value
+        if hasattr(version.transport, "value")
+        else version.transport,
         "command": version.command,
         "args": list(version.args or []),
         "env": dict(version.env or {}),
@@ -99,7 +106,9 @@ def redact_mcp_version(version, *, reveal: bool = False) -> dict[str, Any]:
         "headers": dict(version.headers or {}),
         "tools": list(version.tools or []),
         "upload_subject_id": str(version.upload_subject_id),
-        "state": version.state.value if hasattr(version.state, "value") else version.state,
+        "state": version.state.value
+        if hasattr(version.state, "value")
+        else version.state,
         "created_at": version.created_at.isoformat() if version.created_at else None,
     }
     if not reveal:
@@ -125,8 +134,15 @@ def mcp_summary(mcp, owner_name: str | None = None) -> dict[str, Any]:
 
 
 def mcp_detail(
-    mcp, versions, latest_version, grants, owner_name: str | None = None,
-    *, reveal: bool = False, liked_by_me: bool = False, readme: str | None = None,
+    mcp,
+    versions,
+    latest_version,
+    grants,
+    owner_name: str | None = None,
+    *,
+    reveal: bool = False,
+    liked_by_me: bool = False,
+    readme: str | None = None,
 ) -> dict[str, Any]:
     """versions are serialized with redaction per `reveal`. latest_version is the
     resolved latest McpVersion row (or None) also serialized with redaction."""
@@ -137,7 +153,9 @@ def mcp_detail(
         "readme": readme,
         "liked_by_me": liked_by_me,
         "versions": [redact_mcp_version(v, reveal=reveal) for v in versions],
-        "latest": redact_mcp_version(latest_version, reveal=reveal) if latest_version else None,
+        "latest": redact_mcp_version(latest_version, reveal=reveal)
+        if latest_version
+        else None,
         "grants": [
             {
                 "id": str(g.id),

@@ -11,9 +11,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from redis.asyncio import Redis
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from llm_gateway.api.deps import redis_dep, session_dep
+from llm_gateway.api.deps import redis_dep
 from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.services import health_checker
 from llm_gateway.services.facts import record_audit_event

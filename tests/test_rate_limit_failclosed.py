@@ -54,4 +54,3 @@ async def test_acquire_slot_fails_open_returns_empty_token(monkeypatch):
     monkeypatch.setattr(rate_limit, "get_settings", lambda: _Settings(False))
     token = await acquire_concurrency_slot(_BrokenRedis(), key_id=uuid4(), limit=1)
     assert token == ""
-

@@ -64,8 +64,6 @@ async def _drain() -> None:
                         await record_request_fact(session, **fact_kwargs)
                         await session.commit()
                 except Exception:
-                    logger.exception(
-                        "fact_write_error endpoint=%s", endpoint
-                    )
+                    logger.exception("fact_write_error endpoint=%s", endpoint)
     finally:
         _draining = False

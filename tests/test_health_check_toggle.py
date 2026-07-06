@@ -15,7 +15,6 @@ These tests cover:
 from __future__ import annotations
 
 import asyncio
-from uuid import uuid4
 
 import pytest
 
@@ -135,7 +134,9 @@ async def test_main_loop_skips_run_once_when_disabled(monkeypatch):
 
     run_once_calls = []
 
-    async def _fake_run_once(*, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min):
+    async def _fake_run_once(
+        *, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min
+    ):
         run_once_calls.append(1)
 
     monkeypatch.setattr(health_checker, "_run_once", _fake_run_once)
@@ -167,7 +168,9 @@ async def test_main_loop_runs_when_enabled(monkeypatch):
 
     run_once_calls = []
 
-    async def _fake_run_once(*, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min):
+    async def _fake_run_once(
+        *, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min
+    ):
         run_once_calls.append(1)
 
     monkeypatch.setattr(health_checker, "_run_once", _fake_run_once)
@@ -203,7 +206,9 @@ async def test_main_loop_resumes_after_reenable(monkeypatch):
 
     run_once_calls = []
 
-    async def _fake_run_once(*, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min):
+    async def _fake_run_once(
+        *, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min
+    ):
         run_once_calls.append(1)
 
     monkeypatch.setattr(health_checker, "_run_once", _fake_run_once)
@@ -232,7 +237,6 @@ async def test_main_loop_resumes_after_reenable(monkeypatch):
 async def test_get_health_check_config_returns_env_default(client, monkeypatch):
     """GET /admin/health-check with no override → env default."""
     from llm_gateway.services.rate_limit import redis_client
-    from llm_gateway.services import health_checker
 
     # Ensure no override
     await redis_client.delete(_OVERRIDE_KEY)
@@ -312,12 +316,16 @@ async def test_patch_health_check_writes_audit(client):
 
     async with AsyncSessionLocal() as session:
         rows = (
-            await session.execute(
-                select(AuditEvent)
-                .where(AuditEvent.action == "health_check.toggle")
-                .order_by(AuditEvent.created_at.desc())
+            (
+                await session.execute(
+                    select(AuditEvent)
+                    .where(AuditEvent.action == "health_check.toggle")
+                    .order_by(AuditEvent.created_at.desc())
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert rows, "expected a health_check.toggle audit row"
         latest = rows[0]
         assert latest.outcome == "disabled"

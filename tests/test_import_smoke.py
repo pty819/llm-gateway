@@ -4,6 +4,7 @@ Regression for the Python2-style `except A, B:` syntax errors that broke
 the startup import chain. Uses ast.parse so the test fails fast at
 collection time without needing a live DB.
 """
+
 import ast
 import importlib
 import sys

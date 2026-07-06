@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import io
-import zipfile
 
 import pytest
 
@@ -59,6 +57,7 @@ async def _login_owner(client) -> _Owner:
 # 1. browse returns a skill shared with the guest team
 # ---------------------------------------------------------------------------
 
+
 async def test_browse_returns_shared_skill(client):
     owner = await _login_owner(client)
     slug = _unique_slug("shared")
@@ -85,6 +84,7 @@ async def test_browse_returns_shared_skill(client):
 # 2. browse excludes skills the viewer is not authorized to see
 # ---------------------------------------------------------------------------
 
+
 async def test_browse_excludes_unauthorized(client):
     owner = await _login_owner(client)
     slug = _unique_slug("private")
@@ -108,6 +108,7 @@ async def test_browse_excludes_unauthorized(client):
 # ---------------------------------------------------------------------------
 # 3. sort by downloads then by likes
 # ---------------------------------------------------------------------------
+
 
 async def test_browse_sort_by_downloads_then_likes(client):
     owner = await _login_owner(client)
@@ -135,7 +136,8 @@ async def test_browse_sort_by_downloads_then_likes(client):
 
     # Default sort = downloads → skill1 (download_count=1) before skill2 (=0).
     by_dl = await client.get(
-        "/auth/registry/skills/browse", headers=b_headers,
+        "/auth/registry/skills/browse",
+        headers=b_headers,
     )
     assert by_dl.status_code == 200, by_dl.text
     dl_slugs = [s["slug"] for s in by_dl.json()["items"]]
@@ -151,7 +153,8 @@ async def test_browse_sort_by_downloads_then_likes(client):
     assert like.json()["like_count"] == 1
 
     by_likes = await client.get(
-        "/auth/registry/skills/browse?sort=likes", headers=b_headers,
+        "/auth/registry/skills/browse?sort=likes",
+        headers=b_headers,
     )
     assert by_likes.status_code == 200, by_likes.text
     like_slugs = [s["slug"] for s in by_likes.json()["items"]]
@@ -162,6 +165,7 @@ async def test_browse_sort_by_downloads_then_likes(client):
 # ---------------------------------------------------------------------------
 # 4. download increments download_count; zip bytes + sha header
 # ---------------------------------------------------------------------------
+
 
 async def test_download_increments_count(client):
     owner = await _login_owner(client)
@@ -200,6 +204,7 @@ async def test_download_increments_count(client):
 # 5. like lifecycle (like → detail → unlike → detail)
 # ---------------------------------------------------------------------------
 
+
 async def test_like_lifecycle(client):
     owner = await _login_owner(client)
     slug = _unique_slug("like")
@@ -237,6 +242,7 @@ async def test_like_lifecycle(client):
 # 6. readme extracted from the zip's SKILL.md; not present in list summary
 # ---------------------------------------------------------------------------
 
+
 async def test_readme_extracted_from_zip(client):
     owner = await _login_owner(client)
     slug = _unique_slug("readme")
@@ -272,6 +278,7 @@ async def test_readme_extracted_from_zip(client):
 # 7. browse MCP detail redacts env/headers for non-owner
 # ---------------------------------------------------------------------------
 
+
 async def test_browse_mcp_redacted(client):
     owner = await _login_owner(client)
     slug = _unique_slug("mcp-redact")
@@ -286,8 +293,15 @@ async def test_browse_mcp_redacted(client):
     async with AsyncSessionLocal() as session:
         owner_subject = await session.get(Subject, owner.subject_id)
         mcp = await create_or_append_mcp_version(
-            session, actor=owner_subject, slug=slug, name="Redact MCP",
-            version="1.0.0", summary="s", description=None, notes=None, config=cfg,
+            session,
+            actor=owner_subject,
+            slug=slug,
+            name="Redact MCP",
+            version="1.0.0",
+            summary="s",
+            description=None,
+            notes=None,
+            config=cfg,
         )
         guest = (
             await session.execute(sqlselect(Team).where(col(Team.name) == "guest"))
@@ -318,6 +332,7 @@ async def test_browse_mcp_redacted(client):
 # ---------------------------------------------------------------------------
 # 8. mcp readme (user-filled) is published and viewable in browse detail
 # ---------------------------------------------------------------------------
+
 
 async def test_mcp_readme_published_and_viewable(client):
     owner = await _login_owner(client)

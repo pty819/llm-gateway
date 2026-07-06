@@ -27,9 +27,7 @@ class HealthVerdict:
     reason: str
 
 
-def classify_health(
-    status_code: int | None, *, exc: Exception | None
-) -> HealthVerdict:
+def classify_health(status_code: int | None, *, exc: Exception | None) -> HealthVerdict:
     """Classify an upstream /models probe into a health verdict.
 
     200/404 are healthy (404 = 昇腾 PD 分离查不到 /models，明确是健康的).
@@ -127,15 +125,11 @@ async def _mark_unhealthy(
             )
             await session.commit()
     except Exception:
-        logger.exception(
-            "health_check_audit_failed upstream_id=%s", upstream_id
-        )
+        logger.exception("health_check_audit_failed upstream_id=%s", upstream_id)
     return True
 
 
-async def _clear_healthy(
-    redis: Redis, *, upstream_id
-) -> None:
+async def _clear_healthy(redis: Redis, *, upstream_id) -> None:
     """Clear the UNHEALTHY marker on a passing probe (auto-recovery).
 
     No audit row for recovery: it's the normal steady state, and writing one
@@ -147,9 +141,7 @@ async def _clear_healthy(
 
 async def _collect_active_upstreams(session) -> list:
     result = await session.execute(
-        select(UpstreamTarget).where(
-            col(UpstreamTarget.state) == ResourceState.ACTIVE
-        )
+        select(UpstreamTarget).where(col(UpstreamTarget.state) == ResourceState.ACTIVE)
     )
     return list(result.scalars().all())
 
@@ -167,9 +159,7 @@ def _quorum_breach(unhealthy_count: int, total: int, quorum_min: int) -> bool:
     return total >= quorum_min and unhealthy_count >= quorum_min
 
 
-async def _record_quorum_failure(
-    unhealthy: list[tuple[object, HealthVerdict]]
-) -> None:
+async def _record_quorum_failure(unhealthy: list[tuple[object, HealthVerdict]]) -> None:
     """Emit one audit row summarizing a quorum-failed cycle.
 
     Best-effort: a PG outage during a checker-side incident must not mask the
@@ -270,9 +260,7 @@ async def _run_once(
                 ttl_seconds=unhealthy_ttl_seconds,
             )
         except Exception:
-            logger.exception(
-                "health_check_mark_failed upstream_id=%s", upstream.id
-            )
+            logger.exception("health_check_mark_failed upstream_id=%s", upstream.id)
 
 
 # --- Settings accessors (lazy import to avoid module-import-time config load) ---

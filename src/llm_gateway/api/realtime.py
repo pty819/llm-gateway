@@ -20,7 +20,9 @@ from llm_gateway.services.security import (
     authenticate_user_session,
     ensure_builtin_identity,
 )
-from llm_gateway.services.upstream_health import filter_unhealthy as filter_unhealthy_upstreams
+from llm_gateway.services.upstream_health import (
+    filter_unhealthy as filter_unhealthy_upstreams,
+)
 
 
 router = APIRouter(prefix="/admin")

@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 from uuid import uuid4
 
-import pytest
 
 from llm_gateway.services import upstream_health
 
@@ -150,9 +149,7 @@ async def test_filter_unhealthy_returns_only_unhealthy_ids():
     unhealthy_uid = uuid4()
     redis.store[_key(unhealthy_uid)] = '{"reason":"connect_timeout"}'
 
-    result = await upstream_health.filter_unhealthy(
-        redis, [healthy_uid, unhealthy_uid]
-    )
+    result = await upstream_health.filter_unhealthy(redis, [healthy_uid, unhealthy_uid])
 
     assert result == {str(unhealthy_uid)}
     assert str(healthy_uid) not in result

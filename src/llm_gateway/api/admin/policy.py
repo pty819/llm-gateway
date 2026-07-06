@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from llm_gateway.api.admin._common import (
-    StatePatch,
     _audit_update,
     _get_or_404,
 )

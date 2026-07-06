@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from llm_gateway.api.admin._common import (
-    StatePatch,
     _audit_update,
     _detach_upstream_usage,
     _get_or_404,
@@ -24,7 +23,6 @@ from llm_gateway.db.models import (
     RouterCommandConfig,
     RouterPolicy,
     UpstreamTarget,
-    utcnow,
 )
 from llm_gateway.services.resource_payloads import apply_model_patch, redact_upstream
 from llm_gateway.services.facts import record_audit_event

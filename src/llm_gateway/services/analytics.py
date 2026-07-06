@@ -24,6 +24,7 @@ def _round2_avg(column):
     """
     return func.round(cast(func.avg(column), Numeric), 2)
 
+
 _VALID_BUCKETS = frozenset({"minute", "hour", "day"})
 
 
@@ -31,18 +32,27 @@ def _core_metric_columns() -> list:
     """6 个核心 metric，对齐 DuckDB _CORE_METRICS_SQL。不含 cached_tokens。"""
     total_tokens_expr = func.coalesce(
         RequestFact.total_tokens,
-        func.coalesce(RequestFact.prompt_tokens, 0) + func.coalesce(RequestFact.completion_tokens, 0),
+        func.coalesce(RequestFact.prompt_tokens, 0)
+        + func.coalesce(RequestFact.completion_tokens, 0),
         0,
     )
     return [
         func.count(col(RequestFact.id)).label("request_count"),
         func.coalesce(func.sum(RequestFact.prompt_tokens), 0).label("prompt_tokens"),
-        func.coalesce(func.sum(RequestFact.completion_tokens), 0).label("completion_tokens"),
+        func.coalesce(func.sum(RequestFact.completion_tokens), 0).label(
+            "completion_tokens"
+        ),
         func.coalesce(func.sum(total_tokens_expr), 0).label("total_tokens"),
         func.coalesce(func.sum(_SUCCESS_CASE), 0).label("success_count"),
-        func.coalesce(func.sum(case(
-            (func.lower(cast(col(RequestFact.outcome), Text)) != "success", 1), else_=0
-        )), 0).label("failure_count"),
+        func.coalesce(
+            func.sum(
+                case(
+                    (func.lower(cast(col(RequestFact.outcome), Text)) != "success", 1),
+                    else_=0,
+                )
+            ),
+            0,
+        ).label("failure_count"),
     ]
 
 
@@ -54,36 +64,55 @@ def _full_metric_columns() -> list:
     """
     total_tokens_expr = func.coalesce(
         RequestFact.total_tokens,
-        func.coalesce(RequestFact.prompt_tokens, 0) + func.coalesce(RequestFact.completion_tokens, 0),
+        func.coalesce(RequestFact.prompt_tokens, 0)
+        + func.coalesce(RequestFact.completion_tokens, 0),
         0,
     )
     return [
         func.count(col(RequestFact.id)).label("request_count"),
         func.coalesce(func.sum(RequestFact.prompt_tokens), 0).label("prompt_tokens"),
-        func.coalesce(func.sum(RequestFact.completion_tokens), 0).label("completion_tokens"),
+        func.coalesce(func.sum(RequestFact.completion_tokens), 0).label(
+            "completion_tokens"
+        ),
         func.coalesce(func.sum(total_tokens_expr), 0).label("total_tokens"),
         func.coalesce(func.sum(RequestFact.cached_tokens), 0).label("cached_tokens"),
         func.coalesce(func.sum(_SUCCESS_CASE), 0).label("success_count"),
-        func.coalesce(func.sum(case(
-            (func.lower(cast(col(RequestFact.outcome), Text)) != "success", 1), else_=0
-        )), 0).label("failure_count"),
+        func.coalesce(
+            func.sum(
+                case(
+                    (func.lower(cast(col(RequestFact.outcome), Text)) != "success", 1),
+                    else_=0,
+                )
+            ),
+            0,
+        ).label("failure_count"),
         _round2_avg(RequestFact.latency_ms).label("avg_latency_ms"),
         _round2_avg(RequestFact.time_to_first_token_ms).label("avg_ttft_ms"),
         _round2_avg(RequestFact.stream_duration_ms).label("avg_stream_duration_ms"),
         func.coalesce(func.sum(RequestFact.retry_count), 0).label("retry_count"),
         func.coalesce(func.sum(RequestFact.fallback_count), 0).label("fallback_count"),
-        func.coalesce(func.sum(RequestFact.fallback_tokens), 0).label("fallback_tokens"),
+        func.coalesce(func.sum(RequestFact.fallback_tokens), 0).label(
+            "fallback_tokens"
+        ),
         _round2_avg(RequestFact.queue_ms).label("avg_queue_ms"),
         _round2_avg(RequestFact.prefill_ms).label("avg_prefill_ms"),
         _round2_avg(RequestFact.decode_ms).label("avg_decode_ms"),
         _round2_avg(RequestFact.kv_cache_usage).label("avg_kv_cache_usage"),
-        func.coalesce(func.sum(case(
-            (col(RequestFact.queue_ms).isnot(None)
-             | col(RequestFact.prefill_ms).isnot(None)
-             | col(RequestFact.decode_ms).isnot(None)
-             | col(RequestFact.kv_cache_usage).isnot(None), 1),
-            else_=0,
-        )), 0).label("vllm_metrics_count"),
+        func.coalesce(
+            func.sum(
+                case(
+                    (
+                        col(RequestFact.queue_ms).isnot(None)
+                        | col(RequestFact.prefill_ms).isnot(None)
+                        | col(RequestFact.decode_ms).isnot(None)
+                        | col(RequestFact.kv_cache_usage).isnot(None),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ),
+            0,
+        ).label("vllm_metrics_count"),
     ]
 
 
@@ -109,7 +138,9 @@ def _row_to_dict(row) -> dict:
     的 float 输出——否则 FastAPI 会把 Decimal 序列化成 JSON 字符串，前端拿到
     "12.30" 而非 12.3。
     """
-    return {k: (float(v) if isinstance(v, Decimal) else v) for k, v in row._mapping.items()}
+    return {
+        k: (float(v) if isinstance(v, Decimal) else v) for k, v in row._mapping.items()
+    }
 
 
 async def _apply_statement_timeout(session) -> None:
@@ -137,21 +168,34 @@ def _ensure_utc_iso(value) -> str:
     return value
 
 
-async def usage_totals(session, *, start=None, end=None, model=None,
-                       subject_id=None, project_id=None) -> dict | None:
+async def usage_totals(
+    session, *, start=None, end=None, model=None, subject_id=None, project_id=None
+) -> dict | None:
     """全量 18-metric 单行聚合。无数据返回 None（对齐 DuckDB：request_count==0→None）。"""
     await _apply_statement_timeout(session)
     stmt = _apply_filters(
         select(*_full_metric_columns()).select_from(RequestFact),
-        start=start, end=end, model=model, subject_id=subject_id, project_id=project_id,
+        start=start,
+        end=end,
+        model=model,
+        subject_id=subject_id,
+        project_id=project_id,
     )
     row = (await session.execute(stmt)).one()
     d = _row_to_dict(row)
     return None if d["request_count"] == 0 else d
 
 
-async def usage_summary(session, *, start=None, end=None, model=None,
-                        subject_id=None, project_id=None, limit=None) -> list[dict]:
+async def usage_summary(
+    session,
+    *,
+    start=None,
+    end=None,
+    model=None,
+    subject_id=None,
+    project_id=None,
+    limit=None,
+) -> list[dict]:
     """按 (model_alias, subject_id, project_id) 分组，full 18-metric。
     排序 total_tokens DESC, request_count DESC。limit 可选（None=不限制）。"""
     await _apply_statement_timeout(session)
@@ -162,10 +206,16 @@ async def usage_summary(session, *, start=None, end=None, model=None,
             col(RequestFact.project_id),
             *_full_metric_columns(),
         ).select_from(RequestFact),
-        start=start, end=end, model=model, subject_id=subject_id, project_id=project_id,
+        start=start,
+        end=end,
+        model=model,
+        subject_id=subject_id,
+        project_id=project_id,
     )
     stmt = stmt.group_by(
-        col(RequestFact.model_alias), col(RequestFact.subject_id), col(RequestFact.project_id)
+        col(RequestFact.model_alias),
+        col(RequestFact.subject_id),
+        col(RequestFact.project_id),
     ).order_by(desc(text("total_tokens")), desc(text("request_count")))
     if limit is not None:
         stmt = stmt.limit(int(limit))
@@ -173,8 +223,9 @@ async def usage_summary(session, *, start=None, end=None, model=None,
     return [_row_to_dict(row) for row in rows]
 
 
-async def usage_ranking(session, *, start=None, end=None, model=None,
-                        limit=20) -> list[dict]:
+async def usage_ranking(
+    session, *, start=None, end=None, model=None, limit=20
+) -> list[dict]:
     """按 subject 分组排名。core 6 metric（不含 cached_tokens/延迟/vllm），
     JOIN subjects 取 name/login_username。固定过滤 subject_id IS NOT NULL（对齐 DuckDB）。"""
     await _apply_statement_timeout(session)
@@ -184,13 +235,23 @@ async def usage_ranking(session, *, start=None, end=None, model=None,
             col(Subject.login_username).label("login_username"),
             func.coalesce(col(Subject.name), "无用户").label("subject_name"),
             *_core_metric_columns(),
-        ).select_from(RequestFact)
+        )
+        .select_from(RequestFact)
         .outerjoin(Subject, RequestFact.subject_id == Subject.id),
-        start=start, end=end, model=model, subject_id=None, project_id=None,
+        start=start,
+        end=end,
+        model=model,
+        subject_id=None,
+        project_id=None,
     )
-    stmt = stmt.where(col(RequestFact.subject_id).isnot(None)).group_by(
-        col(RequestFact.subject_id), col(Subject.login_username), col(Subject.name)
-    ).order_by(desc(text("total_tokens")), desc(text("request_count"))).limit(int(limit))
+    stmt = (
+        stmt.where(col(RequestFact.subject_id).isnot(None))
+        .group_by(
+            col(RequestFact.subject_id), col(Subject.login_username), col(Subject.name)
+        )
+        .order_by(desc(text("total_tokens")), desc(text("request_count")))
+        .limit(int(limit))
+    )
     rows = (await session.execute(stmt)).all()
     return [_row_to_dict(row) for row in rows]
 
@@ -199,50 +260,80 @@ def _dimension_columns(dimension: str):
     """对齐 DuckDB _dimension_sql。返回 (dim_selects, join_target_or_None, group_by_columns)。"""
     if dimension == "subject":
         return (
-            [col(RequestFact.subject_id).label("dimension_id"),
-             func.coalesce(col(Subject.name), col(Subject.login_username), "无用户").label("dimension_label")],
+            [
+                col(RequestFact.subject_id).label("dimension_id"),
+                func.coalesce(
+                    col(Subject.name), col(Subject.login_username), "无用户"
+                ).label("dimension_label"),
+            ],
             Subject,
-            [col(RequestFact.subject_id), col(Subject.name), col(Subject.login_username)],
+            [
+                col(RequestFact.subject_id),
+                col(Subject.name),
+                col(Subject.login_username),
+            ],
         )
     if dimension == "project":
         return (
-            [col(RequestFact.project_id).label("dimension_id"),
-             func.coalesce(col(Project.name), "无项目").label("dimension_label")],
+            [
+                col(RequestFact.project_id).label("dimension_id"),
+                func.coalesce(col(Project.name), "无项目").label("dimension_label"),
+            ],
             Project,
             [col(RequestFact.project_id), col(Project.name)],
         )
     if dimension == "endpoint":
         return (
-            [col(RequestFact.endpoint_family).label("dimension_id"),
-             col(RequestFact.endpoint_family).label("dimension_label")],
+            [
+                col(RequestFact.endpoint_family).label("dimension_id"),
+                col(RequestFact.endpoint_family).label("dimension_label"),
+            ],
             None,
             [col(RequestFact.endpoint_family)],
         )
     if dimension == "outcome":
         return (
-            [col(RequestFact.outcome).label("dimension_id"),
-             col(RequestFact.outcome).label("dimension_label")],
+            [
+                col(RequestFact.outcome).label("dimension_id"),
+                col(RequestFact.outcome).label("dimension_label"),
+            ],
             None,
             [col(RequestFact.outcome)],
         )
     if dimension == "streaming":
         return (
-            [col(RequestFact.streaming).label("dimension_id"),
-             case((col(RequestFact.streaming) == True, "流式"), else_="非流式").label("dimension_label")],
+            [
+                col(RequestFact.streaming).label("dimension_id"),
+                case(
+                    (col(RequestFact.streaming) == True, "流式"), else_="非流式"
+                ).label("dimension_label"),
+            ],
             None,
             [col(RequestFact.streaming)],
         )
     # default: model
     return (
-        [col(RequestFact.model_alias).label("dimension_id"),
-         func.coalesce(col(RequestFact.model_alias), "无模型").label("dimension_label")],
+        [
+            col(RequestFact.model_alias).label("dimension_id"),
+            func.coalesce(col(RequestFact.model_alias), "无模型").label(
+                "dimension_label"
+            ),
+        ],
         None,
         [col(RequestFact.model_alias)],
     )
 
 
-async def time_buckets(session, *, bucket="hour", start=None, end=None,
-                       model=None, subject_id=None, project_id=None) -> list[dict]:
+async def time_buckets(
+    session,
+    *,
+    bucket="hour",
+    start=None,
+    end=None,
+    model=None,
+    subject_id=None,
+    project_id=None,
+) -> list[dict]:
     """按 date_trunc(bucket, started_at) 分组，full 18-metric。
     bucket∈{minute,hour,day}。返回的 bucket_start 统一转 ISO 字符串（对齐 DuckDB）。"""
     if bucket not in _VALID_BUCKETS:
@@ -253,7 +344,11 @@ async def time_buckets(session, *, bucket="hour", start=None, end=None,
             func.date_trunc(bucket, col(RequestFact.started_at)).label("bucket_start"),
             *_full_metric_columns(),
         ).select_from(RequestFact),
-        start=start, end=end, model=model, subject_id=subject_id, project_id=project_id,
+        start=start,
+        end=end,
+        model=model,
+        subject_id=subject_id,
+        project_id=project_id,
     )
     stmt = stmt.group_by(text("bucket_start")).order_by(desc(text("bucket_start")))
     rows = (await session.execute(stmt)).all()
@@ -264,21 +359,36 @@ async def time_buckets(session, *, bucket="hour", start=None, end=None,
     return result
 
 
-async def drilldown(session, *, dimension="model", start=None, end=None,
-                    model=None, subject_id=None, project_id=None, limit=100) -> list[dict]:
+async def drilldown(
+    session,
+    *,
+    dimension="model",
+    start=None,
+    end=None,
+    model=None,
+    subject_id=None,
+    project_id=None,
+    limit=100,
+) -> list[dict]:
     """按 dimension 分组，full 18-metric。dimension_id 转 str（对齐 DuckDB）。
     维度：model/subject/project/endpoint/outcome/streaming。"""
     dim_selects, join_target, group_by = _dimension_columns(dimension)
     await _apply_statement_timeout(session)
     stmt = _apply_filters(
         select(*dim_selects, *_full_metric_columns()).select_from(RequestFact),
-        start=start, end=end, model=model, subject_id=subject_id, project_id=project_id,
+        start=start,
+        end=end,
+        model=model,
+        subject_id=subject_id,
+        project_id=project_id,
     )
     if join_target is Subject:
         stmt = stmt.outerjoin(Subject, RequestFact.subject_id == Subject.id)
     elif join_target is Project:
         stmt = stmt.outerjoin(Project, RequestFact.project_id == Project.id)
-    stmt = stmt.group_by(*group_by).order_by(desc(text("request_count"))).limit(int(limit))
+    stmt = (
+        stmt.group_by(*group_by).order_by(desc(text("request_count"))).limit(int(limit))
+    )
     rows = (await session.execute(stmt)).all()
     result = [_row_to_dict(row) for row in rows]
     for row in result:

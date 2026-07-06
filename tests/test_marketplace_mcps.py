@@ -37,11 +37,20 @@ async def _make_user(login_username: str | None = None):
 def _unique_slug(base: str) -> str:
     """tests share a persistent DB; unique slugs avoid cross-test interference."""
     from uuid import uuid4
+
     return f"{base}-{uuid4().hex[:8]}"
 
 
-def _mcp_config(*, transport="stdio", command="uvx mcp-server-x", url=None,
-                args=None, env=None, headers=None, tools=None):
+def _mcp_config(
+    *,
+    transport="stdio",
+    command="uvx mcp-server-x",
+    url=None,
+    args=None,
+    env=None,
+    headers=None,
+    tools=None,
+):
     return {
         "transport": transport,
         "command": command,
@@ -63,15 +72,20 @@ async def test_create_mcp_creates_artifact_and_first_version():
     slug = _unique_slug("weather-mcp")
     async with AsyncSessionLocal() as session:
         mcp = await create_or_append_mcp_version(
-            session, actor=owner, slug=slug, name="Weather MCP", version="1.0.0",
-            summary="s", description=None, notes=None, config=_mcp_config(),
+            session,
+            actor=owner,
+            slug=slug,
+            name="Weather MCP",
+            version="1.0.0",
+            summary="s",
+            description=None,
+            notes=None,
+            config=_mcp_config(),
         )
         await session.commit()
         assert mcp.latest_version == "1.0.0"
         assert mcp.owner_subject_id == owner.id
-        versions = (
-            await session.execute(sqlmodel.select(McpVersion))
-        ).scalars().all()
+        versions = (await session.execute(sqlmodel.select(McpVersion))).scalars().all()
         mine = [v for v in versions if v.mcp_id == mcp.id]
         assert len(mine) == 1
         assert mine[0].transport.value == "stdio"
@@ -86,12 +100,25 @@ async def test_append_mcp_version_updates_latest():
     slug = _unique_slug("append")
     async with AsyncSessionLocal() as session:
         await create_or_append_mcp_version(
-            session, actor=owner, slug=slug, name="M", version="1.0.0",
-            summary=None, description=None, notes=None, config=_mcp_config(),
+            session,
+            actor=owner,
+            slug=slug,
+            name="M",
+            version="1.0.0",
+            summary=None,
+            description=None,
+            notes=None,
+            config=_mcp_config(),
         )
         mcp = await create_or_append_mcp_version(
-            session, actor=owner, slug=slug, name="M", version="2.0.0",
-            summary=None, description=None, notes=None,
+            session,
+            actor=owner,
+            slug=slug,
+            name="M",
+            version="2.0.0",
+            summary=None,
+            description=None,
+            notes=None,
             config=_mcp_config(command="uvx mcp-server-x@2"),
         )
         await session.commit()
@@ -107,15 +134,29 @@ async def test_mcp_duplicate_version_raises_conflict():
     slug = _unique_slug("dup")
     async with AsyncSessionLocal() as session:
         await create_or_append_mcp_version(
-            session, actor=owner, slug=slug, name="D", version="1.0.0",
-            summary=None, description=None, notes=None, config=_mcp_config(),
+            session,
+            actor=owner,
+            slug=slug,
+            name="D",
+            version="1.0.0",
+            summary=None,
+            description=None,
+            notes=None,
+            config=_mcp_config(),
         )
         await session.commit()
     async with AsyncSessionLocal() as session:
         with pytest.raises(HTTPException) as exc:
             await create_or_append_mcp_version(
-                session, actor=owner, slug=slug, name="D", version="1.0.0",
-                summary=None, description=None, notes=None, config=_mcp_config(),
+                session,
+                actor=owner,
+                slug=slug,
+                name="D",
+                version="1.0.0",
+                summary=None,
+                description=None,
+                notes=None,
+                config=_mcp_config(),
             )
         assert exc.value.status_code == 409
         assert exc.value.detail == "version_conflict"
@@ -130,14 +171,28 @@ async def test_mcp_cross_owner_slug_coexists():
     slug = _unique_slug("shared")
     async with AsyncSessionLocal() as session:
         a = await create_or_append_mcp_version(
-            session, actor=alice, slug=slug, name="A", version="1.0.0",
-            summary=None, description=None, notes=None, config=_mcp_config(),
+            session,
+            actor=alice,
+            slug=slug,
+            name="A",
+            version="1.0.0",
+            summary=None,
+            description=None,
+            notes=None,
+            config=_mcp_config(),
         )
         await session.commit()
     async with AsyncSessionLocal() as session:
         b = await create_or_append_mcp_version(
-            session, actor=bob, slug=slug, name="B", version="1.0.0",
-            summary=None, description=None, notes=None, config=_mcp_config(),
+            session,
+            actor=bob,
+            slug=slug,
+            name="B",
+            version="1.0.0",
+            summary=None,
+            description=None,
+            notes=None,
+            config=_mcp_config(),
         )
         await session.commit()
     assert a.id != b.id
@@ -160,10 +215,19 @@ async def test_mcp_grant_upsert_and_visibility():
     slug = _unique_slug("grant")
     async with AsyncSessionLocal() as session:
         mcp = await create_or_append_mcp_version(
-            session, actor=owner, slug=slug, name="G", version="1.0.0",
-            summary=None, description=None, notes=None, config=_mcp_config(),
+            session,
+            actor=owner,
+            slug=slug,
+            name="G",
+            version="1.0.0",
+            summary=None,
+            description=None,
+            notes=None,
+            config=_mcp_config(),
         )
-        assert not await subject_can_access_mcp(session, subject_id=consumer.id, mcp=mcp)
+        assert not await subject_can_access_mcp(
+            session, subject_id=consumer.id, mcp=mcp
+        )
         team = Team(name=f"mcp-team-{_uuid.uuid4().hex}")
         session.add(team)
         await session.flush()
@@ -181,8 +245,15 @@ async def _publish_and_grant_to_guest(owner_id, slug):
     async with AsyncSessionLocal() as session:
         owner = await session.get(Subject, owner_id)
         mcp = await create_or_append_mcp_version(
-            session, actor=owner, slug=slug, name="Weather MCP", version="1.0.0",
-            summary="weather mcp", description=None, notes=None, config=_mcp_config(),
+            session,
+            actor=owner,
+            slug=slug,
+            name="Weather MCP",
+            version="1.0.0",
+            summary="weather mcp",
+            description=None,
+            notes=None,
+            config=_mcp_config(),
         )
         guest = (
             await session.execute(sqlselect(Team).where(col(Team.name) == "guest"))
@@ -239,8 +310,15 @@ async def test_dataplane_hidden_mcp_returns_404(client):
         alice = await session.get(Subject, alice_id)
         private_slug = _unique_slug("private")
         await create_or_append_mcp_version(
-            session, actor=alice, slug=private_slug, name="P", version="1.0.0",
-            summary=None, description=None, notes=None, config=_mcp_config(),
+            session,
+            actor=alice,
+            slug=private_slug,
+            name="P",
+            version="1.0.0",
+            summary=None,
+            description=None,
+            notes=None,
+            config=_mcp_config(),
         )
         await session.commit()
     # need alice's username for the path; re-login to get it
@@ -264,10 +342,14 @@ async def test_self_service_mcp_publish_and_reveal(client):
     cfg = _mcp_config(env={"SECRET": "top-secret"}, tools=[{"name": "get_weather"}])
 
     resp = await client.post(
-        "/auth/registry/mcps", headers=sess_headers,
+        "/auth/registry/mcps",
+        headers=sess_headers,
         json={
-            "slug": slug, "name": "My MCP", "version": "1.0.0",
-            "summary": "s", "config": cfg,
+            "slug": slug,
+            "name": "My MCP",
+            "version": "1.0.0",
+            "summary": "s",
+            "config": cfg,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -288,13 +370,19 @@ async def test_self_service_mcp_append_version(client):
     sess_headers, *_ = await _login_user_with_key(client)
     slug = _unique_slug("append")
     await client.post(
-        "/auth/registry/mcps", headers=sess_headers,
+        "/auth/registry/mcps",
+        headers=sess_headers,
         json={"slug": slug, "name": "M", "version": "1.0.0", "config": _mcp_config()},
     )
     r2 = await client.post(
-        "/auth/registry/mcps", headers=sess_headers,
-        json={"slug": slug, "name": "M", "version": "2.0.0",
-              "config": _mcp_config(command="uvx new@2")},
+        "/auth/registry/mcps",
+        headers=sess_headers,
+        json={
+            "slug": slug,
+            "name": "M",
+            "version": "2.0.0",
+            "config": _mcp_config(command="uvx new@2"),
+        },
     )
     assert r2.status_code == 200, r2.text
     assert r2.json()["mcp"]["latest_version"] == "2.0.0"
@@ -314,9 +402,14 @@ async def test_self_service_mcp_duplicate_version_409(client):
 async def test_self_service_mcp_invalid_transport_422(client):
     sess_headers, *_ = await _login_user_with_key(client)
     r = await client.post(
-        "/auth/registry/mcps", headers=sess_headers,
-        json={"slug": _unique_slug("bad"), "name": "B", "version": "1.0.0",
-              "config": _mcp_config(transport="bogus")},
+        "/auth/registry/mcps",
+        headers=sess_headers,
+        json={
+            "slug": _unique_slug("bad"),
+            "name": "B",
+            "version": "1.0.0",
+            "config": _mcp_config(transport="bogus"),
+        },
     )
     assert r.status_code == 422
     assert r.json()["detail"] == "invalid_transport"
@@ -326,7 +419,8 @@ async def test_self_service_mcp_grants_lifecycle(client):
     sess_headers, gw_key, username, owner_id = await _login_user_with_key(client)
     slug = _unique_slug("grants")
     await client.post(
-        "/auth/registry/mcps", headers=sess_headers,
+        "/auth/registry/mcps",
+        headers=sess_headers,
         json={"slug": slug, "name": "G", "version": "1.0.0", "config": _mcp_config()},
     )
     async with AsyncSessionLocal() as session:
@@ -336,7 +430,8 @@ async def test_self_service_mcp_grants_lifecycle(client):
         guest_id = str(guest.id)
 
     r = await client.post(
-        f"/auth/registry/mcps/me/{slug}/grants", headers=sess_headers,
+        f"/auth/registry/mcps/me/{slug}/grants",
+        headers=sess_headers,
         json={"team_id": guest_id},
     )
     assert r.status_code == 200, r.text
@@ -348,7 +443,8 @@ async def test_self_service_mcp_grants_lifecycle(client):
 
     rev = await client.patch(
         f"/auth/registry/mcps/me/{slug}/grants/{grant_id}/state",
-        headers=sess_headers, json={"state": "disabled"},
+        headers=sess_headers,
+        json={"state": "disabled"},
     )
     assert rev.status_code == 200
     assert rev.json()["grant"]["state"] == "disabled"
@@ -366,7 +462,8 @@ async def test_self_service_mcp_non_owner_cannot_grant(client):
     bob_headers, *_ = await _login_user_with_key(client)
     slug = _unique_slug("owned")
     await client.post(
-        "/auth/registry/mcps", headers=alice_headers,
+        "/auth/registry/mcps",
+        headers=alice_headers,
         json={"slug": slug, "name": "A", "version": "1.0.0", "config": _mcp_config()},
     )
     async with AsyncSessionLocal() as session:
@@ -375,7 +472,8 @@ async def test_self_service_mcp_non_owner_cannot_grant(client):
         ).scalar_one()
         guest_id = str(guest.id)
     r = await client.post(
-        f"/auth/registry/mcps/me/{slug}/grants", headers=bob_headers,
+        f"/auth/registry/mcps/me/{slug}/grants",
+        headers=bob_headers,
         json={"team_id": guest_id},
     )
     assert r.status_code == 404  # 'me' resolves to bob who owns no such mcp
@@ -384,9 +482,14 @@ async def test_self_service_mcp_non_owner_cannot_grant(client):
 async def test_admin_lists_mcp_team_grants(client):
     sess_headers, *_ = await _login_user_with_key(client)
     await client.post(
-        "/auth/registry/mcps", headers=sess_headers,
-        json={"slug": _unique_slug("adm"), "name": "A", "version": "1.0.0",
-              "config": _mcp_config()},
+        "/auth/registry/mcps",
+        headers=sess_headers,
+        json={
+            "slug": _unique_slug("adm"),
+            "name": "A",
+            "version": "1.0.0",
+            "config": _mcp_config(),
+        },
     )
     admin = await _admin_headers(client)
     resp = await client.get("/admin/registry/mcp-team-grants", headers=admin)
@@ -398,13 +501,15 @@ async def test_admin_can_disable_any_mcp(client):
     sess_headers, *_ = await _login_user_with_key(client)
     slug = _unique_slug("target")
     up = await client.post(
-        "/auth/registry/mcps", headers=sess_headers,
+        "/auth/registry/mcps",
+        headers=sess_headers,
         json={"slug": slug, "name": "T", "version": "1.0.0", "config": _mcp_config()},
     )
     mcp_id = up.json()["mcp"]["id"]
     admin = await _admin_headers(client)
     r = await client.patch(
-        f"/admin/registry/mcps/{mcp_id}/state", headers=admin,
+        f"/admin/registry/mcps/{mcp_id}/state",
+        headers=admin,
         json={"state": "disabled"},
     )
     assert r.status_code == 200, r.text
@@ -415,7 +520,8 @@ async def test_admin_can_create_mcp_grant_for_any(client):
     sess_headers, *_ = await _login_user_with_key(client)
     slug = _unique_slug("grantable")
     up = await client.post(
-        "/auth/registry/mcps", headers=sess_headers,
+        "/auth/registry/mcps",
+        headers=sess_headers,
         json={"slug": slug, "name": "G", "version": "1.0.0", "config": _mcp_config()},
     )
     mcp_id = up.json()["mcp"]["id"]
@@ -426,7 +532,8 @@ async def test_admin_can_create_mcp_grant_for_any(client):
         guest_id = str(guest.id)
     admin = await _admin_headers(client)
     r = await client.post(
-        "/admin/registry/mcp-team-grants", headers=admin,
+        "/admin/registry/mcp-team-grants",
+        headers=admin,
         json={"mcp_id": mcp_id, "team_id": guest_id},
     )
     assert r.status_code == 200, r.text

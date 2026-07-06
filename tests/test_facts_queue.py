@@ -27,9 +27,7 @@ async def test_drain_isolates_a_failing_fact_and_keeps_the_rest(monkeypatch):
             raise RuntimeError("boom")
 
     monkeypatch.setattr("llm_gateway.db.session.AsyncSessionLocal", fake_session_local)
-    monkeypatch.setattr(
-        "llm_gateway.services.facts.record_request_fact", fake_record
-    )
+    monkeypatch.setattr("llm_gateway.services.facts.record_request_fact", fake_record)
     facts_queue._pending.clear()
     facts_queue._draining = False
 

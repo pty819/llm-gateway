@@ -89,7 +89,11 @@ async def test_chat_once_posts_to_chat_completions_and_extracts_usage(monkeypatc
         captured["headers"] = dict(request.headers)
         captured["body"] = json.loads(request.content)
         return _json_response(
-            {"id": "chatcmpl-1", "choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 2}}
+            {
+                "id": "chatcmpl-1",
+                "choices": [],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+            }
         )
 
     _patch_client(monkeypatch, handler)
@@ -121,7 +125,11 @@ async def test_responses_once_posts_to_responses_endpoint(monkeypatch):
         captured["url"] = str(request.url)
         captured["body"] = json.loads(request.content)
         return _json_response(
-            {"id": "resp-1", "output": [], "usage": {"input_tokens": 9, "output_tokens": 1}}
+            {
+                "id": "resp-1",
+                "output": [],
+                "usage": {"input_tokens": 9, "output_tokens": 1},
+            }
         )
 
     _patch_client(monkeypatch, handler)
@@ -255,8 +263,7 @@ async def test_responses_stream_preserves_multiline_event_frames(monkeypatch):
     assert len(chunks) == 4
     # First frame: event + data lines joined by \n, terminated by \n\n
     assert chunks[0][0] == (
-        'event: response.created\n'
-        'data: {"type":"response.created","id":"resp_1"}\n\n'
+        'event: response.created\ndata: {"type":"response.created","id":"resp_1"}\n\n'
     )
     # Usage extracted from the response.completed frame's data line.
     assert chunks[2][1] == {"input_tokens": 7, "output_tokens": 2}
@@ -317,12 +324,17 @@ async def test_unified_dispatch_routes_chat_and_responses(monkeypatch):
 
     async def fake_responses(*, model_alias, upstream, body):
         seen.append(EndpointFamily.OPENAI_RESPONSES)
-        return upstream_client.UpstreamCallResult(response={"kind": "responses"}, usage=None)
+        return upstream_client.UpstreamCallResult(
+            response={"kind": "responses"}, usage=None
+        )
 
     monkeypatch.setattr(upstream_client, "_chat_once", fake_chat)
     monkeypatch.setattr(upstream_client, "_responses_once", fake_responses)
 
-    for endpoint_family in (EndpointFamily.OPENAI_CHAT, EndpointFamily.OPENAI_RESPONSES):
+    for endpoint_family in (
+        EndpointFamily.OPENAI_CHAT,
+        EndpointFamily.OPENAI_RESPONSES,
+    ):
         await upstream_client.upstream_request_once(
             endpoint_family=endpoint_family,
             model_alias=_model_alias(),

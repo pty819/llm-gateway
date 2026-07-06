@@ -24,20 +24,24 @@ def upgrade() -> None:
         sa.Column("readme", sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     )
     op.add_column(
-        "skills", sa.Column("download_count", sa.Integer(), nullable=False, server_default="0")
+        "skills",
+        sa.Column("download_count", sa.Integer(), nullable=False, server_default="0"),
     )
     op.add_column(
-        "skills", sa.Column("like_count", sa.Integer(), nullable=False, server_default="0")
+        "skills",
+        sa.Column("like_count", sa.Integer(), nullable=False, server_default="0"),
     )
     op.create_index("ix_skills_download_count", "skills", ["download_count"])
     op.create_index("ix_skills_like_count", "skills", ["like_count"])
 
     # --- add count columns to mcps ---
     op.add_column(
-        "mcps", sa.Column("download_count", sa.Integer(), nullable=False, server_default="0")
+        "mcps",
+        sa.Column("download_count", sa.Integer(), nullable=False, server_default="0"),
     )
     op.add_column(
-        "mcps", sa.Column("like_count", sa.Integer(), nullable=False, server_default="0")
+        "mcps",
+        sa.Column("like_count", sa.Integer(), nullable=False, server_default="0"),
     )
     op.create_index("ix_mcps_download_count", "mcps", ["download_count"])
     op.create_index("ix_mcps_like_count", "mcps", ["like_count"])
@@ -53,7 +57,9 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["subject_id"], ["subjects.id"]),
         sa.ForeignKeyConstraint(["skill_id"], ["skills.id"]),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("subject_id", "skill_id", name="uq_skill_likes_subject_skill"),
+        sa.UniqueConstraint(
+            "subject_id", "skill_id", name="uq_skill_likes_subject_skill"
+        ),
     )
     op.create_index("ix_skill_likes_subject_id", "skill_likes", ["subject_id"])
     op.create_index("ix_skill_likes_skill_id", "skill_likes", ["skill_id"])

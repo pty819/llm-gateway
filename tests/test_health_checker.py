@@ -428,7 +428,9 @@ async def test_run_once_continues_when_mark_raises(monkeypatch):
     real_mark = health_checker._mark_unhealthy
     call_count = {"n": 0}
 
-    async def _flaky_mark(redis_arg, *, upstream_id, upstream_name, verdict, ttl_seconds):
+    async def _flaky_mark(
+        redis_arg, *, upstream_id, upstream_name, verdict, ttl_seconds
+    ):
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise RuntimeError("redis hiccup")
@@ -637,7 +639,9 @@ async def test_start_always_starts_loop_skips_probes_when_disabled(monkeypatch):
 
     probe_calls = []
 
-    async def _fake_run_once(*, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min):
+    async def _fake_run_once(
+        *, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min
+    ):
         probe_calls.append(1)
 
     monkeypatch.setattr(health_checker, "_run_once", _fake_run_once)
@@ -662,7 +666,9 @@ async def test_start_runs_loop_then_stop_terminates(monkeypatch):
 
     iterations = []
 
-    async def _fake_run_once(*, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min):
+    async def _fake_run_once(
+        *, redis, timeout_seconds, unhealthy_ttl_seconds, quorum_min
+    ):
         iterations.append(1)
 
     monkeypatch.setattr(health_checker, "_run_once", _fake_run_once)
@@ -717,7 +723,9 @@ def _noop_coro_factory():
 def test_classify_health_none_status_and_no_exception_is_unknown_error():
     """M-1 regression guard: classify_health must not raise on (None, None)."""
     verdict = classify_health(None, exc=None)
-    assert verdict == HealthVerdict(healthy=False, status_code=None, reason="unknown_error")
+    assert verdict == HealthVerdict(
+        healthy=False, status_code=None, reason="unknown_error"
+    )
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -801,15 +809,19 @@ async def test_run_once_integration_marks_redis_and_leaves_pg_active(
         assert upstream.state == ResourceState.ACTIVE
 
         audit_rows = (
-            await session.execute(
-                select(AuditEvent)
-                .where(
-                    AuditEvent.resource_id == gateway_fixture.upstream_id,
-                    AuditEvent.action == "upstream.auto_disable",
+            (
+                await session.execute(
+                    select(AuditEvent)
+                    .where(
+                        AuditEvent.resource_id == gateway_fixture.upstream_id,
+                        AuditEvent.action == "upstream.auto_disable",
+                    )
+                    .order_by(AuditEvent.created_at.desc())
                 )
-                .order_by(AuditEvent.created_at.desc())
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert audit_rows, "expected an upstream.auto_disable audit row"
         latest = audit_rows[0]
         assert latest.outcome == "unhealthy"

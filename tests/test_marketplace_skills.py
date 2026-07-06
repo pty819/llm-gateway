@@ -81,7 +81,10 @@ async def _login_user_with_key(client):
             ttl_hours=get_settings().session_ttl_hours,
         )
         _gw_key, raw_gw = await create_gateway_key(
-            session, subject_id=subject.id, project_id=project.id, name="mk",
+            session,
+            subject_id=subject.id,
+            project_id=project.id,
+            name="mk",
         )
         await session.commit()
     return (
@@ -141,9 +144,7 @@ async def test_upload_creates_skill_and_first_version():
         import sqlmodel
 
         versions = (
-            (await session.execute(sqlmodel.select(SkillVersion)))
-            .scalars()
-            .all()
+            (await session.execute(sqlmodel.select(SkillVersion))).scalars().all()
         )
         mine = [v for v in versions if v.skill_id == skill.id]
         assert len(mine) == 1
@@ -156,12 +157,26 @@ async def test_upload_append_new_version_updates_latest():
     slug = _unique_slug("x")
     async with AsyncSessionLocal() as session:
         await create_or_append_skill_version(
-            session, actor=owner, slug=slug, name="X", version="1.0.0",
-            summary=None, description=None, notes=None, zip_bytes=_make_zip("v1"),
+            session,
+            actor=owner,
+            slug=slug,
+            name="X",
+            version="1.0.0",
+            summary=None,
+            description=None,
+            notes=None,
+            zip_bytes=_make_zip("v1"),
         )
         skill = await create_or_append_skill_version(
-            session, actor=owner, slug=slug, name="X", version="2.0.0",
-            summary=None, description=None, notes=None, zip_bytes=_make_zip("v2"),
+            session,
+            actor=owner,
+            slug=slug,
+            name="X",
+            version="2.0.0",
+            summary=None,
+            description=None,
+            notes=None,
+            zip_bytes=_make_zip("v2"),
         )
         await session.commit()
         assert skill.latest_version == "2.0.0"
@@ -174,15 +189,29 @@ async def test_upload_duplicate_version_raises_conflict():
     slug = _unique_slug("x")
     async with AsyncSessionLocal() as session:
         await create_or_append_skill_version(
-            session, actor=owner, slug=slug, name="X", version="1.0.0",
-            summary=None, description=None, notes=None, zip_bytes=_make_zip(),
+            session,
+            actor=owner,
+            slug=slug,
+            name="X",
+            version="1.0.0",
+            summary=None,
+            description=None,
+            notes=None,
+            zip_bytes=_make_zip(),
         )
         await session.commit()
     async with AsyncSessionLocal() as session:
         with pytest.raises(HTTPException) as exc:
             await create_or_append_skill_version(
-                session, actor=owner, slug=slug, name="X", version="1.0.0",
-                summary=None, description=None, notes=None, zip_bytes=_make_zip(),
+                session,
+                actor=owner,
+                slug=slug,
+                name="X",
+                version="1.0.0",
+                summary=None,
+                description=None,
+                notes=None,
+                zip_bytes=_make_zip(),
             )
         assert exc.value.status_code == 409
         assert exc.value.detail == "version_conflict"
@@ -194,14 +223,28 @@ async def test_upload_duplicate_slug_different_owner_allowed():
     slug = _unique_slug("weather")
     async with AsyncSessionLocal() as session:
         alice_skill = await create_or_append_skill_version(
-            session, actor=alice, slug=slug, name="W", version="1.0.0",
-            summary=None, description=None, notes=None, zip_bytes=_make_zip(),
+            session,
+            actor=alice,
+            slug=slug,
+            name="W",
+            version="1.0.0",
+            summary=None,
+            description=None,
+            notes=None,
+            zip_bytes=_make_zip(),
         )
         await session.commit()
     async with AsyncSessionLocal() as session:
         bob_skill = await create_or_append_skill_version(
-            session, actor=bob, slug=slug, name="W", version="1.0.0",
-            summary=None, description=None, notes=None, zip_bytes=_make_zip(),
+            session,
+            actor=bob,
+            slug=slug,
+            name="W",
+            version="1.0.0",
+            summary=None,
+            description=None,
+            notes=None,
+            zip_bytes=_make_zip(),
         )
         await session.commit()
     # alice/weather and bob/weather coexist as independent skills
@@ -220,8 +263,15 @@ async def test_grant_upsert_and_visibility():
     slug = _unique_slug("s")
     async with AsyncSessionLocal() as session:
         skill = await create_or_append_skill_version(
-            session, actor=owner, slug=slug, name="S", version="1.0.0",
-            summary=None, description=None, notes=None, zip_bytes=_make_zip(),
+            session,
+            actor=owner,
+            slug=slug,
+            name="S",
+            version="1.0.0",
+            summary=None,
+            description=None,
+            notes=None,
+            zip_bytes=_make_zip(),
         )
         assert not await subject_can_access_skill(
             session, subject_id=consumer.id, skill=skill
@@ -231,9 +281,7 @@ async def test_grant_upsert_and_visibility():
         await session.flush()
         session.add(TeamMembership(team_id=team.id, subject_id=consumer.id))
         await session.flush()
-        await ensure_skill_team_grant(
-            session, skill_id=skill.id, team_id=team.id
-        )
+        await ensure_skill_team_grant(session, skill_id=skill.id, team_id=team.id)
         await session.commit()
         await session.refresh(skill)
         assert await subject_can_access_skill(
@@ -257,8 +305,15 @@ async def test_list_visible_guest_grant_equals_public():
     slug = _unique_slug("pub")
     async with AsyncSessionLocal() as session:
         skill = await create_or_append_skill_version(
-            session, actor=owner, slug=slug, name="Pub", version="1.0.0",
-            summary=None, description=None, notes=None, zip_bytes=_make_zip(),
+            session,
+            actor=owner,
+            slug=slug,
+            name="Pub",
+            version="1.0.0",
+            summary=None,
+            description=None,
+            notes=None,
+            zip_bytes=_make_zip(),
         )
         await ensure_skill_team_grant(session, skill_id=skill.id, team_id=guest.id)
         await session.commit()
@@ -277,8 +332,15 @@ async def test_list_visible_excludes_unauthorized():
     slug = _unique_slug("secret")
     async with AsyncSessionLocal() as session:
         await create_or_append_skill_version(
-            session, actor=owner, slug=slug, name="Secret", version="1.0.0",
-            summary=None, description=None, notes=None, zip_bytes=_make_zip(),
+            session,
+            actor=owner,
+            slug=slug,
+            name="Secret",
+            version="1.0.0",
+            summary=None,
+            description=None,
+            notes=None,
+            zip_bytes=_make_zip(),
         )
         await session.commit()
 
@@ -296,17 +358,34 @@ async def test_latest_active_version_falls_back_when_pointer_disabled():
     fall back to the most recent active version by created_at."""
     owner = await _make_user()
     slug = _unique_slug("fallback")
-    from llm_gateway.services.registry import get_latest_active_version, get_skill_version
+    from llm_gateway.services.registry import (
+        get_latest_active_version,
+        get_skill_version,
+    )
 
     async with AsyncSessionLocal() as session:
         s1 = await create_or_append_skill_version(
-            session, actor=owner, slug=slug, name="F", version="1.0.0",
-            summary=None, description=None, notes=None, zip_bytes=_make_zip("1"),
+            session,
+            actor=owner,
+            slug=slug,
+            name="F",
+            version="1.0.0",
+            summary=None,
+            description=None,
+            notes=None,
+            zip_bytes=_make_zip("1"),
         )
         await session.commit()
         await create_or_append_skill_version(
-            session, actor=owner, slug=slug, name="F", version="2.0.0",
-            summary=None, description=None, notes=None, zip_bytes=_make_zip("2"),
+            session,
+            actor=owner,
+            slug=slug,
+            name="F",
+            version="2.0.0",
+            summary=None,
+            description=None,
+            notes=None,
+            zip_bytes=_make_zip("2"),
         )
         await session.commit()
         # artificially disable the v2 row (the current latest)
@@ -325,7 +404,7 @@ async def test_latest_active_version_falls_back_when_pointer_disabled():
 async def test_dataplane_list_and_download_for_guest_grant(client):
     from tests.test_backend_integration import _auth_headers
     from llm_gateway.db.session import AsyncSessionLocal
-    from llm_gateway.db.models import Subject, Team, ResourceState
+    from llm_gateway.db.models import Subject, Team
     from llm_gateway.services.registry import (
         create_or_append_skill_version,
         ensure_skill_team_grant,
@@ -339,8 +418,15 @@ async def test_dataplane_list_and_download_for_guest_grant(client):
     async with AsyncSessionLocal() as session:
         owner = await session.get(Subject, owner_id)
         skill = await create_or_append_skill_version(
-            session, actor=owner, slug=slug, name="Weather", version="1.0.0",
-            summary="weather skill", description=None, notes=None, zip_bytes=_make_zip(),
+            session,
+            actor=owner,
+            slug=slug,
+            name="Weather",
+            version="1.0.0",
+            summary="weather skill",
+            description=None,
+            notes=None,
+            zip_bytes=_make_zip(),
         )
         guest = (
             await session.execute(sqlselect(Team).where(col(Team.name) == "guest"))
@@ -388,6 +474,7 @@ async def test_self_service_upload_and_download_lifecycle(client):
     assert skill["latest_version"] == "1.0.0"
 
     from tests.test_backend_integration import _auth_headers
+
     dl = await client.get(
         f"/v1/registry/skills/{username}/{slug}/versions/latest/download",
         headers=_auth_headers(gw_key),
@@ -410,12 +497,16 @@ async def test_self_service_duplicate_version_409(client):
     slug = _unique_slug("dup")
     data = {"slug": slug, "name": "Dup", "version": "1.0.0"}
     r1 = await client.post(
-        "/auth/registry/skills", headers=sess_headers, data=data,
+        "/auth/registry/skills",
+        headers=sess_headers,
+        data=data,
         files={"file": ("d.zip", _make_zip(), "application/zip")},
     )
     assert r1.status_code == 200, r1.text
     r2 = await client.post(
-        "/auth/registry/skills", headers=sess_headers, data=data,
+        "/auth/registry/skills",
+        headers=sess_headers,
+        data=data,
         files={"file": ("d.zip", _make_zip(), "application/zip")},
     )
     assert r2.status_code == 409
@@ -430,13 +521,15 @@ async def test_self_service_cross_owner_slug_coexists(client):
     slug = _unique_slug("shared")
 
     a = await client.post(
-        "/auth/registry/skills", headers=alice_headers,
+        "/auth/registry/skills",
+        headers=alice_headers,
         data={"slug": slug, "name": "Alice", "version": "1.0.0"},
         files={"file": ("a.zip", _make_zip(), "application/zip")},
     )
     assert a.status_code == 200, a.text
     b = await client.post(
-        "/auth/registry/skills", headers=bob_headers,
+        "/auth/registry/skills",
+        headers=bob_headers,
         data={"slug": slug, "name": "Bob", "version": "1.0.0"},
         files={"file": ("b.zip", _make_zip(), "application/zip")},
     )
@@ -453,7 +546,8 @@ async def test_self_service_grants_lifecycle(client):
     sess_headers, *_ = await _login_user_with_key(client)
     slug = _unique_slug("g")
     await client.post(
-        "/auth/registry/skills", headers=sess_headers,
+        "/auth/registry/skills",
+        headers=sess_headers,
         data={"slug": slug, "name": "G", "version": "1.0.0"},
         files={"file": ("g.zip", _make_zip(), "application/zip")},
     )
@@ -464,19 +558,23 @@ async def test_self_service_grants_lifecycle(client):
         guest_id = str(guest.id)
 
     r = await client.post(
-        f"/auth/registry/skills/me/{slug}/grants", headers=sess_headers,
+        f"/auth/registry/skills/me/{slug}/grants",
+        headers=sess_headers,
         json={"team_id": guest_id},
     )
     assert r.status_code == 200, r.text
     grant_id = r.json()["grant"]["id"]
 
-    g = await client.get(f"/auth/registry/skills/me/{slug}/grants", headers=sess_headers)
+    g = await client.get(
+        f"/auth/registry/skills/me/{slug}/grants", headers=sess_headers
+    )
     assert g.status_code == 200
     assert any(gr["id"] == grant_id for gr in g.json()["items"])
 
     rev = await client.patch(
         f"/auth/registry/skills/me/{slug}/grants/{grant_id}/state",
-        headers=sess_headers, json={"state": "disabled"},
+        headers=sess_headers,
+        json={"state": "disabled"},
     )
     assert rev.status_code == 200
     assert rev.json()["grant"]["state"] == "disabled"
@@ -487,7 +585,8 @@ async def test_self_service_upload_too_large_413(client):
     slug = _unique_slug("big")
     big = b"0" * (1 + 10 * 1024 * 1024)  # just over default 10MiB
     r = await client.post(
-        "/auth/registry/skills", headers=sess_headers,
+        "/auth/registry/skills",
+        headers=sess_headers,
         data={"slug": slug, "name": "Big", "version": "1.0.0"},
         files={"file": ("big.zip", big, "application/zip")},
     )
@@ -501,7 +600,8 @@ async def test_self_service_non_owner_cannot_grant(client):
     bob_headers, *_ = await _login_user_with_key(client)
     slug = _unique_slug("owned")
     await client.post(
-        "/auth/registry/skills", headers=alice_headers,
+        "/auth/registry/skills",
+        headers=alice_headers,
         data={"slug": slug, "name": "Owned", "version": "1.0.0"},
         files={"file": ("o.zip", _make_zip(), "application/zip")},
     )
@@ -509,13 +609,15 @@ async def test_self_service_non_owner_cannot_grant(client):
     from llm_gateway.db.models import Team
     from sqlmodel import select as sqlselect
     from sqlmodel import col
+
     async with AsyncSessionLocal() as session:
         guest = (
             await session.execute(sqlselect(Team).where(col(Team.name) == "guest"))
         ).scalar_one()
         guest_id = str(guest.id)
     r = await client.post(
-        f"/auth/registry/skills/me/{slug}/grants", headers=bob_headers,
+        f"/auth/registry/skills/me/{slug}/grants",
+        headers=bob_headers,
         json={"team_id": guest_id},
     )
     assert r.status_code == 404
@@ -539,7 +641,8 @@ async def test_admin_lists_skill_team_grants(client):
     sess_headers, *_ = await _login_user_with_key(client)
     slug = _unique_slug("adm")
     await client.post(
-        "/auth/registry/skills", headers=sess_headers,
+        "/auth/registry/skills",
+        headers=sess_headers,
         data={"slug": slug, "name": "Adm", "version": "1.0.0"},
         files={"file": ("a.zip", _make_zip(), "application/zip")},
     )
@@ -553,7 +656,8 @@ async def test_admin_can_disable_any_skill(client):
     sess_headers, *_ = await _login_user_with_key(client)
     slug = _unique_slug("target")
     up = await client.post(
-        "/auth/registry/skills", headers=sess_headers,
+        "/auth/registry/skills",
+        headers=sess_headers,
         data={"slug": slug, "name": "Target", "version": "1.0.0"},
         files={"file": ("t.zip", _make_zip(), "application/zip")},
     )
@@ -561,7 +665,8 @@ async def test_admin_can_disable_any_skill(client):
     admin = await _admin_headers(client)
     r = await client.patch(
         f"/admin/registry/skills/{skill_id}/state",
-        headers=admin, json={"state": "disabled"},
+        headers=admin,
+        json={"state": "disabled"},
     )
     assert r.status_code == 200, r.text
     assert r.json()["skill"]["state"] == "disabled"
@@ -576,7 +681,8 @@ async def test_admin_can_create_grant_for_any_skill(client):
     sess_headers, *_ = await _login_user_with_key(client)
     slug = _unique_slug("grantable")
     up = await client.post(
-        "/auth/registry/skills", headers=sess_headers,
+        "/auth/registry/skills",
+        headers=sess_headers,
         data={"slug": slug, "name": "G", "version": "1.0.0"},
         files={"file": ("g.zip", _make_zip(), "application/zip")},
     )
@@ -588,7 +694,8 @@ async def test_admin_can_create_grant_for_any_skill(client):
         guest_id = str(guest.id)
     admin = await _admin_headers(client)
     r = await client.post(
-        "/admin/registry/skill-team-grants", headers=admin,
+        "/admin/registry/skill-team-grants",
+        headers=admin,
         json={"skill_id": skill_id, "team_id": guest_id},
     )
     assert r.status_code == 200, r.text

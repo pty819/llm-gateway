@@ -71,7 +71,6 @@ from llm_gateway.services.registry import (
     get_latest_active_mcp_version,
     get_latest_active_version,
     get_mcp_by_owner_slug,
-    get_mcp_version_row,
     get_skill_by_owner_slug,
     get_skill_version,
     increment_skill_download_count,
@@ -220,7 +219,11 @@ async def login(
     )
     # Always run a full PBKDF2 verification so the response timing cannot reveal
     # whether the username exists: unknown users verify against a dummy hash.
-    stored_hash = subject.password_hash if (subject and subject.password_hash) else DUMMY_PASSWORD_HASH
+    stored_hash = (
+        subject.password_hash
+        if (subject and subject.password_hash)
+        else DUMMY_PASSWORD_HASH
+    )
     password_ok = verify_password(payload.password, stored_hash)
     if not user_eligible or not password_ok:
         raise HTTPException(
@@ -1007,18 +1010,26 @@ async def _usage_ranking_from_postgres(
             Subject.name.label("subject_name"),
             Subject.login_username.label("login_username"),
             func.count(col(RequestFact.id)).label("request_count"),
-            func.coalesce(func.sum(RequestFact.prompt_tokens), 0).label("prompt_tokens"),
-            func.coalesce(func.sum(RequestFact.completion_tokens), 0).label("completion_tokens"),
+            func.coalesce(func.sum(RequestFact.prompt_tokens), 0).label(
+                "prompt_tokens"
+            ),
+            func.coalesce(func.sum(RequestFact.completion_tokens), 0).label(
+                "completion_tokens"
+            ),
             func.coalesce(func.sum(total_tokens_expr), 0).label("total_tokens"),
             func.coalesce(
                 func.sum(
-                    case((col(RequestFact.outcome) == RequestOutcome.SUCCESS, 1), else_=0)
+                    case(
+                        (col(RequestFact.outcome) == RequestOutcome.SUCCESS, 1), else_=0
+                    )
                 ),
                 0,
             ).label("success_count"),
             func.coalesce(
                 func.sum(
-                    case((col(RequestFact.outcome) != RequestOutcome.SUCCESS, 1), else_=0)
+                    case(
+                        (col(RequestFact.outcome) != RequestOutcome.SUCCESS, 1), else_=0
+                    )
                 ),
                 0,
             ).label("failure_count"),
@@ -1040,11 +1051,11 @@ async def _usage_ranking_from_postgres(
         stmt = stmt.where(col(RequestFact.started_at) < end)
     if model is not None:
         stmt = stmt.where(col(RequestFact.model_alias) == model)
-    stmt = stmt.group_by(
-        Subject.id, Subject.name, Subject.login_username
-    ).order_by(
-        desc(text("total_tokens")), desc(text("request_count"))
-    ).limit(limit)
+    stmt = (
+        stmt.group_by(Subject.id, Subject.name, Subject.login_username)
+        .order_by(desc(text("total_tokens")), desc(text("request_count")))
+        .limit(limit)
+    )
     rows = (await session.execute(stmt)).all()
     return [
         {
@@ -1105,6 +1116,7 @@ def _requires_real_name(subject: Subject) -> bool:
 
 
 # ---- marketplace: self-service skill registry ----
+
 
 class SkillGrantCreate(BaseModel):
     team_id: UUID
@@ -1170,6 +1182,7 @@ async def list_my_skills(
 
 # ---- marketplace: browse (visible-to-me discovery) ----
 
+
 @router.get("/registry/skills/browse")
 async def browse_skills(
     q: str | None = Query(default=None),
@@ -1201,9 +1214,7 @@ async def browse_skills(
         )
         owner_names = {row[0]: row[1] for row in rows.all()}
     return {
-        "items": [
-            skill_summary(s, owner_names.get(s.owner_subject_id)) for s in items
-        ],
+        "items": [skill_summary(s, owner_names.get(s.owner_subject_id)) for s in items],
         "total": total,
         "page": page,
         "size": page_size,
@@ -1230,23 +1241,30 @@ async def browse_skill_detail(
                 )
                 .order_by(col(SkillVersion.created_at).desc())
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     grants = list(
         (
             await session.execute(
                 select(SkillTeamGrant).where(col(SkillTeamGrant.skill_id) == skill.id)
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     owner_obj = await session.get(Subject, skill.owner_subject_id)
     liked_by_me = await is_skill_liked_by(
         session, subject_id=ctx.subject.id, skill_id=skill.id
     )
     return skill_detail(
-        skill, versions, grants,
+        skill,
+        versions,
+        grants,
         owner_name=owner_obj.name if owner_obj else None,
-        readme=skill.readme, liked_by_me=liked_by_me,
+        readme=skill.readme,
+        liked_by_me=liked_by_me,
     )
 
 
@@ -1336,10 +1354,14 @@ async def list_my_skill_grants(
     from sqlmodel import col as _col
 
     rows = (
-        await session.execute(
-            _select(SkillTeamGrant).where(_col(SkillTeamGrant.skill_id) == skill.id)
+        (
+            await session.execute(
+                _select(SkillTeamGrant).where(_col(SkillTeamGrant.skill_id) == skill.id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     items = [
         {
             "id": str(g.id),
@@ -1373,7 +1395,9 @@ async def create_my_skill_grant(
             "id": str(grant.id),
             "skill_id": str(grant.skill_id),
             "team_id": str(grant.team_id),
-            "state": grant.state.value if hasattr(grant.state, "value") else grant.state,
+            "state": grant.state.value
+            if hasattr(grant.state, "value")
+            else grant.state,
         }
     }
 
@@ -1402,12 +1426,15 @@ async def patch_my_skill_grant_state(
             "id": str(grant.id),
             "skill_id": str(grant.skill_id),
             "team_id": str(grant.team_id),
-            "state": grant.state.value if hasattr(grant.state, "value") else grant.state,
+            "state": grant.state.value
+            if hasattr(grant.state, "value")
+            else grant.state,
         }
     }
 
 
 # ---- marketplace: self-service MCP registry ----
+
 
 class McpGrantCreate(BaseModel):
     team_id: UUID
@@ -1467,6 +1494,7 @@ async def list_my_mcps(
 
 # ---- marketplace: browse (visible-to-me discovery) ----
 
+
 @router.get("/registry/mcps/browse")
 async def browse_mcps(
     q: str | None = Query(default=None),
@@ -1525,14 +1553,18 @@ async def browse_mcp_detail(
                 )
                 .order_by(col(McpVersion.created_at).desc())
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     grants = list(
         (
             await session.execute(
                 select(McpTeamGrant).where(col(McpTeamGrant.mcp_id) == mcp.id)
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     latest = await get_latest_active_mcp_version(session, mcp=mcp)
     owner_obj = await session.get(Subject, mcp.owner_subject_id)
@@ -1541,9 +1573,14 @@ async def browse_mcp_detail(
         session, subject_id=ctx.subject.id, mcp_id=mcp.id
     )
     return mcp_detail(
-        mcp, versions, latest, grants,
+        mcp,
+        versions,
+        latest,
+        grants,
         owner_name=owner_obj.name if owner_obj else None,
-        reveal=reveal, liked_by_me=liked_by_me, readme=mcp.readme,
+        reveal=reveal,
+        liked_by_me=liked_by_me,
+        readme=mcp.readme,
     )
 
 
@@ -1557,9 +1594,7 @@ async def browse_mcp_like(
     mcp = await _get_visible_mcp_or_404(
         session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
     )
-    mcp = await toggle_mcp_like(
-        session, subject_id=ctx.subject.id, mcp_id=mcp.id
-    )
+    mcp = await toggle_mcp_like(session, subject_id=ctx.subject.id, mcp_id=mcp.id)
     await session.commit()
     return {"liked_by_me": True, "like_count": mcp.like_count}
 
@@ -1574,9 +1609,7 @@ async def browse_mcp_unlike(
     mcp = await _get_visible_mcp_or_404(
         session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
     )
-    mcp = await toggle_mcp_like(
-        session, subject_id=ctx.subject.id, mcp_id=mcp.id
-    )
+    mcp = await toggle_mcp_like(session, subject_id=ctx.subject.id, mcp_id=mcp.id)
     await session.commit()
     return {"liked_by_me": False, "like_count": mcp.like_count}
 
@@ -1601,10 +1634,14 @@ async def list_my_mcp_grants(
     from sqlmodel import col as _col
 
     rows = (
-        await session.execute(
-            _select(McpTeamGrant).where(_col(McpTeamGrant.mcp_id) == mcp.id)
+        (
+            await session.execute(
+                _select(McpTeamGrant).where(_col(McpTeamGrant.mcp_id) == mcp.id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     items = [
         {
             "id": str(g.id),
@@ -1628,9 +1665,7 @@ async def create_my_mcp_grant(
     team = await session.get(Team, payload.team_id)
     if team is None:
         raise HTTPException(status_code=404, detail="team_not_found")
-    grant = await ensure_mcp_team_grant(
-        session, mcp_id=mcp.id, team_id=payload.team_id
-    )
+    grant = await ensure_mcp_team_grant(session, mcp_id=mcp.id, team_id=payload.team_id)
     await session.commit()
     await session.refresh(grant)
     return {
@@ -1638,7 +1673,9 @@ async def create_my_mcp_grant(
             "id": str(grant.id),
             "mcp_id": str(grant.mcp_id),
             "team_id": str(grant.team_id),
-            "state": grant.state.value if hasattr(grant.state, "value") else grant.state,
+            "state": grant.state.value
+            if hasattr(grant.state, "value")
+            else grant.state,
         }
     }
 
@@ -1667,6 +1704,8 @@ async def patch_my_mcp_grant_state(
             "id": str(grant.id),
             "mcp_id": str(grant.mcp_id),
             "team_id": str(grant.team_id),
-            "state": grant.state.value if hasattr(grant.state, "value") else grant.state,
+            "state": grant.state.value
+            if hasattr(grant.state, "value")
+            else grant.state,
         }
     }

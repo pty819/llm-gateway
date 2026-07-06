@@ -11,7 +11,13 @@ from sqlmodel import col
 
 from llm_gateway.api.deps import auth_dep, session_dep, settings_dep
 from llm_gateway.core.config import Settings
-from llm_gateway.db.models import ResourceState, Skill, SkillTeamGrant, SkillVersion, Subject
+from llm_gateway.db.models import (
+    ResourceState,
+    Skill,
+    SkillTeamGrant,
+    SkillVersion,
+    Subject,
+)
 from llm_gateway.services.registry import (
     get_latest_active_version,
     get_skill_version,
@@ -98,14 +104,18 @@ async def get_skill_detail_route(
                 )
                 .order_by(col(SkillVersion.created_at).desc())
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     grants = list(
         (
             await session.execute(
                 select(SkillTeamGrant).where(col(SkillTeamGrant.skill_id) == skill.id)
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     owner_obj = await session.get(Subject, skill.owner_subject_id)
     return skill_detail(
@@ -183,8 +193,12 @@ async def list_mcps(
     page_size = min(page_size, settings.marketplace_list_max_size)
     offset = (page - 1) * page_size
     items, total = await list_visible_mcps(
-        session, subject_id=auth.subject.id, q=q, owner=owner,
-        limit=page_size, offset=offset,
+        session,
+        subject_id=auth.subject.id,
+        q=q,
+        owner=owner,
+        limit=page_size,
+        offset=offset,
     )
     owner_ids = {m.owner_subject_id for m in items}
     owner_names: dict[UUID, str] = {}
@@ -195,7 +209,9 @@ async def list_mcps(
         owner_names = {row[0]: row[1] for row in rows.all()}
     return {
         "items": [mcp_summary(m, owner_names.get(m.owner_subject_id)) for m in items],
-        "total": total, "page": page, "size": page_size,
+        "total": total,
+        "page": page,
+        "size": page_size,
     }
 
 
@@ -219,20 +235,29 @@ async def get_mcp_detail_route(
                 )
                 .order_by(col(McpVersion.created_at).desc())
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     grants = list(
         (
             await session.execute(
                 select(McpTeamGrant).where(col(McpTeamGrant.mcp_id) == mcp.id)
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     latest = await get_latest_active_mcp_version(session, mcp=mcp)
     owner_obj = await session.get(Subject, mcp.owner_subject_id)
     # Owner sees cleartext env/headers; grantees + strangers see redacted.
     reveal = mcp.owner_subject_id == auth.subject.id
     return mcp_detail(
-        mcp, versions, latest, grants,
-        owner_name=owner_obj.name if owner_obj else None, reveal=reveal, readme=mcp.readme,
+        mcp,
+        versions,
+        latest,
+        grants,
+        owner_name=owner_obj.name if owner_obj else None,
+        reveal=reveal,
+        readme=mcp.readme,
     )

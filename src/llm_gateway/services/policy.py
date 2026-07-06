@@ -17,7 +17,9 @@ from llm_gateway.db.models import (
     UpstreamTarget,
 )
 from llm_gateway.services.security import AuthContext
-from llm_gateway.services.upstream_health import filter_unhealthy as filter_unhealthy_upstreams
+from llm_gateway.services.upstream_health import (
+    filter_unhealthy as filter_unhealthy_upstreams,
+)
 from llm_gateway.services.upstream_routing import select_upstream_for_key
 
 

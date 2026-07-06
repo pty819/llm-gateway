@@ -9,7 +9,14 @@ import pytest
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
-async def _seed_request_fact(*, project_id, subject_id, model_alias="test-model", total_tokens=100, outcome="success"):
+async def _seed_request_fact(
+    *,
+    project_id,
+    subject_id,
+    model_alias="test-model",
+    total_tokens=100,
+    outcome="success",
+):
     """Insert a minimal RequestFact row for aggregation tests."""
     from llm_gateway.db.session import AsyncSessionLocal
     from llm_gateway.db.models import EndpointFamily, RequestOutcome, utcnow
@@ -29,8 +36,14 @@ async def _seed_request_fact(*, project_id, subject_id, model_alias="test-model"
             model_alias=model_alias,
             upstream_target_id=None,
             streaming=False,
-            outcome=RequestOutcome.SUCCESS if outcome == "success" else RequestOutcome.UPSTREAM_FAILURE,
-            usage={"prompt_tokens": 10, "completion_tokens": total_tokens - 10, "total_tokens": total_tokens},
+            outcome=RequestOutcome.SUCCESS
+            if outcome == "success"
+            else RequestOutcome.UPSTREAM_FAILURE,
+            usage={
+                "prompt_tokens": 10,
+                "completion_tokens": total_tokens - 10,
+                "total_tokens": total_tokens,
+            },
         )
         await session.commit()
 
@@ -56,15 +69,23 @@ async def test_usage_ranking_groups_by_subject_and_sorts_by_total_tokens():
         alice_id = alice.id
         bob_id = bob.id
 
-    await _seed_request_fact(project_id=project_id, subject_id=alice_id, total_tokens=500)
-    await _seed_request_fact(project_id=project_id, subject_id=alice_id, total_tokens=300)
+    await _seed_request_fact(
+        project_id=project_id, subject_id=alice_id, total_tokens=500
+    )
+    await _seed_request_fact(
+        project_id=project_id, subject_id=alice_id, total_tokens=300
+    )
     await _seed_request_fact(project_id=project_id, subject_id=bob_id, total_tokens=100)
 
     now = utcnow()
     start = now - timedelta(days=1)
     async with AsyncSessionLocal() as session:
         ranking = await _usage_ranking_from_postgres(
-            session, start=start, end=now + timedelta(hours=1), project_ids=[project_id], limit=20
+            session,
+            start=start,
+            end=now + timedelta(hours=1),
+            project_ids=[project_id],
+            limit=20,
         )
 
     assert len(ranking) == 2
@@ -95,14 +116,29 @@ async def test_usage_ranking_filters_by_model():
         project_id = project.id
         alice_id = alice.id
 
-    await _seed_request_fact(project_id=project_id, subject_id=alice_id, model_alias="model-a", total_tokens=400)
-    await _seed_request_fact(project_id=project_id, subject_id=alice_id, model_alias="model-b", total_tokens=600)
+    await _seed_request_fact(
+        project_id=project_id,
+        subject_id=alice_id,
+        model_alias="model-a",
+        total_tokens=400,
+    )
+    await _seed_request_fact(
+        project_id=project_id,
+        subject_id=alice_id,
+        model_alias="model-b",
+        total_tokens=600,
+    )
 
     now = utcnow()
     start = now - timedelta(days=1)
     async with AsyncSessionLocal() as session:
         ranking = await _usage_ranking_from_postgres(
-            session, start=start, end=now + timedelta(hours=1), project_ids=[project_id], model="model-a", limit=20
+            session,
+            start=start,
+            end=now + timedelta(hours=1),
+            project_ids=[project_id],
+            model="model-a",
+            limit=20,
         )
 
     assert len(ranking) == 1
@@ -121,7 +157,11 @@ async def test_usage_ranking_empty_project_returns_empty_list():
     start = now - timedelta(days=1)
     async with AsyncSessionLocal() as session:
         ranking = await _usage_ranking_from_postgres(
-            session, start=start, end=now + timedelta(hours=1), project_ids=[uuid4()], limit=20
+            session,
+            start=start,
+            end=now + timedelta(hours=1),
+            project_ids=[uuid4()],
+            limit=20,
         )
 
     assert ranking == []
@@ -217,7 +257,9 @@ async def test_manager_can_query_ranking_for_managed_project(client):
         client, "Manager1"
     )
 
-    await _seed_request_fact(project_id=project_id, subject_id=manager_subject_id, total_tokens=200)
+    await _seed_request_fact(
+        project_id=project_id, subject_id=manager_subject_id, total_tokens=200
+    )
 
     response = await client.get(
         "/auth/managed/usage/ranking",
@@ -233,9 +275,15 @@ async def test_manager_can_query_ranking_for_managed_project(client):
     row = body["ranking"][0]
     assert row["total_tokens"] == 200
     assert set(row.keys()) == {
-        "subject_id", "subject_name", "login_username",
-        "request_count", "prompt_tokens", "completion_tokens",
-        "total_tokens", "success_count", "failure_count",
+        "subject_id",
+        "subject_name",
+        "login_username",
+        "request_count",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "success_count",
+        "failure_count",
     }
 
 
@@ -261,7 +309,12 @@ async def test_ranking_rejects_time_window_over_90_days(client):
     end = utcnow().isoformat()
     response = await client.get(
         "/auth/managed/usage/ranking",
-        params={"scope": "project", "resource_id": str(project_id), "start": start, "end": end},
+        params={
+            "scope": "project",
+            "resource_id": str(project_id),
+            "start": start,
+            "end": end,
+        },
         headers=manager_headers,
     )
     assert response.status_code == 400
@@ -271,7 +324,10 @@ async def test_ranking_rejects_time_window_over_90_days(client):
 async def test_ranking_without_session_returns_401(client):
     response = await client.get(
         "/auth/managed/usage/ranking",
-        params={"scope": "project", "resource_id": "00000000-0000-0000-0000-000000000000"},
+        params={
+            "scope": "project",
+            "resource_id": "00000000-0000-0000-0000-000000000000",
+        },
     )
     assert response.status_code == 401
 
@@ -327,7 +383,9 @@ async def _seed_team_fact(*, subject_id, model_alias="team-model", total_tokens=
         await session.commit()
 
 
-async def _make_team_manager_with_members(client, manager_name="TeamMgr", member_count=2):
+async def _make_team_manager_with_members(
+    client, manager_name="TeamMgr", member_count=2
+):
     """Create a user, make them manager of a fresh team, and add ``member_count``
     plain member subjects (ACTIVE, role=member). Returns
     (manager_headers, team_id, [member_subject_id, ...]).
@@ -360,9 +418,7 @@ async def _make_team_manager_with_members(client, manager_name="TeamMgr", member
             session.add(member)
             await session.flush()
             session.add(
-                TeamMembership(
-                    team_id=team.id, subject_id=member.id, role="member"
-                )
+                TeamMembership(team_id=team.id, subject_id=member.id, role="member")
             )
             member_ids.append(member.id)
         await session.commit()
@@ -398,9 +454,15 @@ async def test_team_manager_can_query_ranking_for_managed_team(client):
     assert ranking[1]["subject_id"] == str(member_b)
     assert ranking[1]["total_tokens"] == 200
     assert set(ranking[0].keys()) == {
-        "subject_id", "subject_name", "login_username",
-        "request_count", "prompt_tokens", "completion_tokens",
-        "total_tokens", "success_count", "failure_count",
+        "subject_id",
+        "subject_name",
+        "login_username",
+        "request_count",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "success_count",
+        "failure_count",
     }
 
 

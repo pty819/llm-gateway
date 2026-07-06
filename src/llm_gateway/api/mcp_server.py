@@ -56,7 +56,11 @@ async def _get_auth(ctx: Context) -> AuthContext:
     middleware. Every tool needs it to scope visibility to the calling subject."""
     request: StarletteRequest = ctx.request_context.request
     state = request.scope.get("state", {})
-    auth = state.get(_AUTH_SCOPE_KEY) if isinstance(state, dict) else getattr(state, _AUTH_SCOPE_KEY, None)
+    auth = (
+        state.get(_AUTH_SCOPE_KEY)
+        if isinstance(state, dict)
+        else getattr(state, _AUTH_SCOPE_KEY, None)
+    )
     if auth is None:  # pragma: no cover — middleware rejects unauthenticated
         raise RuntimeError("MCP request reached a tool without an AuthContext")
     return auth
@@ -135,7 +139,9 @@ async def search_skills(
         )
         owner_names = await _resolve_owner_names(session, items)
         return {
-            "items": [skill_summary(s, owner_names.get(s.owner_subject_id)) for s in items],
+            "items": [
+                skill_summary(s, owner_names.get(s.owner_subject_id)) for s in items
+            ],
             "total": total,
             "page": page,
             "size": size,
@@ -144,7 +150,9 @@ async def search_skills(
         await session.close()
 
 
-@mcp.tool(description="Get full detail of a skill including README and version history.")
+@mcp.tool(
+    description="Get full detail of a skill including README and version history."
+)
 async def get_skill(owner: str, slug: str, ctx: Context = None) -> dict[str, Any]:  # type: ignore[assignment]
     auth = await _get_auth(ctx)
     session = await _get_session(ctx)
@@ -162,14 +170,20 @@ async def get_skill(owner: str, slug: str, ctx: Context = None) -> dict[str, Any
                     )
                     .order_by(col(SkillVersion.created_at).desc())
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
         grants = list(
             (
                 await session.execute(
-                    select(SkillTeamGrant).where(col(SkillTeamGrant.skill_id) == skill.id)
+                    select(SkillTeamGrant).where(
+                        col(SkillTeamGrant.skill_id) == skill.id
+                    )
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
         owner_obj = await session.get(Subject, skill.owner_subject_id)
         return skill_detail(
@@ -191,7 +205,10 @@ async def get_skill(owner: str, slug: str, ctx: Context = None) -> dict[str, Any
     )
 )
 async def download_skill(
-    owner: str, slug: str, version: str = "latest", ctx: Context = None  # type: ignore[assignment]
+    owner: str,
+    slug: str,
+    version: str = "latest",
+    ctx: Context = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     auth = await _get_auth(ctx)
     session = await _get_session(ctx)
@@ -242,7 +259,9 @@ async def list_mcps(
         )
         owner_names = await _resolve_owner_names(session, items)
         return {
-            "items": [mcp_summary(m, owner_names.get(m.owner_subject_id)) for m in items],
+            "items": [
+                mcp_summary(m, owner_names.get(m.owner_subject_id)) for m in items
+            ],
             "total": total,
             "page": page,
             "size": size,
@@ -274,14 +293,18 @@ async def get_mcp(owner: str, slug: str, ctx: Context = None) -> dict[str, Any]:
                     )
                     .order_by(col(McpVersion.created_at).desc())
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
         grants = list(
             (
                 await session.execute(
                     select(McpTeamGrant).where(col(McpTeamGrant.mcp_id) == mcp_obj.id)
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
         latest = await get_latest_active_mcp_version(session, mcp=mcp_obj)
         owner_obj = await session.get(Subject, mcp_obj.owner_subject_id)
@@ -332,18 +355,14 @@ async def _auth_middleware(scope, receive, send):
         raw_key = auth_header.strip()
 
     if not raw_key:
-        resp = JSONResponse(
-            status_code=401, content={"detail": "missing_gateway_key"}
-        )
+        resp = JSONResponse(status_code=401, content={"detail": "missing_gateway_key"})
         await resp(scope, receive, send)
         return
 
     async with AsyncSessionLocal() as session:
         context = await authenticate_gateway_key(session, raw_key)
     if not context:
-        resp = JSONResponse(
-            status_code=401, content={"detail": "invalid_gateway_key"}
-        )
+        resp = JSONResponse(status_code=401, content={"detail": "invalid_gateway_key"})
         await resp(scope, receive, send)
         return
 

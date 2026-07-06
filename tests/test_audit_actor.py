@@ -1,6 +1,5 @@
 from uuid import uuid4
 
-from sqlmodel import select
 
 from llm_gateway.db.models import Subject, SubjectType
 from llm_gateway.db.session import AsyncSessionLocal

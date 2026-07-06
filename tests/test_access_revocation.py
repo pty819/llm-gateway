@@ -33,9 +33,12 @@ async def test_disabling_entitlement_revokes_access_immediately(gateway_fixture)
         ).scalar_one()
         auth = AuthContext(key=key, subject=subject, project=project)
 
-        assert await subject_can_use_model(
-            session, auth=auth, model_alias_id=gateway_fixture.model_alias_id
-        ) is True
+        assert (
+            await subject_can_use_model(
+                session, auth=auth, model_alias_id=gateway_fixture.model_alias_id
+            )
+            is True
+        )
 
         entitlement = (
             await session.execute(
@@ -50,6 +53,9 @@ async def test_disabling_entitlement_revokes_access_immediately(gateway_fixture)
         await session.commit()
 
         # No sleep, no cache invalidation call — must already be revoked.
-        assert await subject_can_use_model(
-            session, auth=auth, model_alias_id=gateway_fixture.model_alias_id
-        ) is False
+        assert (
+            await subject_can_use_model(
+                session, auth=auth, model_alias_id=gateway_fixture.model_alias_id
+            )
+            is False
+        )

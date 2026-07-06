@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from llm_gateway.db.models import (
-    ArtifactKind,
     MCP,
     MCPTransport,
     McpLike,
@@ -33,9 +32,7 @@ from llm_gateway.services.facts import record_audit_event
 SLUG_PATTERN = r"^[a-z][a-z0-9-]*$"
 
 
-async def resolve_owner_subject(
-    session: AsyncSession, *, owner: str
-) -> Subject | None:
+async def resolve_owner_subject(session: AsyncSession, *, owner: str) -> Subject | None:
     """Resolve a URL path `owner` to an active Subject.
 
     Prefer login_username (human-readable handle) then fall back to the
@@ -315,11 +312,7 @@ async def list_visible_skills(
     else:
         order = (col(Skill.download_count).desc(), col(Skill.updated_at).desc())
     list_stmt = (
-        select(Skill)
-        .where(*base_filter)
-        .order_by(*order)
-        .limit(limit)
-        .offset(offset)
+        select(Skill).where(*base_filter).order_by(*order).limit(limit).offset(offset)
     )
     items = list((await session.execute(list_stmt)).scalars().all())
     return items, total
@@ -390,13 +383,17 @@ async def is_skill_liked_by(
     session: AsyncSession, *, subject_id: UUID, skill_id: UUID
 ) -> bool:
     row = (
-        await session.execute(
-            select(col(SkillLike.id)).where(
-                col(SkillLike.subject_id) == subject_id,
-                col(SkillLike.skill_id) == skill_id,
+        (
+            await session.execute(
+                select(col(SkillLike.id)).where(
+                    col(SkillLike.subject_id) == subject_id,
+                    col(SkillLike.skill_id) == skill_id,
+                )
             )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     return row is not None
 
 
@@ -465,7 +462,9 @@ def _validate_mcp_config(config: dict) -> dict:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="stdio_requires_command",
         )
-    if transport_enum in (MCPTransport.HTTP, MCPTransport.SSE) and not config.get("url"):
+    if transport_enum in (MCPTransport.HTTP, MCPTransport.SSE) and not config.get(
+        "url"
+    ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="remote_requires_url",
@@ -669,11 +668,7 @@ async def list_visible_mcps(
     else:
         order = (col(MCP.download_count).desc(), col(MCP.updated_at).desc())
     list_stmt = (
-        select(MCP)
-        .where(*base_filter)
-        .order_by(*order)
-        .limit(limit)
-        .offset(offset)
+        select(MCP).where(*base_filter).order_by(*order).limit(limit).offset(offset)
     )
     items = list((await session.execute(list_stmt)).scalars().all())
     return items, total
@@ -743,11 +738,15 @@ async def is_mcp_liked_by(
     session: AsyncSession, *, subject_id: UUID, mcp_id: UUID
 ) -> bool:
     row = (
-        await session.execute(
-            select(col(McpLike.id)).where(
-                col(McpLike.subject_id) == subject_id,
-                col(McpLike.mcp_id) == mcp_id,
+        (
+            await session.execute(
+                select(col(McpLike.id)).where(
+                    col(McpLike.subject_id) == subject_id,
+                    col(McpLike.mcp_id) == mcp_id,
+                )
             )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     return row is not None

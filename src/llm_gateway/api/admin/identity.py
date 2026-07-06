@@ -23,7 +23,6 @@ from llm_gateway.db.models import (
     ProjectMembership,
     RatePolicy,
     RequestFact,
-    ResourceState,
     Subject,
     SubjectType,
     TeamMembership,
@@ -31,7 +30,11 @@ from llm_gateway.db.models import (
     UserSession,
     utcnow,
 )
-from llm_gateway.services.resource_payloads import apply_model_patch, paginated, redact_gateway_key
+from llm_gateway.services.resource_payloads import (
+    apply_model_patch,
+    paginated,
+    redact_gateway_key,
+)
 from llm_gateway.services.facts import record_audit_event
 from llm_gateway.services.security import create_gateway_key, hash_password
 
