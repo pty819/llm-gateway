@@ -101,6 +101,13 @@ async def admin_patch_skill_state(
     skill = await _get_or_404(session, Skill, skill_id)
     skill.state = payload.state
     skill.updated_at = utcnow()
+    await _audit_update(
+        session,
+        action="skill.set_state",
+        resource_type="skill",
+        resource_id=skill.id,
+        payload=payload,
+    )
     await session.commit()
     await session.refresh(skill)
     return {"skill": skill_summary(skill)}
@@ -184,6 +191,13 @@ async def admin_patch_mcp_state(
     mcp = await _get_or_404(session, MCP, mcp_id)
     mcp.state = payload.state
     mcp.updated_at = utcnow()
+    await _audit_update(
+        session,
+        action="mcp.set_state",
+        resource_type="mcp",
+        resource_id=mcp.id,
+        payload=payload,
+    )
     await session.commit()
     await session.refresh(mcp)
     return {"mcp": mcp_summary(mcp)}

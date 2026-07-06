@@ -1254,6 +1254,15 @@ async def browse_skill_like(
         session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
     )
     skill = await toggle_skill_like(session, subject_id=ctx.subject.id, skill_id=skill.id)
+    await record_audit_event(
+        session,
+        actor_subject_id=ctx.subject.id,
+        action="self.skill.like",
+        resource_type="skill",
+        resource_id=skill.id,
+        outcome="success",
+        detail={},
+    )
     await session.commit()
     return {"liked_by_me": True, "like_count": skill.like_count}
 
@@ -1269,6 +1278,15 @@ async def browse_skill_unlike(
         session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
     )
     skill = await toggle_skill_like(session, subject_id=ctx.subject.id, skill_id=skill.id)
+    await record_audit_event(
+        session,
+        actor_subject_id=ctx.subject.id,
+        action="self.skill.unlike",
+        resource_type="skill",
+        resource_id=skill.id,
+        outcome="success",
+        detail={},
+    )
     await session.commit()
     return {"liked_by_me": False, "like_count": skill.like_count}
 
@@ -1325,6 +1343,15 @@ async def create_my_skill_grant(
     if team is None:
         raise HTTPException(status_code=404, detail="team_not_found")
     grant = await ensure_skill_team_grant(session, skill_id=skill.id, team_id=payload.team_id)
+    await record_audit_event(
+        session,
+        actor_subject_id=ctx.subject.id,
+        action="self.skill_grant.create",
+        resource_type="skill_team_grant",
+        resource_id=grant.id,
+        outcome="success",
+        detail={"skill_id": str(grant.skill_id), "team_id": str(grant.team_id)},
+    )
     await session.commit()
     await session.refresh(grant)
     return {
@@ -1354,6 +1381,15 @@ async def patch_my_skill_grant_state(
         raise HTTPException(status_code=422, detail="invalid_state")
     grant.state = ResourceState(new_state)
     grant.updated_at = utcnow()
+    await record_audit_event(
+        session,
+        actor_subject_id=ctx.subject.id,
+        action="self.skill_grant.set_state",
+        resource_type="skill_team_grant",
+        resource_id=grant.id,
+        outcome="success",
+        detail={"state": new_state},
+    )
     await session.commit()
     await session.refresh(grant)
     return {
@@ -1522,6 +1558,15 @@ async def browse_mcp_like(
         session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
     )
     mcp = await toggle_mcp_like(session, subject_id=ctx.subject.id, mcp_id=mcp.id)
+    await record_audit_event(
+        session,
+        actor_subject_id=ctx.subject.id,
+        action="self.mcp.like",
+        resource_type="mcp",
+        resource_id=mcp.id,
+        outcome="success",
+        detail={},
+    )
     await session.commit()
     return {"liked_by_me": True, "like_count": mcp.like_count}
 
@@ -1537,6 +1582,15 @@ async def browse_mcp_unlike(
         session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
     )
     mcp = await toggle_mcp_like(session, subject_id=ctx.subject.id, mcp_id=mcp.id)
+    await record_audit_event(
+        session,
+        actor_subject_id=ctx.subject.id,
+        action="self.mcp.unlike",
+        resource_type="mcp",
+        resource_id=mcp.id,
+        outcome="success",
+        detail={},
+    )
     await session.commit()
     return {"liked_by_me": False, "like_count": mcp.like_count}
 
@@ -1589,6 +1643,15 @@ async def create_my_mcp_grant(
     if team is None:
         raise HTTPException(status_code=404, detail="team_not_found")
     grant = await ensure_mcp_team_grant(session, mcp_id=mcp.id, team_id=payload.team_id)
+    await record_audit_event(
+        session,
+        actor_subject_id=ctx.subject.id,
+        action="self.mcp_grant.create",
+        resource_type="mcp_team_grant",
+        resource_id=grant.id,
+        outcome="success",
+        detail={"mcp_id": str(grant.mcp_id), "team_id": str(grant.team_id)},
+    )
     await session.commit()
     await session.refresh(grant)
     return {
@@ -1618,6 +1681,15 @@ async def patch_my_mcp_grant_state(
         raise HTTPException(status_code=422, detail="invalid_state")
     grant.state = ResourceState(new_state)
     grant.updated_at = utcnow()
+    await record_audit_event(
+        session,
+        actor_subject_id=ctx.subject.id,
+        action="self.mcp_grant.set_state",
+        resource_type="mcp_team_grant",
+        resource_id=grant.id,
+        outcome="success",
+        detail={"state": new_state},
+    )
     await session.commit()
     await session.refresh(grant)
     return {
