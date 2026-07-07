@@ -88,7 +88,6 @@ async def test_self_service_register_login_and_guest_team_model_access(client):
         json={
             "alias": f"guest-model-{suffix}",
             "upstream_model_name": "guest-upstream",
-            "litellm_model": "guest-upstream",
         },
     )
     assert model.status_code == 200, model.text

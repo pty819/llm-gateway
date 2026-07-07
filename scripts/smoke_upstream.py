@@ -30,7 +30,7 @@ def main() -> None:
 
     api_base = require_env("LLM_GATEWAY_UPSTREAM_BASE_URL")
     api_key = require_env("LLM_GATEWAY_UPSTREAM_API_KEY")
-    model = os.environ.get("LLM_GATEWAY_LITELLM_MODEL") or require_env("LLM_GATEWAY_UPSTREAM_MODEL")
+    model = require_env("LLM_GATEWAY_UPSTREAM_MODEL")
 
     url = api_base.rstrip("/") + "/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}

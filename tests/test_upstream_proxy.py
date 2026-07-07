@@ -11,7 +11,7 @@ from llm_gateway.db.models import (
     RequestOutcome,
     UsageSource,
 )
-from llm_gateway.services.upstream_client import UpstreamCallResult as LiteLLMCallResult
+from llm_gateway.services.upstream_client import UpstreamCallResult
 from tests.helpers import _auth_headers
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
@@ -129,7 +129,7 @@ async def test_model_ip_allowlist_accepts_forwarded_client_from_trusted_vite_pro
 
     async def fake_upstream_request_once(*, endpoint_family, model_alias, upstream, body):
         assert endpoint_family == EndpointFamily.OPENAI_CHAT
-        return LiteLLMCallResult(
+        return UpstreamCallResult(
             response={
                 "id": "chatcmpl-test",
                 "object": "chat.completion",
@@ -199,7 +199,7 @@ async def test_openai_chat_completion_records_realtime_runtime_metrics(
     async def fake_upstream_request_once(*, endpoint_family, model_alias, upstream, body):
         assert endpoint_family == EndpointFamily.OPENAI_CHAT
         observed_during_call.update(await runtime_snapshot(redis_client))
-        return LiteLLMCallResult(
+        return UpstreamCallResult(
             response={
                 "id": "chatcmpl-runtime-metrics",
                 "object": "chat.completion",
@@ -323,7 +323,6 @@ async def test_load_vllm_metric_targets_materializes_before_session_close():
         model = ModelAlias(
             alias=model_alias,
             upstream_model_name="pytest-upstream-model",
-            litellm_model="pytest-upstream-model",
         )
         session.add(model)
         await session.flush()

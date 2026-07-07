@@ -3,19 +3,6 @@
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import PageTitle from '$lib/components/PageTitle.svelte';
 
-	// Strip any legacy LiteLLM provider prefix (openai/, openai/chat_completions/,
-	// anthropic/, hosted_vllm/) from a stored litellm_model for display. New
-	// aliases store the bare upstream model name, but legacy rows may still carry
-	// a prefix.
-	function bareModelName(litellmModel: string): string {
-		const v = litellmModel ?? '';
-		if (v.startsWith('openai/chat_completions/')) return v.slice('openai/chat_completions/'.length);
-		if (v.startsWith('openai/')) return v.slice('openai/'.length);
-		if (v.startsWith('anthropic/')) return v.slice('anthropic/'.length);
-		if (v.startsWith('hosted_vllm/')) return v.slice('hosted_vllm/'.length);
-		return v;
-	}
-
 	type ModelForm = {
 		alias: string;
 		upstream_model_name: string;
@@ -72,7 +59,7 @@
 				{#each models as model}
 					<tr>
 						<td><strong>{model.alias}</strong><br /><span class="muted">{model.upstream_model_name}</span></td>
-						<td><span class="badge">OpenAI</span><br /><span class="muted">{bareModelName(model.litellm_model)}</span></td>
+						<td><span class="badge">OpenAI</span><br /><span class="muted">{model.upstream_model_name}</span></td>
 						<td><StateBadge value={model.state} /></td>
 						<td>{model.sticky_ttl_seconds}s</td>
 						<td><StateBadge value={model.ip_policy_mode} /><br /><span class="muted">{model.ip_allowlist_cidrs.join(', ') || '未配置 CIDR'}</span></td>

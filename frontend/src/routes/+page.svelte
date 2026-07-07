@@ -620,7 +620,6 @@
 				clean({
 					alias: modelForm.alias,
 					upstream_model_name: modelForm.upstream_model_name,
-					litellm_model: modelForm.upstream_model_name,
 					supports_streaming: modelForm.supports_streaming,
 					supports_tools: modelForm.supports_tools,
 					supports_reasoning: modelForm.supports_reasoning,

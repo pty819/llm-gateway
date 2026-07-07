@@ -228,7 +228,6 @@ async def gateway_fixture() -> GatewayFixture:
 
     suffix = uuid4().hex
     upstream_model = os.environ["LLM_GATEWAY_UPSTREAM_MODEL"]
-    litellm_model = os.environ.get("LLM_GATEWAY_LITELLM_MODEL", upstream_model)
 
     async with AsyncSessionLocal() as session:
         subject = Subject(name=f"pytest-user-{suffix}", type=SubjectType.USER)
@@ -242,7 +241,6 @@ async def gateway_fixture() -> GatewayFixture:
         model_alias = ModelAlias(
             alias=f"pytest-model-{suffix}",
             upstream_model_name=upstream_model,
-            litellm_model=litellm_model,
         )
         session.add(model_alias)
         await session.flush()

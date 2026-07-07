@@ -342,7 +342,6 @@ async def test_select_upstream_uses_load_score_then_sticky_route():
     model = ModelAlias(
         alias="sticky-model",
         upstream_model_name="sticky-upstream-model",
-        litellm_model="sticky-upstream-model",
         sticky_ttl_seconds=1200,
     )
     key_id = uuid4()
@@ -403,7 +402,6 @@ async def test_select_upstream_ignores_sticky_route_not_in_active_candidates():
     model = ModelAlias(
         alias="sticky-model-replace",
         upstream_model_name="sticky-upstream-model",
-        litellm_model="sticky-upstream-model",
     )
     key_id = uuid4()
     stale_upstream_id = uuid4()
@@ -435,7 +433,6 @@ async def test_select_upstream_surfaces_redis_failures():
     model = ModelAlias(
         alias="sticky-model-redis-failure",
         upstream_model_name="sticky-upstream-model",
-        litellm_model="sticky-upstream-model",
     )
     upstream = UpstreamTarget(
         model_alias_id=model.id,

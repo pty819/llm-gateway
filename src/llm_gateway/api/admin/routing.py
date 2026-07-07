@@ -36,7 +36,6 @@ router = APIRouter()
 class ModelAliasCreate(BaseModel):
     alias: str
     upstream_model_name: str
-    litellm_model: str
     sticky_ttl_seconds: int = Field(default=1200, ge=1, le=86400)
     supports_streaming: bool = True
     supports_tools: bool = True
@@ -48,7 +47,6 @@ class ModelAliasCreate(BaseModel):
 
 class ModelAliasUpdate(BaseModel):
     upstream_model_name: str | None = None
-    litellm_model: str | None = None
     sticky_ttl_seconds: int | None = Field(default=None, ge=1, le=86400)
     supports_streaming: bool | None = None
     supports_tools: bool | None = None

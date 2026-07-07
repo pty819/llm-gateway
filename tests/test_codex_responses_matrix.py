@@ -8,7 +8,7 @@ import pytest
 from conftest import fetch_request_fact
 
 from llm_gateway.db.models import EndpointFamily, RequestOutcome, UsageSource
-from llm_gateway.services.upstream_client import UpstreamCallResult as LiteLLMCallResult
+from llm_gateway.services.upstream_client import UpstreamCallResult
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
@@ -59,7 +59,7 @@ async def test_codex_responses_tools_reasoning_and_usage_are_passed_through(
         seen["model_alias"] = model_alias.alias
         seen["base_url"] = upstream.base_url
         seen["body"] = body
-        return LiteLLMCallResult(
+        return UpstreamCallResult(
             response={
                 "id": "resp_test",
                 "object": "response",
@@ -162,7 +162,7 @@ async def test_codex_responses_long_context_shape_is_forwarded(
         assert endpoint_family == EndpointFamily.OPENAI_RESPONSES
         text = body["input"][0]["content"][0]["text"]
         assert "line-199" in text
-        return LiteLLMCallResult(
+        return UpstreamCallResult(
             response={"id": "resp_long", "object": "response", "status": "completed"},
             usage={"input_tokens": 1000, "output_tokens": 1, "total_tokens": 1001},
         )

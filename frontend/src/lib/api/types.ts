@@ -64,7 +64,6 @@ export type ModelAlias = Timestamped & {
 	id: string;
 	alias: string;
 	upstream_model_name: string;
-	litellm_model: string;
 	state: ResourceState;
 	supports_streaming: boolean;
 	supports_tools: boolean;

@@ -120,7 +120,6 @@ async def test_admin_enforces_homogeneous_upstream_replicas(client):
         json={
             "alias": f"homogeneous-{suffix}",
             "upstream_model_name": "homogeneous-upstream",
-            "litellm_model": "homogeneous-upstream",
             "sticky_ttl_seconds": 1800,
         },
     )
@@ -185,7 +184,6 @@ async def test_model_alias_delete_requires_cascade_for_upstreams(client):
         json={
             "alias": f"delete-model-{suffix}",
             "upstream_model_name": "delete-upstream-model",
-            "litellm_model": "delete-upstream-model",
         },
     )
     assert model.status_code == 200, model.text
@@ -240,7 +238,6 @@ async def test_admin_can_delete_used_upstream_without_deleting_request_facts(
         model = ModelAlias(
             alias=f"delete-upstream-model-{suffix}",
             upstream_model_name=f"delete-upstream-model-{suffix}",
-            litellm_model=f"delete-upstream-model-{suffix}",
         )
         session.add(model)
         await session.flush()
@@ -307,7 +304,6 @@ async def test_admin_can_cascade_delete_used_model_alias_preserving_usage(
         model = ModelAlias(
             alias=f"delete-alias-model-{suffix}",
             upstream_model_name=f"delete-alias-model-{suffix}",
-            litellm_model=f"delete-alias-model-{suffix}",
         )
         session.add(model)
         await session.flush()
