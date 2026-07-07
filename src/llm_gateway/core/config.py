@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     stream_keepalive_seconds: float = Field(
         default=15.0, alias="LLM_GATEWAY_STREAM_KEEPALIVE_SECONDS"
     )
+    # Interval at which the streaming proxy polls the client for a disconnect
+    # (uvicorn cannot detect an ungraceful kill/network drop, so the generator
+    # would otherwise park on yield with its concurrency slot held). 0 disables
+    # the watchdog, restoring the pre-watchdog (slot-leak-prone) behavior.
+    stream_disconnect_watchdog_seconds: float = Field(
+        default=5.0, alias="LLM_GATEWAY_STREAM_DISCONNECT_WATCHDOG_SECONDS"
+    )
     # Total timeout applied to upstream model calls (forwarded to upstream
     # via httpx2; see services/upstream_client.py).
     upstream_timeout_seconds: float = Field(
