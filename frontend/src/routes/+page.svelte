@@ -64,7 +64,19 @@
 		persistSessionToken
 	} from '$lib/state/admin-token';
 	import { parseCidrList, parseJsonObject, validateCidrList, validateHttpUrl } from '$lib/validators';
-	import { bareModelName } from '$lib/upstream-format';
+
+	// Strip any legacy LiteLLM provider prefix (openai/, openai/chat_completions/,
+	// anthropic/, hosted_vllm/) from a stored litellm_model for display. New
+	// aliases store the bare upstream model name, but legacy rows may still carry
+	// a prefix.
+	function bareModelName(litellmModel: string): string {
+		const v = litellmModel ?? '';
+		if (v.startsWith('openai/chat_completions/')) return v.slice('openai/chat_completions/'.length);
+		if (v.startsWith('openai/')) return v.slice('openai/'.length);
+		if (v.startsWith('anthropic/')) return v.slice('anthropic/'.length);
+		if (v.startsWith('hosted_vllm/')) return v.slice('hosted_vllm/'.length);
+		return v;
+	}
 	import {
 		PAGE_SIZE,
 		sections,
