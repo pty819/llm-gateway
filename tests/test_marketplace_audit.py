@@ -29,7 +29,7 @@ async def _login_self_service_user(client):
         create_registered_user,
         create_user_session,
     )
-    from tests.test_backend_integration import _employee_username
+    from tests.helpers import _employee_username
 
     username = _employee_username()
     async with AsyncSessionLocal() as session:

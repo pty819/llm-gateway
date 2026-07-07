@@ -10,7 +10,7 @@ from llm_gateway.services.registry import (
     create_or_append_mcp_version,
     ensure_mcp_team_grant,
 )
-from tests.test_backend_integration import _auth_headers
+from tests.helpers import _auth_headers
 from tests.test_marketplace_skills import _admin_headers, _login_user_with_key
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")

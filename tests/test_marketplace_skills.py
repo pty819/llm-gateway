@@ -65,7 +65,7 @@ async def _login_user_with_key(client):
         create_registered_user,
         create_user_session,
     )
-    from tests.test_backend_integration import _employee_username
+    from tests.helpers import _employee_username
 
     username = _employee_username()
     async with AsyncSessionLocal() as session:
@@ -407,7 +407,7 @@ async def test_dataplane_list_and_download_for_guest_grant(client):
         create_or_append_skill_version,
         ensure_skill_team_grant,
     )
-    from tests.test_backend_integration import _auth_headers
+    from tests.helpers import _auth_headers
 
     sess_headers, gw_key, username, owner_id = await _login_user_with_key(client)
 
@@ -468,7 +468,7 @@ async def test_self_service_upload_and_download_lifecycle(client):
     assert skill["slug"] == slug
     assert skill["latest_version"] == "1.0.0"
 
-    from tests.test_backend_integration import _auth_headers
+    from tests.helpers import _auth_headers
 
     dl = await client.get(
         f"/v1/registry/skills/{username}/{slug}/versions/latest/download",

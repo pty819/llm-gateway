@@ -193,7 +193,7 @@ async def _create_user_with_session(full_name):
         create_registered_user,
         create_user_session,
     )
-    from tests.test_backend_integration import _employee_username
+    from tests.helpers import _employee_username
 
     username = _employee_username()
     async with AsyncSessionLocal() as session:
@@ -342,7 +342,7 @@ async def _seed_team_fact(*, subject_id, model_alias="team-model", total_tokens=
 
     Team ranking filters by subject_id (derived from team membership), so the
     project_id is irrelevant and left null to avoid needing a throwaway project.
-    Mirrors the direct-insert style of test_backend_integration.
+    Mirrors the direct-insert style of test_usage_analytics.
     """
     from uuid import uuid4
 
