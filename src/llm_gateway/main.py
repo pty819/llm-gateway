@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from llm_gateway.api import admin, auth, health, mcp_server, proxy, realtime, registry
+from llm_gateway.api import api_router, mcp_server
 from llm_gateway.core.config import get_settings
 from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.services.facts_queue import drain_now
@@ -54,12 +54,7 @@ def create_app() -> FastAPI:
         await drain_now()
 
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
-    app.include_router(health.router)
-    app.include_router(auth.router)
-    app.include_router(admin.router)
-    app.include_router(realtime.router)
-    app.include_router(proxy.router)
-    app.include_router(registry.router)
+    app.include_router(api_router)
     # MCP server (Streamable HTTP) — mounted as an ASGI sub-app under /v1/mcp.
     # The SDK app's route path is set to "" so mounting at /v1/mcp is exact.
     app.mount("/v1/mcp", mcp_server.create_mcp_asgi_app())

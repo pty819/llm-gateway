@@ -312,7 +312,7 @@ async def managed_usage_ranking(
         start = end - timedelta(days=30)
 
     # 权限校验在 Python 端先做，传入 SQL 时已是安全值，不依赖 SQL 层过滤正确性。
-    # team 排行只含当前 ACTIVE 成员（_team_subject_ids 已过滤
+    # team 排行只含当前 ACTIVE 成员（team_subject_ids 已过滤
     # TeamMembership.state == ACTIVE），与 managed_usage_summary 的 team 分支一致。
     if scope == "project":
         await require_project_manager(session, context.subject.id, resource_id)
