@@ -1,18 +1,31 @@
 <script lang="ts">
-	import type { AdminApiClient } from '$lib/api/client';
-	import type { SkillTeamGrantSummary } from '$lib/api/types';
+	import type { SkillTeamGrantSummary, McpTeamGrantSummary } from '$lib/api/types';
+
+	/**
+	 * Unified grant editor for Skill and MCP artifacts. The two former editors
+	 * (`ArtifactGrantsEditor.svelte`, `McpGrantsEditor.svelte`) were 107-line
+	 * clones differing only in their grant type and the two client calls; this
+	 * component takes the grant list plus `onGrant` / `onRevoke` callbacks so
+	 * each caller binds its own API.
+	 *
+	 * `artifactLabel` only customises the confirmation message wording.
+	 */
+
+	type Grant = SkillTeamGrantSummary | McpTeamGrantSummary;
 
 	let {
-		client,
-		slug,
 		grants,
 		teams,
+		onGrant,
+		onRevoke,
+		artifactLabel = '授权',
 		onChanged
 	}: {
-		client: AdminApiClient;
-		slug: string;
-		grants: SkillTeamGrantSummary[];
+		grants: Grant[];
 		teams: { id: string; name: string }[];
+		onGrant: (teamId: string) => Promise<unknown>;
+		onRevoke: (grantId: string) => Promise<unknown>;
+		artifactLabel?: string;
 		onChanged?: () => void;
 	} = $props();
 
@@ -35,7 +48,7 @@
 		error = '';
 		busy = true;
 		try {
-			await client.grantSkill(slug, selectedTeamId);
+			await onGrant(selectedTeamId);
 			selectedTeamId = '';
 			onChanged?.();
 		} catch (err) {
@@ -45,12 +58,12 @@
 		}
 	}
 
-	async function revoke(grant: SkillTeamGrantSummary) {
-		if (!window.confirm(`确认撤销 ${teamName(grant.team_id)} 对该 Skill 的授权？`)) return;
+	async function revoke(grant: Grant) {
+		if (!window.confirm(`确认撤销 ${teamName(grant.team_id)} 对该${artifactLabel}的授权？`)) return;
 		error = '';
 		busy = true;
 		try {
-			await client.revokeSkillGrant(slug, grant.id);
+			await onRevoke(grant.id);
 			onChanged?.();
 		} catch (err) {
 			error = err instanceof Error ? err.message : '撤销失败。';

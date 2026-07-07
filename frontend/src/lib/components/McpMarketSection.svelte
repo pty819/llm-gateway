@@ -2,9 +2,11 @@
 	import { onMount } from 'svelte';
 	import type { AdminApiClient } from '$lib/api/client';
 	import type { McpDetail, McpSummary, McpTeamGrantSummary, McpVersionDetail } from '$lib/api/types';
+	import { createMarketController } from '$lib/state/market.svelte';
 	import PageTitle from '$lib/components/PageTitle.svelte';
 	import CreateMcpDialog from '$lib/components/CreateMcpDialog.svelte';
-	import McpGrantsEditor from '$lib/components/McpGrantsEditor.svelte';
+	import GrantsEditor from '$lib/components/GrantsEditor.svelte';
+	import MarketTabs from '$lib/components/MarketTabs.svelte';
 	import ReadmeDialog from '$lib/components/ReadmeDialog.svelte';
 	import Pagination from '$lib/components/Pagination.svelte';
 
@@ -16,29 +18,24 @@
 		teams: { id: string; name: string }[];
 	} = $props();
 
-	let tab = $state<'mine' | 'browse'>('mine');
+	const market = createMarketController<McpSummary>({
+		listMine: () => client.listMyMcps(),
+		browse: (params) => client.listBrowseMcps(params),
+		like: (owner, slug) => client.likeMcp(owner, slug),
+		unlike: (owner, slug) => client.unlikeMcp(owner, slug)
+	});
 
-	// —— 我的 MCP ——
-	let mcps = $state<McpSummary[]>([]);
-	let loading = $state(false);
-	let error = $state('');
 	let creating = $state(false);
 	let selectedSlug = $state<string | null>(null);
 	let grants = $state<McpTeamGrantSummary[]>([]);
 	let grantsLoading = $state(false);
 
-	async function loadMcps() {
-		loading = true;
-		error = '';
-		try {
-			const page = await client.listMyMcps();
-			mcps = page.items;
-		} catch (err) {
-			error = err instanceof Error ? err.message : '加载 MCP 列表失败。';
-		} finally {
-			loading = false;
-		}
-	}
+	let expandedKey = $state<string | null>(null);
+	let detailCache = $state<Record<string, McpDetail>>({});
+	let detailLoading = $state<string | null>(null);
+
+	let readmeMcp = $state<McpDetail | null>(null);
+	let readmeOpen = $state(false);
 
 	async function loadGrants(slug: string) {
 		grantsLoading = true;
@@ -57,85 +54,8 @@
 		await loadGrants(slug);
 	}
 
-	// —— 市场浏览 ——
-	let browseItems = $state<McpSummary[]>([]);
-	let browseTotal = $state(0);
-	let browsePage = $state(1);
-	let browseSize = $state(10);
-	let browseSort = $state('downloads');
-	let browseQ = $state('');
-	let browseLoading = $state(false);
-	let browseError = $state('');
-	let browseLoaded = $state(false);
-
-	let expandedKey = $state<string | null>(null);
-	let detailCache = $state<Record<string, McpDetail>>({});
-	let detailLoading = $state<string | null>(null);
-	let likeBusy = $state<string | null>(null);
-	let likedSet = $state<Set<string>>(new Set());
-
-	let readmeMcp = $state<McpDetail | null>(null);
-	let readmeOpen = $state(false);
-
-	function ownerKey(mcp: McpSummary): string {
-		return mcp.owner_name ?? mcp.owner_subject_id;
-	}
-
-	function rowKey(mcp: McpSummary): string {
-		return `${ownerKey(mcp)}/${mcp.slug}`;
-	}
-
-	function isLiked(mcp: McpSummary): boolean {
-		return likedSet.has(rowKey(mcp));
-	}
-
-	async function loadBrowse() {
-		browseLoading = true;
-		browseError = '';
-		try {
-			const page = await client.listBrowseMcps({
-				q: browseQ.trim() || undefined,
-				page: browsePage,
-				size: browseSize,
-				sort: browseSort
-			});
-			browseItems = page.items;
-			browseTotal = page.total ?? page.items.length;
-		} catch (err) {
-			browseError = err instanceof Error ? err.message : '加载市场列表失败。';
-			browseItems = [];
-			browseTotal = 0;
-		} finally {
-			browseLoading = false;
-			browseLoaded = true;
-		}
-	}
-
-	async function switchTab(next: 'mine' | 'browse') {
-		if (tab === next) return;
-		tab = next;
-		if (next === 'browse' && !browseLoaded) {
-			await loadBrowse();
-		}
-	}
-
-	function onSearch() {
-		browsePage = 1;
-		void loadBrowse();
-	}
-
-	function onSortChange() {
-		browsePage = 1;
-		void loadBrowse();
-	}
-
-	function onPage(p: number) {
-		browsePage = p;
-		void loadBrowse();
-	}
-
 	async function toggleDetail(mcp: McpSummary) {
-		const key = rowKey(mcp);
+		const key = market.likeKey(mcp);
 		if (expandedKey === key) {
 			expandedKey = null;
 			return;
@@ -144,42 +64,15 @@
 		if (!detailCache[key]) {
 			detailLoading = key;
 			try {
-				const detail = await client.getMcpDetail(ownerKey(mcp), mcp.slug);
+				const detail = await client.getMcpDetail(market.ownerOf(mcp), mcp.slug);
 				detailCache = { ...detailCache, [key]: detail };
-				const next = new Set(likedSet);
-				if (detail.liked_by_me) next.add(key);
-				else next.delete(key);
-				likedSet = next;
+				market.syncLiked(mcp, detail.liked_by_me);
 			} catch (err) {
-				browseError = err instanceof Error ? err.message : '加载详情失败。';
+				market.browseError = err instanceof Error ? err.message : '加载详情失败。';
 				expandedKey = null;
 			} finally {
 				detailLoading = null;
 			}
-		}
-	}
-
-	async function toggleLike(mcp: McpSummary) {
-		const key = rowKey(mcp);
-		likeBusy = key;
-		try {
-			if (isLiked(mcp)) {
-				const res = await client.unlikeMcp(ownerKey(mcp), mcp.slug);
-				mcp.like_count = res.like_count;
-				const next = new Set(likedSet);
-				next.delete(key);
-				likedSet = next;
-			} else {
-				const res = await client.likeMcp(ownerKey(mcp), mcp.slug);
-				mcp.like_count = res.like_count;
-				const next = new Set(likedSet);
-				next.add(key);
-				likedSet = next;
-			}
-		} catch (err) {
-			browseError = err instanceof Error ? err.message : '操作失败。';
-		} finally {
-			likeBusy = null;
 		}
 	}
 
@@ -192,36 +85,29 @@
 
 	async function viewReadme(mcp: McpSummary) {
 		try {
-			const detail = await client.getMcpDetail(ownerKey(mcp), mcp.slug);
-			const key = rowKey(mcp);
-			const next = new Set(likedSet);
-			if (detail.liked_by_me) next.add(key);
-			else next.delete(key);
-			likedSet = next;
+			const detail = await client.getMcpDetail(market.ownerOf(mcp), mcp.slug);
+			market.syncLiked(mcp, detail.liked_by_me);
 			if (detail.readme) {
 				readmeMcp = detail;
 				readmeOpen = true;
 			} else {
-				browseError = '该 MCP 暂无 README。';
+				market.browseError = '该 MCP 暂无 README。';
 			}
 		} catch (err) {
-			browseError = err instanceof Error ? err.message : '加载详情失败。';
+			market.browseError = err instanceof Error ? err.message : '加载详情失败。';
 		}
 	}
 
 	onMount(() => {
-		void loadMcps();
+		void market.loadMine();
 	});
 </script>
 
 <PageTitle title={'MCP 市场'} subtitle={'管理你发布的 MCP 服务器配置及其对权限组的授权。'} />
 
-<div class="tabs">
-	<button type="button" class:active={tab === 'mine'} onclick={() => switchTab('mine')}>我发布的</button>
-	<button type="button" class:active={tab === 'browse'} onclick={() => switchTab('browse')}>市场浏览</button>
-</div>
+<MarketTabs tab={market.tab} switchTab={market.switchTab} />
 
-{#if tab === 'mine'}
+{#if market.tab === 'mine'}
 	<section class="panel">
 		<div class="section-head">
 			<div>
@@ -229,20 +115,20 @@
 				<p>发布 MCP 服务器配置后，可向权限组授权使用。</p>
 			</div>
 			<div class="actions">
-				<button class="secondary" type="button" onclick={loadMcps} disabled={loading}>
-					{loading ? '加载中' : '刷新'}
+				<button class="secondary" type="button" onclick={market.loadMine} disabled={market.loading}>
+					{market.loading ? '加载中' : '刷新'}
 				</button>
 				<button type="button" onclick={() => (creating = true)}>新建 MCP 配置</button>
 			</div>
 		</div>
-		{#if error}<p class="error">{error}</p>{/if}
+		{#if market.error}<p class="error">{market.error}</p>{/if}
 		<div class="table-wrap">
 			<table>
 				<thead>
 					<tr><th>Slug</th><th>名称</th><th>最新版本</th><th>状态</th></tr>
 				</thead>
 				<tbody>
-					{#each mcps as mcp (mcp.id)}
+					{#each market.items as mcp (mcp.id)}
 						<tr
 							class="clickable"
 							aria-current={selectedSlug === mcp.slug}
@@ -256,7 +142,7 @@
 							</td>
 						</tr>
 					{:else}
-						<tr><td colspan="4" class="empty">{loading ? '加载中…' : '尚未发布任何 MCP。'}</td></tr>
+						<tr><td colspan="4" class="empty">{market.loading ? '加载中…' : '尚未发布任何 MCP。'}</td></tr>
 					{/each}
 				</tbody>
 			</table>
@@ -275,11 +161,12 @@
 					{grantsLoading ? '加载中' : '刷新授权'}
 				</button>
 			</div>
-			<McpGrantsEditor
-				{client}
-				slug={currentSlug}
+			<GrantsEditor
 				{grants}
 				{teams}
+				artifactLabel="MCP"
+				onGrant={(teamId) => client.grantMcp(currentSlug, teamId)}
+				onRevoke={(grantId) => client.revokeMcpGrant(currentSlug, grantId)}
 				onChanged={() => loadGrants(currentSlug)}
 			/>
 		</section>
@@ -291,8 +178,8 @@
 				<h2>市场浏览</h2>
 				<p>浏览并查看市场中的 MCP 服务器配置。</p>
 			</div>
-			<button class="secondary" type="button" onclick={loadBrowse} disabled={browseLoading}>
-				{browseLoading ? '加载中' : '刷新'}
+			<button class="secondary" type="button" onclick={market.loadBrowse} disabled={market.browseLoading}>
+				{market.browseLoading ? '加载中' : '刷新'}
 			</button>
 		</div>
 		<div class="form-grid">
@@ -300,29 +187,29 @@
 				搜索
 				<input
 					type="search"
-					bind:value={browseQ}
+					bind:value={market.browseQ}
 					placeholder="按名称或 slug 搜索"
-					onkeydown={(e) => e.key === 'Enter' && onSearch()}
+					onkeydown={(e) => e.key === 'Enter' && market.onSearch()}
 				/>
 			</label>
 			<label>
 				排序
-				<select bind:value={browseSort} onchange={onSortChange}>
+				<select bind:value={market.browseSort} onchange={market.onSortChange}>
 					<option value="downloads">下载量</option>
 					<option value="likes">点赞</option>
 				</select>
 			</label>
-			<button type="button" onclick={onSearch}>搜索</button>
+			<button type="button" onclick={market.onSearch}>搜索</button>
 		</div>
-		{#if browseError}<p class="error">{browseError}</p>{/if}
+		{#if market.browseError}<p class="error">{market.browseError}</p>{/if}
 		<div class="table-wrap">
 			<table>
 				<thead>
 					<tr><th>Slug</th><th>名称</th><th>所有者</th><th>下载量</th><th>点赞</th><th>操作</th></tr>
 				</thead>
 				<tbody>
-					{#each browseItems as mcp (mcp.id)}
-						{@const key = rowKey(mcp)}
+					{#each market.browseItems as mcp (mcp.id)}
+						{@const key = market.likeKey(mcp)}
 						<tr>
 							<td><strong>{mcp.slug}</strong></td>
 							<td>{mcp.name}{#if mcp.summary}<br /><span class="muted">{mcp.summary}</span>{/if}</td>
@@ -337,10 +224,10 @@
 								<button
 									class="secondary"
 									type="button"
-									disabled={likeBusy === key}
-									onclick={() => toggleLike(mcp)}
+									disabled={market.likeBusy === key}
+									onclick={() => market.toggleLike(mcp)}
 								>
-									{isLiked(mcp) ? '取消点赞' : '点赞'}
+									{market.isLiked(mcp) ? '取消点赞' : '点赞'}
 								</button>
 							</td>
 						</tr>
@@ -384,12 +271,12 @@
 							</tr>
 						{/if}
 					{:else}
-						<tr><td colspan="6" class="empty">{browseLoading ? '加载中…' : '没有匹配的 MCP。'}</td></tr>
+						<tr><td colspan="6" class="empty">{market.browseLoading ? '加载中…' : '没有匹配的 MCP。'}</td></tr>
 					{/each}
 				</tbody>
 			</table>
 		</div>
-		<Pagination total={browseTotal} page={browsePage} size={browseSize} onPage={onPage} />
+		<Pagination total={market.browseTotal} page={market.browsePage} size={market.browseSize} onPage={market.onPage} />
 	</section>
 {/if}
 
@@ -397,7 +284,7 @@
 	<CreateMcpDialog
 		{client}
 		onClose={() => (creating = false)}
-		onPublished={loadMcps}
+		onPublished={market.loadMine}
 	/>
 {/if}
 
@@ -413,26 +300,6 @@
 {/if}
 
 <style>
-	.tabs {
-		display: flex;
-		gap: 0.5rem;
-		margin-bottom: 1rem;
-	}
-
-	.tabs button {
-		padding: 0.45rem 0.9rem;
-		border: 1px solid var(--border, #d8dce2);
-		background: #fff;
-		border-radius: 6px;
-		cursor: pointer;
-	}
-
-	.tabs button.active {
-		background: var(--accent-bg, #e7f0fb);
-		border-color: var(--accent, #2b6cb0);
-		font-weight: 600;
-	}
-
 	tr[aria-current='true'] {
 		background: var(--accent-bg, #e7f0fb);
 	}
