@@ -1,8 +1,9 @@
 """Verify ON DELETE cascades added by migration 0015 on marketplace tables.
 
 Migration 0009 added ondelete to core tables but predated the marketplace
-tables. 0015 adds CASCADE to owner/grant/like FKs and SET NULL to the
-upload_subject_id FK on version tables. These tests exercise the DB-level
+tables. 0015 adds CASCADE to owner/grant/like FKs and to the
+upload_subject_id FK on version tables (CASCADE, not SET NULL, because
+that column is NOT NULL). These tests exercise the DB-level
 cascades directly (deleting a subject / skill / mcp and asserting the children
 are gone or preserved per policy).
 """
