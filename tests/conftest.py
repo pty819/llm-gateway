@@ -62,40 +62,27 @@ def _truncate_all_tables(conn) -> None:
         conn.execute(text(f"TRUNCATE {table_list} RESTART IDENTITY CASCADE"))
 
 
-@pytest.fixture(scope="session", autouse=True)
-def test_database_engine():
-    """Build + migrate the dedicated test DB and rebind the global engine.
+def _migrate_test_db_if_configured() -> str | None:
+    """Run alembic migrations against the test DB at CONLECTION time (module
+    import), before pytest-asyncio starts its session event loop.
 
-    Requires ``LLM_GATEWAY_TEST_DATABASE_URL``. If unset, skips the whole suite.
+    alembic/env.py internally calls ``asyncio.run()``, which fails if a loop is
+    already running. By doing this at conftest module load (well before any
+    fixture/loop starts), we sidestep that conflict entirely.
+
+    Returns the test DSN if migrations ran, or None if no test DB is configured
+    (in which case DB-touching tests will skip at fixture time).
     """
     from llm_gateway.core.config import get_settings
-    from llm_gateway.db import session as db_session
 
     settings = get_settings()
     test_url = settings.test_database_url
     if not test_url:
-        pytest.skip(
-            "LLM_GATEWAY_TEST_DATABASE_URL is not set; the test suite requires a "
-            "dedicated test database to avoid polluting the dev DB. Set it in "
-            ".env.local (gitignored), e.g. pointing at a separate database on the "
-            "same instance.",
-            allow_module_level=False,
-        )
+        return None
 
-    # 1) Build an engine against the test DB and rebind the global factory so
-    #    every AsyncSessionLocal() call (and every already-imported module that
-    #    captured it) now targets the test DB.
-    from sqlalchemy.ext.asyncio import create_async_engine
-
-    test_engine = create_async_engine(test_url, pool_pre_ping=True)
-    db_session.reconfigure_engine(test_engine)
-
-    # 2) Run alembic migrations against the test DB. ``alembic/env.py`` resolves
-    #    the target DSN via ``get_settings().database_url``, which is
-    #    @lru_cache-cached and still points at the dev DB. To make alembic target
-    #    the test DB we temporarily override ``LLM_GATEWAY_DATABASE_URL`` and
-    #    clear the cache; init_db() then migrates the test DB. We restore both
-    #    afterwards so production settings are untouched for the rest of the run.
+    # alembic/env.py resolves the target DSN via get_settings().database_url,
+    # which is @lru_cache-cached and points at the dev DB. Override the env var
+    # + clear the cache so alembic targets the test DB, then restore.
     previous_db_url = os.environ.get("LLM_GATEWAY_DATABASE_URL")
     os.environ["LLM_GATEWAY_DATABASE_URL"] = test_url
     get_settings.cache_clear()
@@ -108,24 +95,75 @@ def test_database_engine():
             os.environ.pop("LLM_GATEWAY_DATABASE_URL", None)
         else:
             os.environ["LLM_GATEWAY_DATABASE_URL"] = previous_db_url
-        # Refresh the cache to the restored (dev) settings. Note: ``db_session``
-        # still points at the test engine via reconfigure_engine above — that is
-        # exactly what we want; only the *settings* cache (used by alembic and
-        # any code reading database_url) is reset to dev.
+        # Reset settings cache to dev values; the test engine is bound separately
+        # via reconfigure_engine in the fixture below.
         get_settings.cache_clear()
+    return test_url
+
+
+# Run migrations once at collection time (before any event loop starts).
+_TEST_DB_URL: str | None = _migrate_test_db_if_configured()
+
+
+@pytest.fixture(scope="session")
+def test_database_engine():
+    """Rebind the global engine to the (already-migrated) test DB.
+
+    Requires ``LLM_GATEWAY_TEST_DATABASE_URL``. If unset, skips — which
+    propagates to any test that pulls this fixture via ``_isolate_tables``.
+    Tests marked ``@pytest.mark.no_db`` never pull it.
+
+    NOT autouse: requested on demand by ``_isolate_tables`` (which IS autouse)
+    only for tests that aren't marked no_db. Migrations already ran at module
+    load (see ``_migrate_test_db_if_configured`` above) to avoid an asyncio.run
+    conflict with the pytest-asyncio session loop.
+    """
+    if not _TEST_DB_URL:
+        pytest.skip(
+            "LLM_GATEWAY_TEST_DATABASE_URL is not set; DB-touching tests require "
+            "a dedicated test database to avoid polluting the dev DB. Set it in "
+            ".env.local (gitignored), e.g. pointing at a separate database on the "
+            "same instance. (Tests marked @pytest.mark.no_db still run.)",
+            allow_module_level=False,
+        )
+
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from llm_gateway.db import session as db_session
+
+    test_engine = create_async_engine(_TEST_DB_URL, pool_pre_ping=True)
+    db_session.reconfigure_engine(test_engine)
 
     yield
 
-    asyncio.run(test_engine.dispose())
+    # Best-effort dispose; the session loop may be closing. Connections are
+    # reclaimed by the OS on process exit regardless.
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(test_engine.dispose())
+        else:
+            loop.run_until_complete(test_engine.dispose())
+    except RuntimeError:
+        pass
 
 
 @pytest.fixture(autouse=True)
-async def _isolate_tables(test_database_engine):
+async def _isolate_tables(request):
     """Truncate all tables before each test for full isolation, then re-seed
     the builtin identity (guest/admin teams + bootstrap admin) that several
     tests assume exists (e.g. they query ``Team name == 'guest'`` directly
     without going through the app lifespan that normally seeds it).
+
+    Short-circuits (no truncation, no seed) for tests marked
+    ``@pytest.mark.no_db`` — those are pure unit tests that never touch the DB.
     """
+    if request.node.get_closest_marker("no_db"):
+        return
+    # Pull test_database_engine to ensure it has run (set up the test DB /
+    # skipped if unavailable). For no_db tests we returned above, so only
+    # DB-touching tests reach this dependency.
+    request.getfixturevalue("test_database_engine")
     from llm_gateway.core.config import get_settings
     from llm_gateway.db import session as db_session
     from llm_gateway.services.security import ensure_builtin_identity
