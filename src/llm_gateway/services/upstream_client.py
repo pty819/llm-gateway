@@ -4,9 +4,8 @@ Replaces the former LiteLLM adapter. The gateway now forwards OpenAI Chat
 Completions and OpenAI Responses requests verbatim to the upstream using
 httpx2 — no protocol translation, no provider routing, no param dropping.
 The request body is sent as-is (with ``model`` overwritten to the alias's
-``litellm_model`` value, which now holds a bare upstream model name), and the
-response body is forwarded as-is. Token usage is read straight off the
-upstream response's ``usage`` field.
+``upstream_model_name`` value), and the response body is forwarded as-is.
+Token usage is read straight off the upstream response's ``usage`` field.
 """
 
 from __future__ import annotations
@@ -27,11 +26,6 @@ class UpstreamCallResult:
     def __init__(self, response: Any, usage: dict[str, Any] | None):
         self.response = response
         self.usage = usage
-
-
-# Backwards-compatible alias so call sites and tests that still reference the
-# old name keep working. New code should use UpstreamCallResult.
-LiteLLMCallResult = UpstreamCallResult
 
 
 def _api_key(upstream: UpstreamTarget) -> str | None:
@@ -74,7 +68,7 @@ async def check_upstream_health(
 
 def _prepare_payload(model_alias: ModelAlias, body: dict[str, Any]) -> dict[str, Any]:
     payload = dict(body)
-    payload["model"] = model_alias.litellm_model
+    payload["model"] = model_alias.upstream_model_name
     return payload
 
 

@@ -115,7 +115,6 @@ class ModelAlias(TimestampMixin, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     alias: str = Field(index=True, unique=True)
     upstream_model_name: str
-    litellm_model: str
     state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
     supports_streaming: bool = True
     supports_tools: bool = True

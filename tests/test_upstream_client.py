@@ -13,11 +13,10 @@ from llm_gateway.services import upstream_client
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
-def _model_alias(litellm_model: str = "test-model") -> ModelAlias:
+def _model_alias(upstream_model_name: str = "test-model") -> ModelAlias:
     return ModelAlias(
         alias="test-model",
-        upstream_model_name="test-model",
-        litellm_model=litellm_model,
+        upstream_model_name=upstream_model_name,
     )
 
 
@@ -99,7 +98,7 @@ async def test_chat_once_posts_to_chat_completions_and_extracts_usage(monkeypatc
 
     result = await upstream_client.upstream_request_once(
         endpoint_family=EndpointFamily.OPENAI_CHAT,
-        model_alias=_model_alias(litellm_model="gpt-4o"),
+        model_alias=_model_alias(upstream_model_name="gpt-4o"),
         upstream=_upstream(),
         body={"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8},
     )
@@ -346,7 +345,3 @@ async def test_unified_dispatch_routes_chat_and_responses(monkeypatch):
 
     assert seen == [EndpointFamily.OPENAI_CHAT, EndpointFamily.OPENAI_RESPONSES]
     assert actual_paths == ["/chat/completions", "/responses"]
-
-
-async def test_litellm_call_result_alias_is_upstream_call_result():
-    assert upstream_client.LiteLLMCallResult is upstream_client.UpstreamCallResult

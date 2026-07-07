@@ -42,7 +42,6 @@ LLM_GATEWAY_REDIS_URL=redis://...
 LLM_GATEWAY_UPSTREAM_BASE_URL=https://api.example.com/v1
 LLM_GATEWAY_UPSTREAM_MODEL=actual-upstream-model-name
 LLM_GATEWAY_UPSTREAM_API_KEY=upstream-provider-key
-LLM_GATEWAY_LITELLM_MODEL=actual-upstream-model-name
 
 LLM_GATEWAY_ADMIN_TOKEN=dev-admin-token
 LLM_GATEWAY_BOOTSTRAP_ADMIN_USERNAME=admin

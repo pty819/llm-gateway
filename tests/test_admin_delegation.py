@@ -66,7 +66,6 @@ async def test_admin_session_can_manage_team_union_permissions(client):
             json={
                 "alias": f"model-{label}-{suffix}",
                 "upstream_model_name": f"upstream-{label}",
-                "litellm_model": f"upstream-{label}",
             },
         )
         assert model.status_code == 200, model.text
