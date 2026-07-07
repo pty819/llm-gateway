@@ -49,3 +49,124 @@ async def test_no_heartbeat_when_upstream_never_goes_silent():
         out.append(event)
 
     assert out == ["data: a\n\n", "data: b\n\n"]
+
+
+async def test_watchdog_breaks_loop_on_disconnect():
+    async def upstream():
+        yield ("data: a\n\n", None)
+        await asyncio.sleep(10.0)  # long silence simulating a stuck generator
+
+    checks = 0
+
+    async def disconnect_check() -> bool:
+        nonlocal checks
+        checks += 1
+        return checks >= 2  # False first, True second
+
+    start = asyncio.get_event_loop().time()
+    with pytest.raises(asyncio.CancelledError):
+        async for _ in iter_with_heartbeat(
+            upstream(),
+            interval_seconds=1.0,
+            disconnect_check=disconnect_check,
+            disconnect_interval=0.02,
+        ):
+            pass
+    elapsed = asyncio.get_event_loop().time() - start
+    assert elapsed < 0.2, f"watchdog took too long: {elapsed:.3f}s"
+    assert checks >= 2
+
+
+async def test_watchdog_disabled_when_callback_none():
+    async def upstream():
+        yield ("data: a\n\n", None)
+        yield ("data: b\n\n", None)
+
+    out = []
+    async for event, _ in iter_with_heartbeat(upstream(), interval_seconds=1.0):
+        out.append(event)
+
+    assert out == ["data: a\n\n", "data: b\n\n"]
+
+
+async def test_watchdog_disabled_when_interval_zero():
+    calls = 0
+
+    async def disconnect_check() -> bool:
+        nonlocal calls
+        calls += 1
+        return False
+
+    async def upstream():
+        yield ("data: a\n\n", None)
+        yield ("data: b\n\n", None)
+
+    out = []
+    async for event, _ in iter_with_heartbeat(
+        upstream(),
+        interval_seconds=1.0,
+        disconnect_check=disconnect_check,
+        disconnect_interval=0,
+    ):
+        out.append(event)
+
+    assert calls == 0
+    assert out == ["data: a\n\n", "data: b\n\n"]
+
+
+async def test_watchdog_does_not_interfere_normal_stream():
+    async def disconnect_check() -> bool:
+        return False
+
+    async def upstream():
+        yield ("data: a\n\n", None)
+        await _silence(0.06)  # silent longer than heartbeat + watchdog intervals
+        yield ("data: b\n\n", None)
+
+    out = []
+    async for event, _ in iter_with_heartbeat(
+        upstream(),
+        interval_seconds=0.02,
+        disconnect_check=disconnect_check,
+        disconnect_interval=0.02,
+    ):
+        out.append(event)
+
+    assert out[0] == "data: a\n\n"
+    assert out[-1] == "data: b\n\n"
+    assert HEARTBEAT_FRAME in out
+    # exactly the two real events plus at least one heartbeat, no CancelledError leak
+    assert out.count("data: a\n\n") == 1
+    assert out.count("data: b\n\n") == 1
+
+
+async def test_watchdog_survives_failing_disconnect_check():
+    """A disconnect_check that raises must not kill the watchdog (which would
+    silently disable disconnect detection for the rest of the stream)."""
+
+    async def upstream():
+        yield ("data: a\n\n", None)
+        await asyncio.sleep(10.0)  # long silence
+
+    calls = 0
+
+    async def disconnect_check() -> bool:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise RuntimeError("transient request state error")
+        return True  # disconnect detected once checks stabilize
+
+    start = asyncio.get_event_loop().time()
+    with pytest.raises(asyncio.CancelledError):
+        async for _ in iter_with_heartbeat(
+            upstream(),
+            interval_seconds=1.0,
+            disconnect_check=disconnect_check,
+            disconnect_interval=0.02,
+        ):
+            pass
+    elapsed = asyncio.get_event_loop().time() - start
+    # watchdog kept polling past the failures and eventually fired
+    assert calls >= 3
+    assert elapsed < 0.5, f"watchdog died on failing check: {elapsed:.3f}s"
