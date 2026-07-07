@@ -52,9 +52,12 @@ async def test_non_stream_concurrency_limit_returns_429_and_records_rate_limited
     assert fact.error_detail == "concurrency_exceeded"
 
 
-async def test_stream_concurrency_limit_returns_429_before_sse_and_records_fact(
-    client, gateway_fixture
-):
+async def test_stream_concurrency_limit_emits_sse_error_after_lazy_acquire(client, gateway_fixture):
+    """With lazy acquire, the streaming generator acquires the concurrency slot
+    as its first action — AFTER StreamingResponse has begun (200 sent). So a
+    concurrency-exceeded condition can no longer become a 429; instead the
+    client receives 200 + an SSE error frame. This is the accepted trade-off
+    of lazy acquire, which eliminates the slot-leak construction window."""
     from llm_gateway.db.models import RatePolicy
     from llm_gateway.db.session import AsyncSessionLocal
 
@@ -75,13 +78,16 @@ async def test_stream_concurrency_limit_returns_429_before_sse_and_records_fact(
         headers=_auth_headers(gateway_fixture.raw_key, request_id),
         json={
             "model": gateway_fixture.model_alias,
-            "input": "should be concurrency limited before stream starts",
+            "input": "should be concurrency limited after stream starts",
             "stream": True,
         },
     )
 
-    assert response.status_code == 429
-    assert response.json()["detail"] == "concurrency_exceeded"
+    # 200 is sent before the generator runs (StreamingResponse contract).
+    assert response.status_code == 200
+    body = response.text
+    assert "event: error" in body
+    assert "concurrency_exceeded" in body
 
     fact = await fetch_request_fact(request_id)
     assert fact.endpoint_family == EndpointFamily.OPENAI_RESPONSES

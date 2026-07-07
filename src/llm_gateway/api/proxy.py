@@ -203,15 +203,6 @@ async def _proxy_endpoint(
     )
 
     if streaming:
-        concurrency_key = await _acquire_streaming_concurrency(
-            redis=redis,
-            auth=auth,
-            route=route,
-            rate_policy=rate_policy,
-            request_id=request_id,
-            started_at=started_at,
-            endpoint_family=endpoint_family,
-        )
         return StreamingResponse(
             _stream_endpoint(
                 endpoint_family=endpoint_family,
@@ -219,11 +210,13 @@ async def _proxy_endpoint(
                 redis=redis,
                 auth=auth,
                 route=route,
-                concurrency_key=concurrency_key,
+                rate_policy=rate_policy,
                 body=body,
                 started_at=started_at,
                 request_id=request_id,
                 keepalive_seconds=settings.stream_keepalive_seconds,
+                request=request,
+                watchdog_interval=settings.stream_disconnect_watchdog_seconds,
             ),
             media_type="text/event-stream",
         )
@@ -287,12 +280,43 @@ async def _stream_endpoint(
     redis: Redis,
     auth: AuthContext,
     route,
-    concurrency_key: str,
+    rate_policy,
     body: dict[str, Any],
     started_at: datetime,
     request_id: str,
     keepalive_seconds: float,
+    request: Request,
+    watchdog_interval: float,
 ):
+    # Lazy acquire: do this inside the generator so acquire and consume share
+    # one coroutine — eliminates the "slot acquired but generator never
+    # started" construction window that leaked slots on early disconnect.
+    try:
+        concurrency_key = await acquire_concurrency_slot(
+            redis,
+            key_id=auth.key.id,
+            limit=rate_policy.concurrency_limit,
+        )
+    except RateLimitExceeded as exc:
+        # The StreamingResponse has already begun (200 sent); we can't turn
+        # this into a 429. Record the fact and emit an SSE error frame so the
+        # client sees something instead of a silent hang.
+        await record_proxy_fact(
+            request_id=request_id,
+            started_at=started_at,
+            endpoint_family=endpoint_family,
+            auth=auth,
+            route=route,
+            streaming=True,
+            outcome=RequestOutcome.RATE_LIMITED,
+            usage=None,
+            error_class="RateLimitExceeded",
+            error_detail=str(exc),
+            endpoint=stream_endpoint,
+        )
+        yield f"event: error\ndata: {str(exc)}\n\n"
+        return
+
     usage = None
     first_token_at: datetime | None = None
     outcome = RequestOutcome.SUCCESS
@@ -307,6 +331,8 @@ async def _stream_endpoint(
                     body=body,
                 ),
                 interval_seconds=keepalive_seconds,
+                disconnect_check=request.is_disconnected,
+                disconnect_interval=watchdog_interval,
             ):
                 if event == HEARTBEAT_FRAME:
                     yield event
@@ -403,34 +429,6 @@ async def list_models(
             for alias in rows
         ],
     }
-
-
-async def _acquire_streaming_concurrency(
-    *,
-    redis: Redis,
-    auth: AuthContext,
-    route,
-    rate_policy,
-    request_id: str,
-    started_at: datetime,
-    endpoint_family: EndpointFamily,
-) -> str:
-    try:
-        return await acquire_concurrency_slot(
-            redis,
-            key_id=auth.key.id,
-            limit=rate_policy.concurrency_limit,
-        )
-    except RateLimitExceeded as exc:
-        await _raise_rate_limited_after_route(
-            request_id=request_id,
-            started_at=started_at,
-            endpoint_family=endpoint_family,
-            auth=auth,
-            streaming=True,
-            route=route,
-            exc=exc,
-        )
 
 
 async def _raise_rate_limited_after_route(
