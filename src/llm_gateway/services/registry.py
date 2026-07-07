@@ -6,7 +6,7 @@ import zipfile
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import distinct, func, or_, select
+from sqlalchemy import distinct, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
@@ -345,7 +345,11 @@ async def get_latest_active_version(session: AsyncSession, *, skill: Skill) -> S
 
 async def toggle_skill_like(session: AsyncSession, *, subject_id: UUID, skill_id: UUID) -> Skill:
     """Idempotent like toggle: if not liked, create SkillLike + like_count += 1;
-    if liked, delete it + like_count -= 1. Returns the updated skill."""
+    if liked, delete it + like_count -= 1. Returns the updated skill.
+
+    like_count is updated via an atomic UPDATE ... SET like_count = like_count
+    + 1 (mirroring increment_skill_download_count) so concurrent toggles do not
+    lose updates; the read-modify-write pattern would race."""
     skill = await session.get(Skill, skill_id)
     if skill is None:
         raise HTTPException(status_code=404, detail="artifact_not_found")
@@ -359,12 +363,21 @@ async def toggle_skill_like(session: AsyncSession, *, subject_id: UUID, skill_id
     ).scalar_one_or_none()
     if existing is not None:
         await session.delete(existing)
-        skill.like_count = max(0, (skill.like_count or 0) - 1)
+        delta = -1
     else:
         session.add(SkillLike(subject_id=subject_id, skill_id=skill_id))
-        skill.like_count = (skill.like_count or 0) + 1
+        delta = 1
+    # Atomic increment/decrement; clamp at 0 on decrement to avoid negatives
+    # (shouldn't happen with the unique constraint, but guard the column anyway).
+    new_count = Skill.like_count + delta
+    if delta < 0:
+        new_count = func.greatest(0, new_count)
+    await session.execute(
+        update(Skill).where(col(Skill.id) == skill_id).values(like_count=new_count)
+    )
     skill.updated_at = utcnow()
     await session.flush()
+    await session.refresh(skill)
     return skill
 
 
@@ -386,8 +399,6 @@ async def is_skill_liked_by(session: AsyncSession, *, subject_id: UUID, skill_id
 
 async def increment_skill_download_count(session: AsyncSession, *, skill_id: UUID) -> None:
     """Atomic UPDATE skills SET download_count = download_count + 1."""
-    from sqlalchemy import update
-
     await session.execute(
         update(Skill)
         .where(col(Skill.id) == skill_id)
@@ -682,7 +693,11 @@ async def get_latest_active_mcp_version(session: AsyncSession, *, mcp: MCP) -> M
 
 async def toggle_mcp_like(session: AsyncSession, *, subject_id: UUID, mcp_id: UUID) -> MCP:
     """Idempotent like toggle: if not liked, create McpLike + like_count += 1;
-    if liked, delete it + like_count -= 1. Returns the updated mcp."""
+    if liked, delete it + like_count -= 1. Returns the updated mcp.
+
+    like_count is updated via an atomic UPDATE ... SET like_count = like_count
+    + 1 (mirroring increment_skill_download_count) so concurrent toggles do not
+    lose updates; the read-modify-write pattern would race."""
     mcp = await session.get(MCP, mcp_id)
     if mcp is None:
         raise HTTPException(status_code=404, detail="artifact_not_found")
@@ -696,12 +711,18 @@ async def toggle_mcp_like(session: AsyncSession, *, subject_id: UUID, mcp_id: UU
     ).scalar_one_or_none()
     if existing is not None:
         await session.delete(existing)
-        mcp.like_count = max(0, (mcp.like_count or 0) - 1)
+        delta = -1
     else:
         session.add(McpLike(subject_id=subject_id, mcp_id=mcp_id))
-        mcp.like_count = (mcp.like_count or 0) + 1
+        delta = 1
+    # Atomic increment/decrement; clamp at 0 on decrement to avoid negatives.
+    new_count = MCP.like_count + delta
+    if delta < 0:
+        new_count = func.greatest(0, new_count)
+    await session.execute(update(MCP).where(col(MCP.id) == mcp_id).values(like_count=new_count))
     mcp.updated_at = utcnow()
     await session.flush()
+    await session.refresh(mcp)
     return mcp
 
 
