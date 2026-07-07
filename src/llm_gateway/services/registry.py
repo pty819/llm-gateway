@@ -64,6 +64,203 @@ async def resolve_owner_name_map(session: AsyncSession, owner_ids: set[UUID]) ->
     return {row[0]: row[1] for row in rows.all()}
 
 
+# ---- shared Skill/MCP query helpers ----
+#
+# The Skill and MCP artifacts mirror each other closely. The helpers below are
+# parameterized by the table class (+ the FK column that binds a grant/like row
+# to its artifact) so each public ``..._skill``/``..._mcp`` pair can delegate
+# without duplicating 12-66 lines of query logic. Column params are typed
+# ``Any`` rather than ``InstrumentedAttribute`` — readability over strictness.
+
+
+async def _subject_can_access_artifact(
+    session: AsyncSession,
+    *,
+    subject_id: UUID,
+    artifact: Skill | MCP,
+    grant_table: type[SkillTeamGrant] | type[McpTeamGrant],
+    grant_fk_col: Any,  # e.g. SkillTeamGrant.skill_id
+) -> bool:
+    """A subject may see an artifact iff it is the owner OR a team it belongs to
+    has an active grant. Mirrors the team-grant branch of
+    services/policy.py:subject_can_use_model."""
+    if artifact.owner_subject_id == subject_id:
+        return True
+    result = await session.execute(
+        select(col(grant_table.id))
+        .join(Team, col(Team.id) == col(grant_table.team_id))
+        .join(TeamMembership, col(TeamMembership.team_id) == col(Team.id))
+        .where(
+            col(grant_fk_col) == artifact.id,
+            col(grant_table.state) == ResourceState.ACTIVE,
+            col(Team.state) == ResourceState.ACTIVE,
+            col(TeamMembership.state) == ResourceState.ACTIVE,
+            col(TeamMembership.subject_id) == subject_id,
+        )
+    )
+    return result.scalars().first() is not None
+
+
+async def _get_artifact_by_owner_slug(
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    slug: str,
+    artifact_table: type[Skill] | type[MCP],
+    include_disabled: bool = False,
+) -> Skill | MCP | None:
+    stmt = select(artifact_table).where(
+        col(artifact_table.owner_subject_id) == owner_id,
+        col(artifact_table.slug) == slug,
+    )
+    if not include_disabled:
+        stmt = stmt.where(col(artifact_table.state) == ResourceState.ACTIVE)
+    return (await session.execute(stmt)).scalars().first()
+
+
+async def _is_liked_by(
+    session: AsyncSession,
+    *,
+    subject_id: UUID,
+    artifact_id: UUID,
+    like_table: type[SkillLike] | type[McpLike],
+    artifact_fk_col: Any,  # e.g. SkillLike.skill_id
+) -> bool:
+    row = (
+        (
+            await session.execute(
+                select(col(like_table.id)).where(
+                    col(like_table.subject_id) == subject_id,
+                    col(artifact_fk_col) == artifact_id,
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    return row is not None
+
+
+async def _toggle_like(
+    session: AsyncSession,
+    *,
+    subject_id: UUID,
+    artifact_id: UUID,
+    artifact_table: type[Skill] | type[MCP],
+    like_table: type[SkillLike] | type[McpLike],
+    artifact_fk_col: Any,  # e.g. SkillLike.skill_id
+) -> Skill | MCP:
+    """Idempotent like toggle: if not liked, create a like row + like_count += 1;
+    if liked, delete it + like_count -= 1. Returns the updated artifact.
+
+    like_count is updated via an atomic UPDATE ... SET like_count = like_count
+    + 1 (mirroring increment_skill_download_count) so concurrent toggles do not
+    lose updates; the read-modify-write pattern would race."""
+    artifact = await session.get(artifact_table, artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="artifact_not_found")
+    existing = (
+        await session.execute(
+            select(like_table).where(
+                col(like_table.subject_id) == subject_id,
+                col(artifact_fk_col) == artifact_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        await session.delete(existing)
+        delta = -1
+    else:
+        session.add(like_table(subject_id=subject_id, **{artifact_fk_col.key: artifact_id}))
+        delta = 1
+    # Atomic increment/decrement; clamp at 0 on decrement to avoid negatives
+    # (shouldn't happen with the unique constraint, but guard the column anyway).
+    new_count = artifact_table.like_count + delta
+    if delta < 0:
+        new_count = func.greatest(0, new_count)
+    await session.execute(
+        update(artifact_table)
+        .where(col(artifact_table.id) == artifact_id)
+        .values(like_count=new_count)
+    )
+    artifact.updated_at = utcnow()
+    await session.flush()
+    await session.refresh(artifact)
+    return artifact
+
+
+async def _list_visible_artifacts(
+    session: AsyncSession,
+    *,
+    artifact_table: type[Skill] | type[MCP],
+    grant_table: type[SkillTeamGrant] | type[McpTeamGrant],
+    grant_fk_col: Any,  # e.g. SkillTeamGrant.skill_id
+    subject_id: UUID,
+    q: str | None = None,
+    owner: str | None = None,
+    limit: int = 30,
+    offset: int = 0,
+    sort: str = "downloads",
+) -> tuple[list[Any], int]:
+    """Return artifacts visible to subject_id (owner of OR team-granted), with
+    search.
+
+    `sort` selects the primary ordering: ``"downloads"`` (default) orders by
+    download_count desc then updated_at desc; ``"likes"`` orders by like_count
+    desc then updated_at desc."""
+    base_filter = [
+        col(artifact_table.state) == ResourceState.ACTIVE,
+        or_(
+            col(artifact_table.owner_subject_id) == subject_id,
+            col(artifact_table.id).in_(
+                select(distinct(col(grant_fk_col)))
+                .join(Team, col(Team.id) == col(grant_table.team_id))
+                .join(
+                    TeamMembership,
+                    col(TeamMembership.team_id) == col(Team.id),
+                )
+                .where(
+                    col(grant_table.state) == ResourceState.ACTIVE,
+                    col(Team.state) == ResourceState.ACTIVE,
+                    col(TeamMembership.state) == ResourceState.ACTIVE,
+                    col(TeamMembership.subject_id) == subject_id,
+                )
+            ),
+        ),
+    ]
+    if q:
+        needle = f"%{q}%"
+        base_filter.append(
+            or_(
+                col(artifact_table.name).ilike(needle),
+                col(artifact_table.summary).ilike(needle),
+                col(artifact_table.slug).ilike(needle),
+            )
+        )
+    if owner:
+        base_filter.append(
+            col(artifact_table.owner_subject_id).in_(
+                select(col(Subject.id)).where(
+                    or_(
+                        col(Subject.login_username) == owner,
+                        col(Subject.name) == owner,
+                    )
+                )
+            )
+        )
+    count_stmt = select(func.count(distinct(col(artifact_table.id)))).where(*base_filter)
+    total = int((await session.execute(count_stmt)).scalar_one() or 0)
+    if sort == "likes":
+        order = (col(artifact_table.like_count).desc(), col(artifact_table.updated_at).desc())
+    else:
+        order = (col(artifact_table.download_count).desc(), col(artifact_table.updated_at).desc())
+    list_stmt = (
+        select(artifact_table).where(*base_filter).order_by(*order).limit(limit).offset(offset)
+    )
+    items = list((await session.execute(list_stmt)).scalars().all())
+    return items, total
+
+
 async def build_skill_detail_payload(
     session: AsyncSession,
     skill: Skill,
@@ -165,33 +362,25 @@ async def subject_can_access_skill(
     """A subject may see a skill iff it is the owner OR a team it belongs to has
     an active grant for the skill. Mirrors the team-grant branch of
     services/policy.py:subject_can_use_model."""
-    if skill.owner_subject_id == subject_id:
-        return True
-    result = await session.execute(
-        select(col(SkillTeamGrant.id))
-        .join(Team, col(Team.id) == col(SkillTeamGrant.team_id))
-        .join(TeamMembership, col(TeamMembership.team_id) == col(Team.id))
-        .where(
-            col(SkillTeamGrant.skill_id) == skill.id,
-            col(SkillTeamGrant.state) == ResourceState.ACTIVE,
-            col(Team.state) == ResourceState.ACTIVE,
-            col(TeamMembership.state) == ResourceState.ACTIVE,
-            col(TeamMembership.subject_id) == subject_id,
-        )
+    return await _subject_can_access_artifact(
+        session,
+        subject_id=subject_id,
+        artifact=skill,
+        grant_table=SkillTeamGrant,
+        grant_fk_col=SkillTeamGrant.skill_id,
     )
-    return result.scalars().first() is not None
 
 
 async def get_skill_by_owner_slug(
     session: AsyncSession, *, owner_id: UUID, slug: str, include_disabled: bool = False
 ) -> Skill | None:
-    stmt = select(Skill).where(
-        col(Skill.owner_subject_id) == owner_id,
-        col(Skill.slug) == slug,
+    return await _get_artifact_by_owner_slug(
+        session,
+        owner_id=owner_id,
+        slug=slug,
+        artifact_table=Skill,
+        include_disabled=include_disabled,
     )
-    if not include_disabled:
-        stmt = stmt.where(col(Skill.state) == ResourceState.ACTIVE)
-    return (await session.execute(stmt)).scalars().first()
 
 
 def _extract_readme(zip_bytes: bytes) -> str | None:
@@ -374,55 +563,18 @@ async def list_visible_skills(
     `sort` selects the primary ordering: ``"downloads"`` (default) orders by
     download_count desc then updated_at desc; ``"likes"`` orders by like_count
     desc then updated_at desc."""
-    base_filter = [
-        col(Skill.state) == ResourceState.ACTIVE,
-        or_(
-            col(Skill.owner_subject_id) == subject_id,
-            col(Skill.id).in_(
-                select(distinct(col(SkillTeamGrant.skill_id)))
-                .join(Team, col(Team.id) == col(SkillTeamGrant.team_id))
-                .join(
-                    TeamMembership,
-                    col(TeamMembership.team_id) == col(Team.id),
-                )
-                .where(
-                    col(SkillTeamGrant.state) == ResourceState.ACTIVE,
-                    col(Team.state) == ResourceState.ACTIVE,
-                    col(TeamMembership.state) == ResourceState.ACTIVE,
-                    col(TeamMembership.subject_id) == subject_id,
-                )
-            ),
-        ),
-    ]
-    if q:
-        needle = f"%{q}%"
-        base_filter.append(
-            or_(
-                col(Skill.name).ilike(needle),
-                col(Skill.summary).ilike(needle),
-                col(Skill.slug).ilike(needle),
-            )
-        )
-    if owner:
-        base_filter.append(
-            col(Skill.owner_subject_id).in_(
-                select(col(Subject.id)).where(
-                    or_(
-                        col(Subject.login_username) == owner,
-                        col(Subject.name) == owner,
-                    )
-                )
-            )
-        )
-    count_stmt = select(func.count(distinct(col(Skill.id)))).where(*base_filter)
-    total = int((await session.execute(count_stmt)).scalar_one() or 0)
-    if sort == "likes":
-        order = (col(Skill.like_count).desc(), col(Skill.updated_at).desc())
-    else:
-        order = (col(Skill.download_count).desc(), col(Skill.updated_at).desc())
-    list_stmt = select(Skill).where(*base_filter).order_by(*order).limit(limit).offset(offset)
-    items = list((await session.execute(list_stmt)).scalars().all())
-    return items, total
+    return await _list_visible_artifacts(
+        session,
+        artifact_table=Skill,
+        grant_table=SkillTeamGrant,
+        grant_fk_col=SkillTeamGrant.skill_id,
+        subject_id=subject_id,
+        q=q,
+        owner=owner,
+        limit=limit,
+        offset=offset,
+        sort=sort,
+    )
 
 
 async def get_skill_version(
@@ -462,51 +614,24 @@ async def toggle_skill_like(session: AsyncSession, *, subject_id: UUID, skill_id
     like_count is updated via an atomic UPDATE ... SET like_count = like_count
     + 1 (mirroring increment_skill_download_count) so concurrent toggles do not
     lose updates; the read-modify-write pattern would race."""
-    skill = await session.get(Skill, skill_id)
-    if skill is None:
-        raise HTTPException(status_code=404, detail="artifact_not_found")
-    existing = (
-        await session.execute(
-            select(SkillLike).where(
-                col(SkillLike.subject_id) == subject_id,
-                col(SkillLike.skill_id) == skill_id,
-            )
-        )
-    ).scalar_one_or_none()
-    if existing is not None:
-        await session.delete(existing)
-        delta = -1
-    else:
-        session.add(SkillLike(subject_id=subject_id, skill_id=skill_id))
-        delta = 1
-    # Atomic increment/decrement; clamp at 0 on decrement to avoid negatives
-    # (shouldn't happen with the unique constraint, but guard the column anyway).
-    new_count = Skill.like_count + delta
-    if delta < 0:
-        new_count = func.greatest(0, new_count)
-    await session.execute(
-        update(Skill).where(col(Skill.id) == skill_id).values(like_count=new_count)
-    )
-    skill.updated_at = utcnow()
-    await session.flush()
-    await session.refresh(skill)
-    return skill
+    return await _toggle_like(
+        session,
+        subject_id=subject_id,
+        artifact_id=skill_id,
+        artifact_table=Skill,
+        like_table=SkillLike,
+        artifact_fk_col=SkillLike.skill_id,
+    )  # type: ignore[return-value]
 
 
 async def is_skill_liked_by(session: AsyncSession, *, subject_id: UUID, skill_id: UUID) -> bool:
-    row = (
-        (
-            await session.execute(
-                select(col(SkillLike.id)).where(
-                    col(SkillLike.subject_id) == subject_id,
-                    col(SkillLike.skill_id) == skill_id,
-                )
-            )
-        )
-        .scalars()
-        .first()
+    return await _is_liked_by(
+        session,
+        subject_id=subject_id,
+        artifact_id=skill_id,
+        like_table=SkillLike,
+        artifact_fk_col=SkillLike.skill_id,
     )
-    return row is not None
 
 
 async def increment_skill_download_count(session: AsyncSession, *, skill_id: UUID) -> None:
@@ -523,33 +648,25 @@ async def increment_skill_download_count(session: AsyncSession, *, skill_id: UUI
 
 async def subject_can_access_mcp(session: AsyncSession, *, subject_id: UUID, mcp: MCP) -> bool:
     """Same visibility rule as skills: owner OR active team grant."""
-    if mcp.owner_subject_id == subject_id:
-        return True
-    result = await session.execute(
-        select(col(McpTeamGrant.id))
-        .join(Team, col(Team.id) == col(McpTeamGrant.team_id))
-        .join(TeamMembership, col(TeamMembership.team_id) == col(Team.id))
-        .where(
-            col(McpTeamGrant.mcp_id) == mcp.id,
-            col(McpTeamGrant.state) == ResourceState.ACTIVE,
-            col(Team.state) == ResourceState.ACTIVE,
-            col(TeamMembership.state) == ResourceState.ACTIVE,
-            col(TeamMembership.subject_id) == subject_id,
-        )
+    return await _subject_can_access_artifact(
+        session,
+        subject_id=subject_id,
+        artifact=mcp,
+        grant_table=McpTeamGrant,
+        grant_fk_col=McpTeamGrant.mcp_id,
     )
-    return result.scalars().first() is not None
 
 
 async def get_mcp_by_owner_slug(
     session: AsyncSession, *, owner_id: UUID, slug: str, include_disabled: bool = False
 ) -> MCP | None:
-    stmt = select(MCP).where(
-        col(MCP.owner_subject_id) == owner_id,
-        col(MCP.slug) == slug,
+    return await _get_artifact_by_owner_slug(
+        session,
+        owner_id=owner_id,
+        slug=slug,
+        artifact_table=MCP,
+        include_disabled=include_disabled,
     )
-    if not include_disabled:
-        stmt = stmt.where(col(MCP.state) == ResourceState.ACTIVE)
-    return (await session.execute(stmt)).scalars().first()
 
 
 def _validate_mcp_config(config: dict) -> dict:
@@ -723,55 +840,18 @@ async def list_visible_mcps(
     `sort` selects the primary ordering: ``"downloads"`` (default) orders by
     download_count desc then updated_at desc; ``"likes"`` orders by like_count
     desc then updated_at desc."""
-    base_filter = [
-        col(MCP.state) == ResourceState.ACTIVE,
-        or_(
-            col(MCP.owner_subject_id) == subject_id,
-            col(MCP.id).in_(
-                select(distinct(col(McpTeamGrant.mcp_id)))
-                .join(Team, col(Team.id) == col(McpTeamGrant.team_id))
-                .join(
-                    TeamMembership,
-                    col(TeamMembership.team_id) == col(Team.id),
-                )
-                .where(
-                    col(McpTeamGrant.state) == ResourceState.ACTIVE,
-                    col(Team.state) == ResourceState.ACTIVE,
-                    col(TeamMembership.state) == ResourceState.ACTIVE,
-                    col(TeamMembership.subject_id) == subject_id,
-                )
-            ),
-        ),
-    ]
-    if q:
-        needle = f"%{q}%"
-        base_filter.append(
-            or_(
-                col(MCP.name).ilike(needle),
-                col(MCP.summary).ilike(needle),
-                col(MCP.slug).ilike(needle),
-            )
-        )
-    if owner:
-        base_filter.append(
-            col(MCP.owner_subject_id).in_(
-                select(col(Subject.id)).where(
-                    or_(
-                        col(Subject.login_username) == owner,
-                        col(Subject.name) == owner,
-                    )
-                )
-            )
-        )
-    count_stmt = select(func.count(distinct(col(MCP.id)))).where(*base_filter)
-    total = int((await session.execute(count_stmt)).scalar_one() or 0)
-    if sort == "likes":
-        order = (col(MCP.like_count).desc(), col(MCP.updated_at).desc())
-    else:
-        order = (col(MCP.download_count).desc(), col(MCP.updated_at).desc())
-    list_stmt = select(MCP).where(*base_filter).order_by(*order).limit(limit).offset(offset)
-    items = list((await session.execute(list_stmt)).scalars().all())
-    return items, total
+    return await _list_visible_artifacts(
+        session,
+        artifact_table=MCP,
+        grant_table=McpTeamGrant,
+        grant_fk_col=McpTeamGrant.mcp_id,
+        subject_id=subject_id,
+        q=q,
+        owner=owner,
+        limit=limit,
+        offset=offset,
+        sort=sort,
+    )
 
 
 async def get_mcp_version_row(
@@ -810,45 +890,21 @@ async def toggle_mcp_like(session: AsyncSession, *, subject_id: UUID, mcp_id: UU
     like_count is updated via an atomic UPDATE ... SET like_count = like_count
     + 1 (mirroring increment_skill_download_count) so concurrent toggles do not
     lose updates; the read-modify-write pattern would race."""
-    mcp = await session.get(MCP, mcp_id)
-    if mcp is None:
-        raise HTTPException(status_code=404, detail="artifact_not_found")
-    existing = (
-        await session.execute(
-            select(McpLike).where(
-                col(McpLike.subject_id) == subject_id,
-                col(McpLike.mcp_id) == mcp_id,
-            )
-        )
-    ).scalar_one_or_none()
-    if existing is not None:
-        await session.delete(existing)
-        delta = -1
-    else:
-        session.add(McpLike(subject_id=subject_id, mcp_id=mcp_id))
-        delta = 1
-    # Atomic increment/decrement; clamp at 0 on decrement to avoid negatives.
-    new_count = MCP.like_count + delta
-    if delta < 0:
-        new_count = func.greatest(0, new_count)
-    await session.execute(update(MCP).where(col(MCP.id) == mcp_id).values(like_count=new_count))
-    mcp.updated_at = utcnow()
-    await session.flush()
-    await session.refresh(mcp)
-    return mcp
+    return await _toggle_like(
+        session,
+        subject_id=subject_id,
+        artifact_id=mcp_id,
+        artifact_table=MCP,
+        like_table=McpLike,
+        artifact_fk_col=McpLike.mcp_id,
+    )  # type: ignore[return-value]
 
 
 async def is_mcp_liked_by(session: AsyncSession, *, subject_id: UUID, mcp_id: UUID) -> bool:
-    row = (
-        (
-            await session.execute(
-                select(col(McpLike.id)).where(
-                    col(McpLike.subject_id) == subject_id,
-                    col(McpLike.mcp_id) == mcp_id,
-                )
-            )
-        )
-        .scalars()
-        .first()
+    return await _is_liked_by(
+        session,
+        subject_id=subject_id,
+        artifact_id=mcp_id,
+        like_table=McpLike,
+        artifact_fk_col=McpLike.mcp_id,
     )
-    return row is not None
