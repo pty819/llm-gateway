@@ -39,12 +39,6 @@
 	import CommandBlock from '$lib/components/CommandBlock.svelte';
 	import SecretOnceDialog from '$lib/components/SecretOnceDialog.svelte';
 	import PageTitle from '$lib/components/PageTitle.svelte';
-	import Pagination from '$lib/components/Pagination.svelte';
-	import AuditTable from '$lib/components/AuditTable.svelte';
-	import UsageTable from '$lib/components/UsageTable.svelte';
-	import AnalyticsBucketTable from '$lib/components/AnalyticsBucketTable.svelte';
-	import AnalyticsDrilldownTable from '$lib/components/AnalyticsDrilldownTable.svelte';
-	import UpstreamTable from '$lib/components/UpstreamTable.svelte';
 	import CopyValue from '$lib/components/CopyValue.svelte';
 	import AuthScreen from '$lib/components/AuthScreen.svelte';
 	import OwnedDashboard from '$lib/components/OwnedDashboard.svelte';
@@ -57,6 +51,11 @@
 	import AdminTeams from '$lib/components/admin/Teams.svelte';
 	import AdminUpstreams from '$lib/components/admin/Upstreams.svelte';
 	import AdminDiagnostics from '$lib/components/admin/Diagnostics.svelte';
+	import AdminKeys from '$lib/components/admin/Keys.svelte';
+	import AdminEntitlements from '$lib/components/admin/Entitlements.svelte';
+	import AdminRate from '$lib/components/admin/Rate.svelte';
+	import AdminRanking from '$lib/components/admin/Ranking.svelte';
+	import AdminAudit from '$lib/components/admin/Audit.svelte';
 	import { parseCidrList, parseJsonObject, validateCidrList, validateHttpUrl } from '$lib/validators';
 
 	import {
@@ -64,22 +63,11 @@
 		sections,
 		navGroups,
 		employeeIdPattern,
-		short,
-		msLabel,
-		ratioLabel,
-		tokenRateLabel,
-		metricsKindLabel,
-		bytesLabel,
-		subjectTypeLabel,
-		scopeLabel,
 		subjectDisplay,
 		matchNeedle,
 		pageRows,
-		pageCount,
-		pageCountTotal,
 		filteredSubjects as filteredSubjectsConfig,
 		subjectOptions as subjectOptionsConfig,
-		toDateTimeLocal,
 		usageRangeForDays,
 		defaultUsageRange,
 		inferGatewayBaseUrl,
@@ -1214,9 +1202,23 @@
 						onPatchProject={patchProject}
 					/>
 				{:else if active === 'keys'}
-					<PageTitle title={'网关密钥'} subtitle={'签发、轮换和停用网关管理的密钥。'} />
-					<section class="panel"><h2>签发密钥</h2><div class="form-grid"><label>搜索用户<input bind:value={keySubjectSearch} placeholder="输入姓名或工号" /></label><label>用户<select bind:value={keyForm.subject_id}><option value="">用户</option>{#each subjectOptions(keySubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>项目<select bind:value={keyForm.project_id}><option value="">项目</option>{#each dropdownProjects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><label>名称<input bind:value={keyForm.name} /></label><button type="button" onclick={issueKey}>签发密钥</button></div></section>
-					<section class="panel"><h2>密钥</h2><div class="form-grid"><label>搜索用户/密钥<input bind:value={keyListSubjectSearch} placeholder="姓名、工号、密钥名或前缀" /></label><label>项目<select bind:value={keyProjectFilter}><option value="">全部项目</option>{#each inventory.inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><label>状态<select bind:value={keyStateFilter}><option value="">全部状态</option><option value="active">启用</option><option value="disabled">停用</option></select></label></div><div class="table-wrap"><table><thead><tr><th>名称</th><th>前缀</th><th>用户</th><th>项目</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each keyPageRows as key}<tr><td>{key.name}</td><td><code>{key.key_prefix}</code></td><td>{subjectLabel(key.subject_id)}</td><td>{projectLabel(key.project_id)}</td><td><StateBadge value={key.state} /></td><td><button class="secondary" type="button" onclick={() => setKeyState(key.id, key.state === 'active' ? 'disabled' : 'active')}>{key.state === 'active' ? '禁用' : '启用'}</button></td></tr>{:else}<tr><td colspan="6" class="empty">没有匹配的密钥。</td></tr>{/each}</tbody></table></div><Pagination total={keyRows.length} page={keyPage} size={PAGE_SIZE.defaultList} onPage={(page) => (keyPage = page)} /></section>
+					<AdminKeys
+						projects={inventory.inventory.projects}
+						{keyRows}
+						{keyPageRows}
+						bind:keyForm
+						bind:keySubjectSearch
+						bind:keyListSubjectSearch
+						bind:keyProjectFilter
+						bind:keyStateFilter
+						bind:keyPage
+						{dropdownProjects}
+						{subjectOptions}
+						{subjectLabel}
+						{projectLabel}
+						onIssue={issueKey}
+						onSetState={setKeyState}
+					/>
 				{:else if active === 'teams'}
 					<AdminTeams
 						teams={inventory.inventory.teams}
@@ -1250,13 +1252,31 @@
 				{:else if active === 'mcp-market'}
 					<McpMarketSection client={session.api} teams={inventory.inventory.teams} />
 				{:else if active === 'entitlements'}
-					<PageTitle title={'旧授权'} subtitle={'给项目、用户或单个网关密钥授予模型访问权限。'} />
-					<section class="panel"><h2>创建授权</h2><div class="form-grid"><label>模型<select bind:value={entitlementForm.model_alias_id}><option value="">模型</option>{#each inventory.inventory.models as model}<option value={model.id}>{model.alias}</option>{/each}</select></label><label>范围<select bind:value={entitlementForm.scope} onchange={() => (entitlementForm.scope_id = '')}><option value="project">项目</option><option value="subject">用户</option><option value="key">密钥</option></select></label>{#if entitlementForm.scope === 'subject'}<label>搜索用户<input bind:value={entitlementSubjectSearch} placeholder="输入姓名或工号" /></label>{/if}<label>授权对象<select bind:value={entitlementForm.scope_id}><option value="">对象</option>{#each scopeOptions(entitlementForm.scope, entitlementSubjectSearch) as option}<option value={option.id}>{option.label}</option>{/each}</select></label><button type="button" onclick={createEntitlement}>授权访问</button></div></section>
-					<section class="panel"><h2>授权</h2><div class="table-wrap"><table><thead><tr><th>模型</th><th>范围</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each inventory.inventory.entitlements as entitlement}<tr><td>{modelLabel(entitlement.model_alias_id)}</td><td>{entitlement.project_id ? `项目: ${projectLabel(entitlement.project_id)}` : entitlement.subject_id ? `用户: ${subjectLabel(entitlement.subject_id)}` : `密钥: ${keyLabel(entitlement.gateway_key_id)}`}</td><td><StateBadge value={entitlement.state} /></td><td><button class="secondary" type="button" onclick={() => setEntitlementState(entitlement.id, entitlement.state === 'active' ? 'disabled' : 'active')}>{entitlement.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
+					<AdminEntitlements
+						models={inventory.inventory.models}
+						entitlements={inventory.inventory.entitlements}
+						bind:entitlementForm
+						bind:entitlementSubjectSearch
+						{scopeOptions}
+						{subjectLabel}
+						{projectLabel}
+						{keyLabel}
+						{modelLabel}
+						onCreate={createEntitlement}
+						onSetState={setEntitlementState}
+					/>
 				{:else if active === 'rate'}
-					<PageTitle title={'限流策略'} subtitle={'基于数据库配置的每分钟请求数和并发限制。'} />
-					<section class="panel"><h2>创建限流策略</h2><p>实际生效限制会取密钥、用户、项目和环境默认值中的最小启用策略。</p><div class="form-grid"><label>范围<select bind:value={rateForm.scope} onchange={() => (rateForm.scope_id = '')}><option value="key">密钥</option><option value="subject">用户</option><option value="project">项目</option></select></label>{#if rateForm.scope === 'subject'}<label>搜索用户<input bind:value={rateSubjectSearch} placeholder="输入姓名或工号" /></label>{/if}<label>对象<select bind:value={rateForm.scope_id}><option value="">对象</option>{#each scopeOptions(rateForm.scope, rateSubjectSearch) as option}<option value={option.id}>{option.label}</option>{/each}</select></label><label>每分钟请求数<input type="number" min="0" bind:value={rateForm.requests_per_minute} /></label><label>并发限制<input type="number" min="0" bind:value={rateForm.concurrency_limit} /></label><button type="button" onclick={createRatePolicy}>创建策略</button></div></section>
-					<section class="panel"><h2>策略</h2><div class="table-wrap"><table><thead><tr><th>范围</th><th>对象</th><th>RPM</th><th>并发</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each inventory.inventory.ratePolicies as policy}<tr><td>{scopeLabel(policy.scope)}</td><td>{policy.scope === 'subject' ? subjectLabel(policy.scope_id) : policy.scope === 'project' ? projectLabel(policy.scope_id) : keyLabel(policy.scope_id)}</td><td>{policy.requests_per_minute ?? '继承'}</td><td>{policy.concurrency_limit ?? '继承'}</td><td><StateBadge value={policy.state} /></td><td><button class="secondary" type="button" onclick={() => setRateState(policy.id, policy.state === 'active' ? 'disabled' : 'active')}>{policy.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
+					<AdminRate
+						ratePolicies={inventory.inventory.ratePolicies}
+						bind:rateForm
+						bind:rateSubjectSearch
+						{scopeOptions}
+						{subjectLabel}
+						{projectLabel}
+						{keyLabel}
+						onCreate={createRatePolicy}
+						onSetState={setRateState}
+					/>
 				{:else if active === 'usage'}
 					<AdminUsage
 						inventory={inventory.inventory}
@@ -1288,12 +1308,26 @@
 						loading={session.loading}
 					/>
 				{:else if active === 'ranking'}
-					<PageTitle title={'排行榜'} subtitle={'按时间范围统计 token 用量最高的用户。'} />
-					<section class="panel"><div class="actions"><button class="secondary" type="button" onclick={() => setUsageRange(1 / 24)}>最近 1 小时</button><button class="secondary" type="button" onclick={() => setUsageRange(1)}>最近 1 天</button><button class="secondary" type="button" onclick={() => setUsageRange(7)}>最近 1 周</button><button class="secondary" type="button" onclick={() => setUsageRange(30)}>最近 1 月</button></div><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>模型筛选<select bind:value={rankingModel}><option value="">全部</option>{#each inventory.inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>Top N<input type="number" bind:value={rankingLimit} min="1" max="100" /></label><button type="button" onclick={refreshUsageRanking} disabled={session.loading}>{session.loading ? '查询中' : '查询'}</button></div></section>
-					<section class="panel"><div class="table-wrap"><table><thead><tr><th>#</th><th>用户 / Subject</th><th>请求数</th><th>输入 token</th><th>输出 token</th><th>总 token</th></tr></thead><tbody>{#each rankingPageRows as row, i}<tr><td>{(rankingPage - 1) * PAGE_SIZE.ranking + i + 1}</td><td>{row.subject_name} / {row.login_username ?? row.subject_id}</td><td>{row.request_count}</td><td>{row.prompt_tokens}</td><td>{row.completion_tokens}</td><td>{row.total_tokens}</td></tr>{:else}<tr><td colspan="6" class="empty">暂无用量数据。</td></tr>{/each}</tbody></table></div><Pagination total={rankingRows.length} page={rankingPage} size={PAGE_SIZE.ranking} onPage={(page) => (rankingPage = page)} /></section>
+					<AdminRanking
+						models={inventory.inventory.models}
+						{rankingRows}
+						{rankingPageRows}
+						bind:usageStart
+						bind:usageEnd
+						bind:rankingModel
+						bind:rankingLimit
+						bind:rankingPage
+						{setUsageRange}
+						onRefresh={refreshUsageRanking}
+						loading={session.loading}
+					/>
 				{:else if active === 'audit'}
-					<PageTitle title={'审计'} subtitle={'最近的权限变更和安全相关事件。'} />
-					<section class="panel"><AuditTable rows={auditPageRows} onDetail={(event) => (auditDetail = event)} /><Pagination total={auditRows.length} page={auditPage} size={PAGE_SIZE.audit} onPage={(page) => (auditPage = page)} /></section>
+					<AdminAudit
+						{auditRows}
+						{auditPageRows}
+						bind:auditPage
+						onDetail={(event) => (auditDetail = event)}
+					/>
 				{:else if active === 'diagnostics'}
 					<AdminDiagnostics
 						ready={session.ready}
