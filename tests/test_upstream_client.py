@@ -316,17 +316,22 @@ async def test_check_upstream_health_marks_5xx_unhealthy(monkeypatch):
 
 async def test_unified_dispatch_routes_chat_and_responses(monkeypatch):
     seen: list[EndpointFamily] = []
+    expected_paths = {
+        EndpointFamily.OPENAI_CHAT: "/chat/completions",
+        EndpointFamily.OPENAI_RESPONSES: "/responses",
+    }
+    actual_paths: list[str] = []
 
-    async def fake_chat(*, model_alias, upstream, body):
-        seen.append(EndpointFamily.OPENAI_CHAT)
-        return upstream_client.UpstreamCallResult(response={"kind": "chat"}, usage=None)
+    async def fake_post(*, path, model_alias, upstream, body):
+        # Map the path back to the family that produced it.
+        for fam, fam_path in expected_paths.items():
+            if fam_path == path:
+                seen.append(fam)
+                break
+        actual_paths.append(path)
+        return upstream_client.UpstreamCallResult(response={"kind": path}, usage=None)
 
-    async def fake_responses(*, model_alias, upstream, body):
-        seen.append(EndpointFamily.OPENAI_RESPONSES)
-        return upstream_client.UpstreamCallResult(response={"kind": "responses"}, usage=None)
-
-    monkeypatch.setattr(upstream_client, "_chat_once", fake_chat)
-    monkeypatch.setattr(upstream_client, "_responses_once", fake_responses)
+    monkeypatch.setattr(upstream_client, "_post_once", fake_post)
 
     for endpoint_family in (
         EndpointFamily.OPENAI_CHAT,
@@ -340,6 +345,7 @@ async def test_unified_dispatch_routes_chat_and_responses(monkeypatch):
         )
 
     assert seen == [EndpointFamily.OPENAI_CHAT, EndpointFamily.OPENAI_RESPONSES]
+    assert actual_paths == ["/chat/completions", "/responses"]
 
 
 async def test_litellm_call_result_alias_is_upstream_call_result():

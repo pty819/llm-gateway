@@ -124,14 +124,25 @@ def _extract_usage_from_frame(lines: list[str]) -> dict[str, Any] | None:
     return None
 
 
-async def _chat_once(
+# Path + stream-options profile per endpoint family. Chat Completions uses
+# /chat/completions and injects stream_options on stream requests (so the
+# upstream returns usage in the final frame). Responses uses /responses and
+# does not need stream_options (usage arrives in the response.completed event).
+_ENDPOINT_PATHS: dict[EndpointFamily, str] = {
+    EndpointFamily.OPENAI_CHAT: "/chat/completions",
+    EndpointFamily.OPENAI_RESPONSES: "/responses",
+}
+
+
+async def _post_once(
     *,
+    path: str,
     model_alias: ModelAlias,
     upstream: UpstreamTarget,
     body: dict[str, Any],
 ) -> UpstreamCallResult:
     payload = _prepare_payload(model_alias, body)
-    url = _url(upstream, "/chat/completions")
+    url = _url(upstream, path)
     async with httpx.AsyncClient(timeout=_timeout()) as client:
         response = await client.post(url, json=payload, headers=_headers(upstream))
     response.raise_for_status()
@@ -139,17 +150,21 @@ async def _chat_once(
     return UpstreamCallResult(response=data, usage=extract_usage_dict(data.get("usage")))
 
 
-async def _chat_stream(
+async def _post_stream(
     *,
+    path: str,
     model_alias: ModelAlias,
     upstream: UpstreamTarget,
     body: dict[str, Any],
+    inject_stream_options: bool = False,
 ) -> AsyncGenerator[tuple[str, dict[str, Any] | None], None]:
     payload = _prepare_payload(model_alias, body)
     payload["stream"] = True
-    if "stream_options" not in payload:
+    # Chat Completions streams need stream_options to get usage in the final
+    # frame. Responses API delivers usage via response.completed without it.
+    if inject_stream_options and "stream_options" not in payload:
         payload["stream_options"] = {"include_usage": True}
-    url = _url(upstream, "/chat/completions")
+    url = _url(upstream, path)
     saw_done = False
     async with httpx.AsyncClient(timeout=_timeout()) as client:
         async with client.stream("POST", url, json=payload, headers=_headers(upstream)) as response:
@@ -165,43 +180,6 @@ async def _chat_stream(
         yield "data: [DONE]\n\n", None
 
 
-async def _responses_once(
-    *,
-    model_alias: ModelAlias,
-    upstream: UpstreamTarget,
-    body: dict[str, Any],
-) -> UpstreamCallResult:
-    payload = _prepare_payload(model_alias, body)
-    url = _url(upstream, "/responses")
-    async with httpx.AsyncClient(timeout=_timeout()) as client:
-        response = await client.post(url, json=payload, headers=_headers(upstream))
-    response.raise_for_status()
-    data = response.json()
-    return UpstreamCallResult(response=data, usage=extract_usage_dict(data.get("usage")))
-
-
-async def _responses_stream(
-    *,
-    model_alias: ModelAlias,
-    upstream: UpstreamTarget,
-    body: dict[str, Any],
-) -> AsyncGenerator[tuple[str, dict[str, Any] | None], None]:
-    payload = _prepare_payload(model_alias, body)
-    payload["stream"] = True
-    url = _url(upstream, "/responses")
-    saw_done = False
-    async with httpx.AsyncClient(timeout=_timeout()) as client:
-        async with client.stream("POST", url, json=payload, headers=_headers(upstream)) as response:
-            response.raise_for_status()
-            async for frame, usage in _iter_sse_frames(response):
-                if "data: [DONE]" in frame:
-                    saw_done = True
-                yield frame, usage
-                await asyncio.sleep(0)
-    if not saw_done:
-        yield "data: [DONE]\n\n", None
-
-
 async def upstream_request_once(
     *,
     endpoint_family: EndpointFamily,
@@ -209,11 +187,10 @@ async def upstream_request_once(
     upstream: UpstreamTarget,
     body: dict[str, Any],
 ) -> UpstreamCallResult:
-    if endpoint_family == EndpointFamily.OPENAI_CHAT:
-        return await _chat_once(model_alias=model_alias, upstream=upstream, body=body)
-    if endpoint_family == EndpointFamily.OPENAI_RESPONSES:
-        return await _responses_once(model_alias=model_alias, upstream=upstream, body=body)
-    raise ValueError(f"unsupported endpoint family: {endpoint_family}")
+    path = _ENDPOINT_PATHS.get(endpoint_family)
+    if path is None:
+        raise ValueError(f"unsupported endpoint family: {endpoint_family}")
+    return await _post_once(path=path, model_alias=model_alias, upstream=upstream, body=body)
 
 
 async def upstream_request_stream(
@@ -223,12 +200,16 @@ async def upstream_request_stream(
     upstream: UpstreamTarget,
     body: dict[str, Any],
 ) -> AsyncGenerator[tuple[str, dict[str, Any] | None], None]:
-    if endpoint_family == EndpointFamily.OPENAI_CHAT:
-        async for item in _chat_stream(model_alias=model_alias, upstream=upstream, body=body):
-            yield item
-        return
-    if endpoint_family == EndpointFamily.OPENAI_RESPONSES:
-        async for item in _responses_stream(model_alias=model_alias, upstream=upstream, body=body):
-            yield item
-        return
-    raise ValueError(f"unsupported endpoint family: {endpoint_family}")
+    path = _ENDPOINT_PATHS.get(endpoint_family)
+    if path is None:
+        raise ValueError(f"unsupported endpoint family: {endpoint_family}")
+    # Only Chat Completions needs stream_options injection.
+    inject_stream_options = endpoint_family == EndpointFamily.OPENAI_CHAT
+    async for item in _post_stream(
+        path=path,
+        model_alias=model_alias,
+        upstream=upstream,
+        body=body,
+        inject_stream_options=inject_stream_options,
+    ):
+        yield item
