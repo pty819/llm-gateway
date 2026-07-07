@@ -16,23 +16,14 @@ from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.streamable_http_manager import TransportSecuritySettings
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import col
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import JSONResponse
 
 from llm_gateway.api.registry import _get_visible_mcp_or_404, _get_visible_skill_or_404
-from llm_gateway.db.models import (
-    McpTeamGrant,
-    McpVersion,
-    ResourceState,
-    SkillTeamGrant,
-    SkillVersion,
-    Subject,
-)
 from llm_gateway.services.registry import (
-    get_latest_active_mcp_version,
+    build_mcp_detail_payload,
+    build_skill_detail_payload,
     get_latest_active_version,
     get_skill_version,
     list_visible_mcps,
@@ -40,9 +31,7 @@ from llm_gateway.services.registry import (
     resolve_owner_name_map,
 )
 from llm_gateway.services.resource_payloads import (
-    mcp_detail,
     mcp_summary,
-    skill_detail,
     skill_summary,
 )
 from llm_gateway.services.security import AuthContext, authenticate_gateway_key
@@ -143,38 +132,7 @@ async def get_skill(owner: str, slug: str, ctx: Context = None) -> dict[str, Any
         skill = await _get_visible_skill_or_404(
             session, owner_name=owner, slug=slug, subject_id=auth.subject.id
         )
-        versions = list(
-            (
-                await session.execute(
-                    select(SkillVersion)
-                    .where(
-                        col(SkillVersion.skill_id) == skill.id,
-                        col(SkillVersion.state) == ResourceState.ACTIVE,
-                    )
-                    .order_by(col(SkillVersion.created_at).desc())
-                )
-            )
-            .scalars()
-            .all()
-        )
-        grants = list(
-            (
-                await session.execute(
-                    select(SkillTeamGrant).where(col(SkillTeamGrant.skill_id) == skill.id)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        owner_obj = await session.get(Subject, skill.owner_subject_id)
-        return skill_detail(
-            skill,
-            versions,
-            grants,
-            owner_name=owner_obj.name if owner_obj else None,
-            readme=skill.readme,
-            liked_by_me=False,
-        )
+        return await build_skill_detail_payload(session, skill, liked_by_me=False)
     finally:
         await session.close()
 
@@ -262,42 +220,8 @@ async def get_mcp(owner: str, slug: str, ctx: Context = None) -> dict[str, Any]:
         mcp_obj = await _get_visible_mcp_or_404(
             session, owner_name=owner, slug=slug, subject_id=auth.subject.id
         )
-        versions = list(
-            (
-                await session.execute(
-                    select(McpVersion)
-                    .where(
-                        col(McpVersion.mcp_id) == mcp_obj.id,
-                        col(McpVersion.state) == ResourceState.ACTIVE,
-                    )
-                    .order_by(col(McpVersion.created_at).desc())
-                )
-            )
-            .scalars()
-            .all()
-        )
-        grants = list(
-            (
-                await session.execute(
-                    select(McpTeamGrant).where(col(McpTeamGrant.mcp_id) == mcp_obj.id)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        latest = await get_latest_active_mcp_version(session, mcp=mcp_obj)
-        owner_obj = await session.get(Subject, mcp_obj.owner_subject_id)
         reveal = mcp_obj.owner_subject_id == auth.subject.id
-        return mcp_detail(
-            mcp_obj,
-            versions,
-            latest,
-            grants,
-            owner_name=owner_obj.name if owner_obj else None,
-            reveal=reveal,
-            readme=mcp_obj.readme,
-            liked_by_me=False,
-        )
+        return await build_mcp_detail_payload(session, mcp_obj, reveal=reveal, liked_by_me=False)
     finally:
         await session.close()
 

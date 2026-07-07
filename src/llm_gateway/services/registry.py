@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import zipfile
+from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -27,6 +28,7 @@ from llm_gateway.db.models import (
     utcnow,
 )
 from llm_gateway.services.facts import record_audit_event
+from llm_gateway.services.resource_payloads import mcp_detail, skill_detail
 
 SLUG_PATTERN = r"^[a-z][a-z0-9-]*$"
 
@@ -60,6 +62,101 @@ async def resolve_owner_name_map(session: AsyncSession, owner_ids: set[UUID]) ->
         select(Subject.id, Subject.name).where(col(Subject.id).in_(owner_ids))
     )
     return {row[0]: row[1] for row in rows.all()}
+
+
+async def build_skill_detail_payload(
+    session: AsyncSession,
+    skill: Skill,
+    *,
+    liked_by_me: bool | None = None,
+) -> dict[str, Any]:
+    """Fetch versions + grants + owner for a skill and assemble the detail payload.
+
+    Centralizes the query pattern that was duplicated across api/registry.py,
+    api/auth.py, and api/mcp_server.py. ``liked_by_me`` is optional — pass it
+    when the viewer's like-state is known (browse endpoints + mcp tools); omit
+    for data-plane detail (api/registry.py) where it's not surfaced. When
+    ``liked_by_me`` is provided the skill's README is also attached (matching
+    the browse/mcp behavior); the data-plane detail omits README too.
+    """
+    versions = list(
+        (
+            await session.execute(
+                select(SkillVersion)
+                .where(
+                    col(SkillVersion.skill_id) == skill.id,
+                    col(SkillVersion.state) == ResourceState.ACTIVE,
+                )
+                .order_by(col(SkillVersion.created_at).desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    grants = list(
+        (
+            await session.execute(
+                select(SkillTeamGrant).where(col(SkillTeamGrant.skill_id) == skill.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    owner_obj = await session.get(Subject, skill.owner_subject_id)
+    kwargs: dict[str, Any] = {"owner_name": owner_obj.name if owner_obj else None}
+    if liked_by_me is not None:
+        kwargs["liked_by_me"] = liked_by_me
+        kwargs["readme"] = skill.readme
+    return skill_detail(skill, versions, grants, **kwargs)
+
+
+async def build_mcp_detail_payload(
+    session: AsyncSession,
+    mcp: MCP,
+    *,
+    reveal: bool,
+    liked_by_me: bool | None = None,
+) -> dict[str, Any]:
+    """Fetch versions + grants + latest version + owner for an MCP and assemble
+    the detail payload.
+
+    Centralizes the query pattern duplicated across api/registry.py,
+    api/auth.py, and api/mcp_server.py. ``reveal`` (owner sees cleartext
+    env/headers) is always required — computed at the call site from the
+    viewer's subject id. ``liked_by_me`` is optional: pass it when the viewer's
+    like-state is known (browse + mcp tools); omit for data-plane detail
+    (api/registry.py) where it defaults to False. README is always attached
+    (all call sites pass it).
+    """
+    versions = list(
+        (
+            await session.execute(
+                select(McpVersion)
+                .where(
+                    col(McpVersion.mcp_id) == mcp.id,
+                    col(McpVersion.state) == ResourceState.ACTIVE,
+                )
+                .order_by(col(McpVersion.created_at).desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    grants = list(
+        (await session.execute(select(McpTeamGrant).where(col(McpTeamGrant.mcp_id) == mcp.id)))
+        .scalars()
+        .all()
+    )
+    latest = await get_latest_active_mcp_version(session, mcp=mcp)
+    owner_obj = await session.get(Subject, mcp.owner_subject_id)
+    kwargs: dict[str, Any] = {
+        "owner_name": owner_obj.name if owner_obj else None,
+        "reveal": reveal,
+        "readme": mcp.readme,
+    }
+    if liked_by_me is not None:
+        kwargs["liked_by_me"] = liked_by_me
+    return mcp_detail(mcp, versions, latest, grants, **kwargs)
 
 
 async def subject_can_access_skill(

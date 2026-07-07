@@ -36,7 +36,6 @@ from llm_gateway.db.models import (
     MCP,
     GatewayKey,
     McpTeamGrant,
-    McpVersion,
     Project,
     ProjectMembership,
     RequestFact,
@@ -44,7 +43,6 @@ from llm_gateway.db.models import (
     ResourceState,
     Skill,
     SkillTeamGrant,
-    SkillVersion,
     Subject,
     Team,
     TeamMembership,
@@ -65,11 +63,12 @@ from llm_gateway.services.policy import (
 from llm_gateway.services.rate_limit import RateLimitExceeded, check_login_rate
 from llm_gateway.services.registry import (
     SLUG_PATTERN,
+    build_mcp_detail_payload,
+    build_skill_detail_payload,
     create_or_append_mcp_version,
     create_or_append_skill_version,
     ensure_mcp_team_grant,
     ensure_skill_team_grant,
-    get_latest_active_mcp_version,
     get_latest_active_version,
     get_mcp_by_owner_slug,
     get_skill_by_owner_slug,
@@ -84,10 +83,8 @@ from llm_gateway.services.registry import (
     toggle_skill_like,
 )
 from llm_gateway.services.resource_payloads import (
-    mcp_detail,
     mcp_summary,
     redact_gateway_key,
-    skill_detail,
     skill_summary,
 )
 from llm_gateway.services.security import (
@@ -1168,39 +1165,8 @@ async def browse_skill_detail(
     skill = await _get_visible_skill_or_404(
         session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
     )
-    versions = list(
-        (
-            await session.execute(
-                select(SkillVersion)
-                .where(
-                    col(SkillVersion.skill_id) == skill.id,
-                    col(SkillVersion.state) == ResourceState.ACTIVE,
-                )
-                .order_by(col(SkillVersion.created_at).desc())
-            )
-        )
-        .scalars()
-        .all()
-    )
-    grants = list(
-        (
-            await session.execute(
-                select(SkillTeamGrant).where(col(SkillTeamGrant.skill_id) == skill.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    owner_obj = await session.get(Subject, skill.owner_subject_id)
     liked_by_me = await is_skill_liked_by(session, subject_id=ctx.subject.id, skill_id=skill.id)
-    return skill_detail(
-        skill,
-        versions,
-        grants,
-        owner_name=owner_obj.name if owner_obj else None,
-        readme=skill.readme,
-        liked_by_me=liked_by_me,
-    )
+    return await build_skill_detail_payload(session, skill, liked_by_me=liked_by_me)
 
 
 @router.get("/registry/skills/browse/{owner}/{slug}/download")
@@ -1493,39 +1459,9 @@ async def browse_mcp_detail(
     mcp = await _get_visible_mcp_or_404(
         session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
     )
-    versions = list(
-        (
-            await session.execute(
-                select(McpVersion)
-                .where(
-                    col(McpVersion.mcp_id) == mcp.id,
-                    col(McpVersion.state) == ResourceState.ACTIVE,
-                )
-                .order_by(col(McpVersion.created_at).desc())
-            )
-        )
-        .scalars()
-        .all()
-    )
-    grants = list(
-        (await session.execute(select(McpTeamGrant).where(col(McpTeamGrant.mcp_id) == mcp.id)))
-        .scalars()
-        .all()
-    )
-    latest = await get_latest_active_mcp_version(session, mcp=mcp)
-    owner_obj = await session.get(Subject, mcp.owner_subject_id)
     reveal = mcp.owner_subject_id == ctx.subject.id
     liked_by_me = await is_mcp_liked_by(session, subject_id=ctx.subject.id, mcp_id=mcp.id)
-    return mcp_detail(
-        mcp,
-        versions,
-        latest,
-        grants,
-        owner_name=owner_obj.name if owner_obj else None,
-        reveal=reveal,
-        liked_by_me=liked_by_me,
-        readme=mcp.readme,
-    )
+    return await build_mcp_detail_payload(session, mcp, reveal=reveal, liked_by_me=liked_by_me)
 
 
 @router.post("/registry/mcps/browse/{owner}/{slug}/like")

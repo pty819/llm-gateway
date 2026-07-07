@@ -14,11 +14,9 @@ from llm_gateway.core.config import Settings
 from llm_gateway.db.models import (
     ResourceState,
     Skill,
-    SkillTeamGrant,
-    SkillVersion,
-    Subject,
 )
 from llm_gateway.services.registry import (
+    build_skill_detail_payload,
     get_latest_active_version,
     get_skill_version,
     list_visible_skills,
@@ -26,7 +24,7 @@ from llm_gateway.services.registry import (
     resolve_owner_subject,
     subject_can_access_skill,
 )
-from llm_gateway.services.resource_payloads import skill_detail, skill_summary
+from llm_gateway.services.resource_payloads import skill_summary
 from llm_gateway.services.security import AuthContext
 
 router = APIRouter(prefix="/v1/registry")
@@ -87,31 +85,7 @@ async def get_skill_detail_route(
     skill = await _get_visible_skill_or_404(
         session, owner_name=owner, slug=slug, subject_id=auth.subject.id
     )
-    versions = list(
-        (
-            await session.execute(
-                select(SkillVersion)
-                .where(
-                    col(SkillVersion.skill_id) == skill.id,
-                    col(SkillVersion.state) == ResourceState.ACTIVE,
-                )
-                .order_by(col(SkillVersion.created_at).desc())
-            )
-        )
-        .scalars()
-        .all()
-    )
-    grants = list(
-        (
-            await session.execute(
-                select(SkillTeamGrant).where(col(SkillTeamGrant.skill_id) == skill.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    owner_obj = await session.get(Subject, skill.owner_subject_id)
-    return skill_detail(skill, versions, grants, owner_name=owner_obj.name if owner_obj else None)
+    return await build_skill_detail_payload(session, skill)
 
 
 @router.get("/skills/{owner}/{slug}/versions/{version}/download")
@@ -144,13 +118,13 @@ async def download_skill_version_route(
 
 # ---- MCP data-plane ----
 
-from llm_gateway.db.models import MCP, McpTeamGrant, McpVersion
+from llm_gateway.db.models import MCP
 from llm_gateway.services.registry import (
-    get_latest_active_mcp_version,
+    build_mcp_detail_payload,
     list_visible_mcps,
     subject_can_access_mcp,
 )
-from llm_gateway.services.resource_payloads import mcp_detail, mcp_summary
+from llm_gateway.services.resource_payloads import mcp_summary
 
 
 async def _get_visible_mcp_or_404(
@@ -208,35 +182,6 @@ async def get_mcp_detail_route(
     mcp = await _get_visible_mcp_or_404(
         session, owner_name=owner, slug=slug, subject_id=auth.subject.id
     )
-    versions = list(
-        (
-            await session.execute(
-                select(McpVersion)
-                .where(
-                    col(McpVersion.mcp_id) == mcp.id,
-                    col(McpVersion.state) == ResourceState.ACTIVE,
-                )
-                .order_by(col(McpVersion.created_at).desc())
-            )
-        )
-        .scalars()
-        .all()
-    )
-    grants = list(
-        (await session.execute(select(McpTeamGrant).where(col(McpTeamGrant.mcp_id) == mcp.id)))
-        .scalars()
-        .all()
-    )
-    latest = await get_latest_active_mcp_version(session, mcp=mcp)
-    owner_obj = await session.get(Subject, mcp.owner_subject_id)
     # Owner sees cleartext env/headers; grantees + strangers see redacted.
     reveal = mcp.owner_subject_id == auth.subject.id
-    return mcp_detail(
-        mcp,
-        versions,
-        latest,
-        grants,
-        owner_name=owner_obj.name if owner_obj else None,
-        reveal=reveal,
-        readme=mcp.readme,
-    )
+    return await build_mcp_detail_payload(session, mcp, reveal=reveal)
