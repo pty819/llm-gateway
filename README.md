@@ -85,7 +85,7 @@ For deployments, make the startup order explicit:
 
 ```bash
 uv run python scripts/init_db.py
-uv run python main.py
+uv run python scripts/start_local.py
 ```
 
 For local development, one command can upgrade and start both backend and frontend:
@@ -117,7 +117,7 @@ uv run python scripts/seed_dev.py
 Start the backend:
 
 ```bash
-uv run python main.py
+uv run python scripts/start_local.py
 ```
 
 Backend default:
@@ -139,7 +139,7 @@ If you start backend and frontend separately and clients call `/v1` through the 
 ```bash
 LLM_GATEWAY_TRUST_PROXY_HEADERS=true \
 LLM_GATEWAY_TRUST_PROXY_CIDRS=127.0.0.0/8,::1/128 \
-uv run python main.py
+uv run python scripts/start_local.py
 ```
 
 For a LAN reverse proxy or a Vite process that reaches the backend through the server's LAN address, add that proxy IP as a `/32`, for example `127.0.0.0/8,::1/128,10.21.48.65/32`.
@@ -399,7 +399,7 @@ Repeat for `gpu-b` and `gpu-c`. Use the **Check** button to verify each replica 
 > Run alongside the gateway:
 > ```bash
 > uv run python -m llm_gateway.health_sidecar &
-> uv run python main.py
+> uv run python scripts/start_local.py
 > ```
 > Tune with `LLM_GATEWAY_HEALTH_CHECK_ENABLED`, `LLM_GATEWAY_HEALTH_CHECK_INTERVAL_SECONDS`, `LLM_GATEWAY_HEALTH_CHECK_TIMEOUT_SECONDS`, `LLM_GATEWAY_HEALTH_CHECK_UNHEALTHY_TTL_SECONDS`, `LLM_GATEWAY_HEALTH_CHECK_QUORUM_MIN`. The `/models` 404 from 昇腾 PD-separated deployments is treated as healthy. Timeout verdicts are split into `connect_timeout` (the event-loop-freeze signature) and `read_timeout` (genuinely slow upstream) in the audit log.
 

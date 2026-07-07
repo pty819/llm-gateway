@@ -30,10 +30,11 @@ npm run dev -- --open
 ```
 
 The dev server proxies `/admin`, `/health`, and `/v1` to the gateway backend at
-`http://127.0.0.1:18080`. Start the backend from the repository root with:
+`http://127.0.0.1:18080`. Start both backend and frontend from the repository
+root with:
 
 ```sh
-uv run python main.py
+uv run python scripts/start_local.py
 ```
 
 ## Building
