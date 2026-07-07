@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { SkillTeamGrantSummary, McpTeamGrantSummary } from '$lib/api/types';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 
 	/**
 	 * Unified grant editor for Skill and MCP artifacts. The two former editors
@@ -33,6 +34,11 @@
 	let error = $state('');
 	let busy = $state(false);
 
+	/** Pending revoke, shown in the confirm dialog. */
+	let pendingRevoke = $state<Grant | null>(null);
+	/** Drives the ConfirmDialog; null = closed. */
+	let confirmMessage = $state<string | null>(null);
+
 	function teamName(teamId: string): string {
 		return teams.find((team) => team.id === teamId)?.name ?? teamId;
 	}
@@ -58,8 +64,14 @@
 		}
 	}
 
-	async function revoke(grant: Grant) {
-		if (!window.confirm(`确认撤销 ${teamName(grant.team_id)} 对该${artifactLabel}的授权？`)) return;
+	function askRevoke(grant: Grant) {
+		pendingRevoke = grant;
+		confirmMessage = `确认撤销 ${teamName(grant.team_id)} 对该${artifactLabel}的授权？`;
+	}
+
+	async function doRevoke() {
+		const grant = pendingRevoke;
+		if (!grant) return;
 		error = '';
 		busy = true;
 		try {
@@ -69,6 +81,7 @@
 			error = err instanceof Error ? err.message : '撤销失败。';
 		} finally {
 			busy = false;
+			pendingRevoke = null;
 		}
 	}
 </script>
@@ -104,13 +117,13 @@
 					<td>
 						<span class="badge {grant.state === 'active' ? 'success' : ''}">{grant.state === 'active' ? '已启用' : grant.state}</span>
 					</td>
-					<td>
-						{#if grant.state === 'active'}
-							<button class="danger" type="button" onclick={() => revoke(grant)} disabled={busy}>撤销</button>
-						{:else}
-							<span class="muted">已撤销</span>
-						{/if}
-					</td>
+						<td>
+							{#if grant.state === 'active'}
+								<button class="danger" type="button" onclick={() => askRevoke(grant)} disabled={busy}>撤销</button>
+							{:else}
+								<span class="muted">已撤销</span>
+							{/if}
+						</td>
 				</tr>
 			{:else}
 				<tr><td colspan="3" class="empty">尚未授权任何权限组。</td></tr>
@@ -118,3 +131,11 @@
 		</tbody>
 	</table>
 </div>
+
+<ConfirmDialog
+	bind:message={confirmMessage}
+	title="撤销授权"
+	confirmLabel="撤销"
+	{busy}
+	onConfirm={doRevoke}
+/>

@@ -41,6 +41,7 @@
 	import PageTitle from '$lib/components/PageTitle.svelte';
 	import CopyValue from '$lib/components/CopyValue.svelte';
 	import AuthScreen from '$lib/components/AuthScreen.svelte';
+	import Modal from '$lib/components/Modal.svelte';
 	import OwnedDashboard from '$lib/components/OwnedDashboard.svelte';
 	import SkillMarketSection from '$lib/components/SkillMarketSection.svelte';
 	import McpMarketSection from '$lib/components/McpMarketSection.svelte';
@@ -123,6 +124,34 @@
 	let gatewayBaseUrl = $state('');
 	let copiedItem = $state('');
 	let auditDetail = $state<AuditEvent | null>(null);
+
+	// —— Promise-based confirm dialog (replaces window.confirm for delete paths) ——
+	let confirmOpen = $state(false);
+	let confirmTitle = $state('请确认');
+	let confirmMessage = $state('');
+	let confirmDanger = $state(true);
+	let confirmConfirmLabel = $state('确认');
+	let confirmResolve = $state<((ok: boolean) => void) | null>(null);
+
+	/** Show a Modal-backed confirm; resolves true on confirm, false on cancel. */
+	function askConfirm(message: string, opts?: { title?: string; confirmLabel?: string; danger?: boolean }): Promise<boolean> {
+		confirmMessage = message;
+		confirmTitle = opts?.title ?? '请确认';
+		confirmConfirmLabel = opts?.confirmLabel ?? '确认';
+		confirmDanger = opts?.danger ?? true;
+		confirmOpen = true;
+		return new Promise<boolean>((resolve) => {
+			confirmResolve = resolve;
+		});
+	}
+
+	function resolveConfirm(ok: boolean) {
+		const resolve = confirmResolve;
+		confirmResolve = null;
+		confirmOpen = false;
+		resolve?.(ok);
+	}
+
 	let subjectSearch = $state('');
 	let subjectPasswordSearch = $state('');
 	let projectOwnerSearch = $state('');
@@ -485,7 +514,7 @@
 	}
 
 	async function deleteSubject(subject: Inventory['subjects'][number]) {
-		if (!window.confirm(`确认删除用户 ${subject.name}（${subject.login_username ?? '无工号'}）？`)) return;
+		if (!(await askConfirm(`确认删除用户 ${subject.name}（${subject.login_username ?? '无工号'}）？`, { title: '删除用户', confirmLabel: '删除' }))) return;
 		await run(async () => {
 			await session.api.delete(`/admin/subjects/${subject.id}`);
 			await refreshAll();
@@ -650,14 +679,14 @@
 	}
 
 	async function deleteModel(model: Inventory['models'][number]) {
-		if (!window.confirm(`确认删除模型别名 ${model.alias}？`)) return;
+		if (!(await askConfirm(`确认删除模型别名 ${model.alias}？`, { title: '删除模型别名', confirmLabel: '删除' }))) return;
 		await run(async () => {
 			try {
 				await session.api.delete(`/admin/model-aliases/${model.id}`);
 			} catch (error) {
 				if (isModelUpstreamConflict(error)) {
 					const upstreamCount = Number((error.detail as { upstream_count?: number }).upstream_count ?? 0);
-					if (window.confirm(`这个模型还有 ${upstreamCount} 个上游端点依赖。是否一起删除这些上游依赖？`)) {
+					if (await askConfirm(`这个模型还有 ${upstreamCount} 个上游端点依赖。是否一起删除这些上游依赖？`, { title: '级联删除上游', confirmLabel: '一起删除' })) {
 						await session.api.delete(`/admin/model-aliases/${model.id}`, { cascade_upstreams: true });
 					} else {
 						return;
@@ -671,7 +700,7 @@
 	}
 
 	async function deleteUpstream(upstream: Inventory['upstreams'][number]) {
-		if (!window.confirm(`确认删除上游端点 ${upstream.name}？`)) return;
+		if (!(await askConfirm(`确认删除上游端点 ${upstream.name}？`, { title: '删除上游端点', confirmLabel: '删除' }))) return;
 		await run(async () => {
 			await session.api.delete(`/admin/upstreams/${upstream.id}`);
 			await refreshAll();
@@ -917,7 +946,7 @@
 	}
 
 	async function removeManagedProjectMember(membership: ProjectMembership) {
-		if (!window.confirm(`确认从项目中移除 ${membershipSubjectLabel(membership)}？`)) return;
+		if (!(await askConfirm(`确认从项目中移除 ${membershipSubjectLabel(membership)}？`, { title: '移除项目成员', confirmLabel: '移除' }))) return;
 		await run(async () => {
 			await session.api.delete(`/auth/managed/project-memberships/${membership.id}`);
 			await refreshManagedProjectMemberships();
@@ -1390,6 +1419,21 @@
 			</footer>
 		</section>
 	</div>
+{/if}
+
+{#if confirmOpen}
+	<Modal bind:open={confirmOpen} onClose={() => resolveConfirm(false)} ariaLabel={confirmTitle} width="narrow">
+		<header>
+			<h2>{confirmTitle}</h2>
+		</header>
+		<p>{confirmMessage}</p>
+		<footer class="actions">
+			<button class={confirmDanger ? 'danger' : ''} type="button" onclick={() => resolveConfirm(true)}>
+				{confirmConfirmLabel}
+			</button>
+			<button class="secondary" type="button" onclick={() => resolveConfirm(false)}>取消</button>
+		</footer>
+	</Modal>
 {/if}
 
 <SecretOnceDialog secret={session.plaintextKey} onClose={() => (session.plaintextKey = '')} />
