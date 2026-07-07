@@ -22,6 +22,7 @@ from llm_gateway.services.registry import (
     get_latest_active_version,
     get_skill_version,
     list_visible_skills,
+    resolve_owner_name_map,
     resolve_owner_subject,
     subject_can_access_skill,
 )
@@ -67,13 +68,7 @@ async def list_skills(
         limit=page_size,
         offset=offset,
     )
-    owner_ids = {s.owner_subject_id for s in items}
-    owner_names: dict[UUID, str] = {}
-    if owner_ids:
-        rows = await session.execute(
-            select(Subject.id, Subject.name).where(col(Subject.id).in_(owner_ids))
-        )
-        owner_names = {row[0]: row[1] for row in rows.all()}
+    owner_names = await resolve_owner_name_map(session, {s.owner_subject_id for s in items})
     return {
         "items": [skill_summary(s, owner_names.get(s.owner_subject_id)) for s in items],
         "total": total,
@@ -194,13 +189,7 @@ async def list_mcps(
         limit=page_size,
         offset=offset,
     )
-    owner_ids = {m.owner_subject_id for m in items}
-    owner_names: dict[UUID, str] = {}
-    if owner_ids:
-        rows = await session.execute(
-            select(Subject.id, Subject.name).where(col(Subject.id).in_(owner_ids))
-        )
-        owner_names = {row[0]: row[1] for row in rows.all()}
+    owner_names = await resolve_owner_name_map(session, {m.owner_subject_id for m in items})
     return {
         "items": [mcp_summary(m, owner_names.get(m.owner_subject_id)) for m in items],
         "total": total,

@@ -37,6 +37,7 @@ from llm_gateway.services.registry import (
     get_skill_version,
     list_visible_mcps,
     list_visible_skills,
+    resolve_owner_name_map,
 )
 from llm_gateway.services.resource_payloads import (
     mcp_detail,
@@ -77,21 +78,10 @@ async def _get_session(ctx: Context) -> AsyncSession:
     return AsyncSessionLocal()
 
 
-async def _resolve_owner_names(session: AsyncSession, items: list[Any]) -> dict[Any, str]:
-    """Map owner_subject_id -> Subject.name for the given items (like registry.py)."""
-    owner_ids = {i.owner_subject_id for i in items}
-    owner_names: dict[Any, str] = {}
-    if owner_ids:
-        rows = await session.execute(
-            select(Subject.id, Subject.name).where(col(Subject.id).in_(owner_ids))
-        )
-        owner_names = {row[0]: row[1] for row in rows.all()}
-    return owner_names
-
-
 # ---------------------------------------------------------------------------
 # FastMCP server + tool registration
 # ---------------------------------------------------------------------------
+
 
 mcp = FastMCP(
     name="llm-gateway-registry",
@@ -134,7 +124,7 @@ async def search_skills(
             offset=offset,
             sort=sort,
         )
-        owner_names = await _resolve_owner_names(session, items)
+        owner_names = await resolve_owner_name_map(session, {s.owner_subject_id for s in items})
         return {
             "items": [skill_summary(s, owner_names.get(s.owner_subject_id)) for s in items],
             "total": total,
@@ -248,7 +238,7 @@ async def list_mcps(
             offset=offset,
             sort=sort,
         )
-        owner_names = await _resolve_owner_names(session, items)
+        owner_names = await resolve_owner_name_map(session, {m.owner_subject_id for m in items})
         return {
             "items": [mcp_summary(m, owner_names.get(m.owner_subject_id)) for m in items],
             "total": total,

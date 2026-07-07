@@ -47,6 +47,21 @@ async def resolve_owner_subject(session: AsyncSession, *, owner: str) -> Subject
     return (await session.execute(stmt)).scalars().first()
 
 
+async def resolve_owner_name_map(session: AsyncSession, owner_ids: set[UUID]) -> dict[UUID, str]:
+    """Map owner_subject_id -> Subject.name for a set of owner ids.
+
+    Used by list/detail serializers to attach the owner's display name
+    without each call site re-writing the SELECT. Returns an empty dict
+    for an empty input (no query issued).
+    """
+    if not owner_ids:
+        return {}
+    rows = await session.execute(
+        select(Subject.id, Subject.name).where(col(Subject.id).in_(owner_ids))
+    )
+    return {row[0]: row[1] for row in rows.all()}
+
+
 async def subject_can_access_skill(
     session: AsyncSession, *, subject_id: UUID, skill: Skill
 ) -> bool:
