@@ -223,6 +223,7 @@ class RatePolicy(TimestampMixin, table=True):
 
 class Skill(TimestampMixin, table=True):
     __tablename__ = "skills"
+    __table_args__ = (UniqueConstraint("owner_subject_id", "slug", name="uq_skill_owner_slug"),)
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     owner_subject_id: UUID = Field(foreign_key="subjects.id", index=True)
@@ -253,6 +254,7 @@ class SkillVersion(TimestampMixin, table=True):
 
 class MCP(TimestampMixin, table=True):
     __tablename__ = "mcps"
+    __table_args__ = (UniqueConstraint("owner_subject_id", "slug", name="uq_mcp_owner_slug"),)
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     owner_subject_id: UUID = Field(foreign_key="subjects.id", index=True)
