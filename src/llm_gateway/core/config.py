@@ -47,6 +47,17 @@ class Settings(BaseSettings):
     analytics_database_url: str | None = Field(
         default=None, alias="LLM_GATEWAY_ANALYTICS_DATABASE_URL"
     )
+    # Optional separate DSN for pytest. When set, conftest builds a dedicated
+    # engine against this DB and truncates all tables between tests, so the dev
+    # DB (.env.local's database_url) is never touched by the test suite. When
+    # unset, the entire test suite skips (see tests/conftest.py).
+    test_database_url: str | None = Field(
+        default=None,
+        alias="LLM_GATEWAY_TEST_DATABASE_URL",
+        description="Optional separate DSN for pytest. When set, conftest creates "
+        "a dedicated engine against this DB and truncates all tables between "
+        "tests, so the dev DB is never touched by the test suite.",
+    )
     # statement_timeout applied to analytics queries so a runaway aggregate
     # cannot monopolize the analytics connection.
     analytics_statement_timeout_seconds: float = Field(
