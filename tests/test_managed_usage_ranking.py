@@ -50,9 +50,11 @@ async def test_usage_ranking_groups_by_subject_and_sorts_by_total_tokens():
     """直接调用查询函数：两个 subject 在同一 project，按 total_tokens 降序。"""
     from uuid import uuid4
 
-    from llm_gateway.api.auth import _usage_ranking_from_postgres
     from llm_gateway.db.models import Project, Subject, SubjectType, utcnow
     from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.usage_queries import (
+        usage_ranking_from_postgres as _usage_ranking_from_postgres,
+    )
 
     async with AsyncSessionLocal() as session:
         project = Project(name=f"rank-test-{uuid4().hex}", owner_subject_id=None)
@@ -95,9 +97,11 @@ async def test_usage_ranking_filters_by_model():
     """传 model 参数时只聚合该 model 的用量。"""
     from uuid import uuid4
 
-    from llm_gateway.api.auth import _usage_ranking_from_postgres
     from llm_gateway.db.models import Project, Subject, SubjectType, utcnow
     from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.usage_queries import (
+        usage_ranking_from_postgres as _usage_ranking_from_postgres,
+    )
 
     async with AsyncSessionLocal() as session:
         project = Project(name=f"rank-model-{uuid4().hex}", owner_subject_id=None)
@@ -143,9 +147,11 @@ async def test_usage_ranking_filters_by_model():
 async def test_usage_ranking_empty_project_returns_empty_list():
     from uuid import uuid4
 
-    from llm_gateway.api.auth import _usage_ranking_from_postgres
     from llm_gateway.db.models import utcnow
     from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.usage_queries import (
+        usage_ranking_from_postgres as _usage_ranking_from_postgres,
+    )
 
     now = utcnow()
     start = now - timedelta(days=1)
