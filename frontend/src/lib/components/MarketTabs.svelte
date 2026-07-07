@@ -30,13 +30,16 @@
 		padding: 0.45rem 0.9rem;
 		border: 1px solid var(--border, #d8dce2);
 		background: #fff;
+		color: #2b6cb0;
 		border-radius: 6px;
 		cursor: pointer;
+		font-weight: 600;
 	}
 
 	.tabs button.active {
 		background: var(--accent-bg, #e7f0fb);
 		border-color: var(--accent, #2b6cb0);
-		font-weight: 600;
+		color: #1a4a82;
+		font-weight: 700;
 	}
 </style>
