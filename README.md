@@ -15,7 +15,7 @@ FastAPI + Svelte enterprise LLM gateway for internal model serving. It sits in f
 - Model-level IP allowlists.
 - Redis-backed RPM and concurrency limits.
 - PostgreSQL-backed audit and token/request usage facts.
-- Admin-only DuckDB PostgreSQL extension queries for manual heavy usage analytics.
+- Admin-only PostgreSQL-direct analytics with a per-transaction `statement_timeout` guard for heavy usage aggregations.
 - Redis-backed realtime runtime metrics for active upstream connections plus cached vLLM `/metrics` pressure.
 - Gateway-native multi-upstream routing for identical model replicas, with API-key stickiness and load-aware selection on sticky miss.
 
@@ -71,16 +71,7 @@ For local upgrades that should also sync Python and frontend dependencies:
 uv run python scripts/upgrade_local.py
 ```
 
-DuckDB is pinned to `1.5.3` because DuckDB extensions are version/platform-bound. The repository vendors the PostgreSQL scanner extension under `vendor/duckdb/extensions/v1.5.3/<platform>/`. Runtime loads the matching local artifact first:
-
-- Linux x64 deployment: `linux_amd64`
-- Apple Silicon development: `osx_arm64`
-
-Refresh the bundled extension artifacts with:
-
-```bash
-uv run python scripts/fetch_duckdb_extensions.py
-```
+The analytics service runs SQLAlchemy/PostgreSQL queries directly against the usage-facts database. Each heavy aggregation request opens a per-transaction `SET LOCAL statement_timeout` (default 15s, configurable via `LLM_GATEWAY_ANALYTICS_STATEMENT_TIMEOUT_SECONDS`) so a runaway aggregate cannot monopolize the shared primary connection. For read-heavy deployments, point `LLM_GATEWAY_ANALYTICS_DATABASE_URL` at a read-only replica; when unset it falls back to the main database URL.
 
 Useful flags:
 
@@ -112,7 +103,7 @@ uv run python scripts/start_local.py --host 10.21.48.65
 ```
 
 This release adds analytics indexes through Alembic, so run the upgrade step before starting the new backend.
-The admin heavy analytics panel uses DuckDB's PostgreSQL extension for longer time windows. Normal user self-usage stays PostgreSQL-backed so it remains fresh and subject-scoped.
+The admin heavy analytics panel runs PostgreSQL-direct aggregations under the per-transaction `statement_timeout` guard for longer time windows. Normal user self-usage uses the same PostgreSQL backend so it stays fresh and subject-scoped.
 The usage page also opens an authenticated SSE stream over `fetch` to display realtime upstream load. vLLM endpoints expose engine metrics such as token/s, running/waiting requests, KV cache usage, and prefix-cache signal. The gateway caches each upstream metrics response in Redis and uses the cached load table for sticky-route misses.
 
 Leaving the upstream Metrics URL empty is usually enough because the gateway derives `<base-url-without-/v1>/metrics`. If an upstream exposes Prometheus metrics on a separate port, set the Metrics URL explicitly. Each upstream metrics response is cached for 3 seconds in Redis. If an upstream has no metrics endpoint, returns 404/timeout, or exposes unrelated Prometheus metrics only, the realtime metrics scrape is ignored instead of adding a failed row to the dashboard.

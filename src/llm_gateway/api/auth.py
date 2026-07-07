@@ -942,8 +942,8 @@ async def _usage_ranking_from_postgres(
     Mirrors _usage_summary_from_postgres (same total_tokens coalesce expression,
     same Postgres aggregation) but groups by subject and orders by usage. Used by
     the manager-facing ranking endpoint; the manager permission check happens in
-    the route handler before this runs. subject_id IS NULL rows are excluded to
-    match the admin DuckDB ranking behavior.
+    the route handler before this runs. subject_id IS NULL rows are excluded,
+    matching the admin ranking behavior.
 
     Scope is selected by passing exactly one of ``project_ids`` (filter on
     RequestFact.project_id) or ``subject_ids`` (filter on

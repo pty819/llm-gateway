@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     db_pool_size: int = Field(default=20, alias="LLM_GATEWAY_DB_POOL_SIZE")
     db_max_overflow: int = Field(default=40, alias="LLM_GATEWAY_DB_MAX_OVERFLOW")
     db_pool_recycle_seconds: int = Field(default=1800, alias="LLM_GATEWAY_DB_POOL_RECYCLE_SECONDS")
-    # Optional separate (read-only replica) DSN for heavy DuckDB analytics; falls
+    # Optional separate (read-only replica) DSN for heavy analytics; falls
     # back to the main database_url when unset.
     analytics_database_url: str | None = Field(
         default=None, alias="LLM_GATEWAY_ANALYTICS_DATABASE_URL"
