@@ -1110,13 +1110,10 @@ async def list_my_skills(
     ctx=Depends(user_session_dep),
     session: AsyncSession = Depends(session_dep),
 ):
-    from sqlalchemy import select as _select
-    from sqlmodel import col as _col
-
     stmt = (
-        _select(Skill)
-        .where(_col(Skill.owner_subject_id) == ctx.subject.id)
-        .order_by(_col(Skill.updated_at).desc())
+        select(Skill)
+        .where(col(Skill.owner_subject_id) == ctx.subject.id)
+        .order_by(col(Skill.updated_at).desc())
     )
     items = list((await session.execute(stmt)).scalars().all())
     return {
@@ -1307,13 +1304,11 @@ async def list_my_skill_grants(
     session: AsyncSession = Depends(session_dep),
 ):
     skill = await _require_owned_skill(session, ctx, slug)
-    from sqlalchemy import select as _select
-    from sqlmodel import col as _col
 
     rows = (
         (
             await session.execute(
-                _select(SkillTeamGrant).where(_col(SkillTeamGrant.skill_id) == skill.id)
+                select(SkillTeamGrant).where(col(SkillTeamGrant.skill_id) == skill.id)
             )
         )
         .scalars()
@@ -1446,13 +1441,10 @@ async def list_my_mcps(
     ctx=Depends(user_session_dep),
     session: AsyncSession = Depends(session_dep),
 ):
-    from sqlalchemy import select as _select
-    from sqlmodel import col as _col
-
     stmt = (
-        _select(MCP)
-        .where(_col(MCP.owner_subject_id) == ctx.subject.id)
-        .order_by(_col(MCP.updated_at).desc())
+        select(MCP)
+        .where(col(MCP.owner_subject_id) == ctx.subject.id)
+        .order_by(col(MCP.updated_at).desc())
     )
     items = list((await session.execute(stmt)).scalars().all())
     return {
@@ -1611,11 +1603,9 @@ async def list_my_mcp_grants(
     session: AsyncSession = Depends(session_dep),
 ):
     mcp = await _require_owned_mcp(session, ctx, slug)
-    from sqlalchemy import select as _select
-    from sqlmodel import col as _col
 
     rows = (
-        (await session.execute(_select(McpTeamGrant).where(_col(McpTeamGrant.mcp_id) == mcp.id)))
+        (await session.execute(select(McpTeamGrant).where(col(McpTeamGrant.mcp_id) == mcp.id)))
         .scalars()
         .all()
     )
