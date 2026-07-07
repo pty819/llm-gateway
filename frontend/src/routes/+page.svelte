@@ -50,20 +50,12 @@
 	import OwnedDashboard from '$lib/components/OwnedDashboard.svelte';
 	import SkillMarketSection from '$lib/components/SkillMarketSection.svelte';
 	import McpMarketSection from '$lib/components/McpMarketSection.svelte';
+	import AdminUsage from '$lib/components/admin/Usage.svelte';
+	import AdminModels from '$lib/components/admin/Models.svelte';
+	import AdminSubjects from '$lib/components/admin/Subjects.svelte';
+	import AdminProjects from '$lib/components/admin/Projects.svelte';
 	import { parseCidrList, parseJsonObject, validateCidrList, validateHttpUrl } from '$lib/validators';
 
-	// Strip any legacy LiteLLM provider prefix (openai/, openai/chat_completions/,
-	// anthropic/, hosted_vllm/) from a stored litellm_model for display. New
-	// aliases store the bare upstream model name, but legacy rows may still carry
-	// a prefix.
-	function bareModelName(litellmModel: string): string {
-		const v = litellmModel ?? '';
-		if (v.startsWith('openai/chat_completions/')) return v.slice('openai/chat_completions/'.length);
-		if (v.startsWith('openai/')) return v.slice('openai/'.length);
-		if (v.startsWith('anthropic/')) return v.slice('anthropic/'.length);
-		if (v.startsWith('hosted_vllm/')) return v.slice('hosted_vllm/'.length);
-		return v;
-	}
 	import {
 		PAGE_SIZE,
 		sections,
@@ -1160,50 +1152,14 @@
 					<PageTitle title={'MCP 市场'} subtitle={'发布和管理你的 MCP 连接配置,并授权给权限组。'} />
 					<McpMarketSection client={session.api} teams={marketTeams} />
 				{:else if active === 'models'}
-					<PageTitle title={'模型别名'} subtitle={'配置下游模型名称、上游模型映射、能力标记和模型级 IP 策略。'} />
-					<section class="panel">
-						<h2>创建模型别名</h2>
-						<div class="form-grid">
-							<label>别名<input bind:value={modelForm.alias} placeholder="dev-model" /></label>
-							<label>上游模型名<input bind:value={modelForm.upstream_model_name} /></label>
-							<label>粘性生命周期秒数<input type="number" min="1" max="86400" bind:value={modelForm.sticky_ttl_seconds} /></label>
-							<label>IP 策略<select bind:value={modelForm.ip_policy_mode}><option value="all_pass">全部放行</option><option value="allowlist">白名单</option></select></label>
-							<label>CIDRs<textarea bind:value={modelForm.ip_allowlist_cidrs} placeholder="10.0.0.0/8"></textarea></label>
-							<label>备注<input bind:value={modelForm.notes} /></label>
-						</div>
-						<div class="actions">
-							<label style="display:flex; width:auto; align-items:center;"><input type="checkbox" bind:checked={modelForm.supports_streaming} style="width:auto;" /> Streaming</label>
-							<label style="display:flex; width:auto; align-items:center;"><input type="checkbox" bind:checked={modelForm.supports_tools} style="width:auto;" /> Tools</label>
-							<label style="display:flex; width:auto; align-items:center;"><input type="checkbox" bind:checked={modelForm.supports_reasoning} style="width:auto;" /> Reasoning</label>
-							<button type="button" onclick={createModel}>创建别名</button>
-						</div>
-					</section>
-					<section class="panel">
-						<h2>模型别名</h2>
-						<div class="table-wrap">
-							<table>
-								<thead><tr><th>别名</th><th>上游模型</th><th>状态</th><th>粘性 TTL</th><th>IP 策略</th><th>Streaming</th><th>Tools</th><th>Reasoning</th><th>操作</th></tr></thead>
-								<tbody>
-									{#each inventory.inventory.models as model}
-										<tr>
-											<td><strong>{model.alias}</strong><br /><span class="muted">{model.upstream_model_name}</span></td>
-											<td><span class="badge">OpenAI</span><br /><span class="muted">{bareModelName(model.litellm_model)}</span></td>
-											<td><StateBadge value={model.state} /></td>
-											<td>{model.sticky_ttl_seconds}s</td>
-											<td><StateBadge value={model.ip_policy_mode} /><br /><span class="muted">{model.ip_allowlist_cidrs.join(', ') || '未配置 CIDR'}</span></td>
-											<td><StateBadge value={model.supports_streaming} tone="accent" /></td>
-											<td><StateBadge value={model.supports_tools} tone="accent" /></td>
-											<td><StateBadge value={model.supports_reasoning} tone="accent" /></td>
-											<td class="actions"><button class="secondary" type="button" onclick={() => editModelCidrs(model)}>编辑 CIDR</button><button class="secondary" type="button" onclick={() => {
-												const next = prompt('粘性生命周期秒数', String(model.sticky_ttl_seconds));
-												if (next !== null) patchModel(model.id, { sticky_ttl_seconds: Number(next) });
-											}}>编辑 TTL</button><button class="secondary" type="button" onclick={() => patchModel(model.id, { state: model.state === 'active' ? 'disabled' : 'active' })}>{model.state === 'active' ? '禁用' : '启用'}</button><button class="danger" type="button" onclick={() => deleteModel(model)}>删除</button></td>
-										</tr>
-									{/each}
-								</tbody>
-							</table>
-						</div>
-					</section>
+					<AdminModels
+						models={inventory.inventory.models}
+						bind:modelForm
+						onCreate={createModel}
+						onEditCidrs={editModelCidrs}
+						onPatch={patchModel}
+						onDelete={deleteModel}
+					/>
 				{:else if active === 'upstreams'}
 					<PageTitle title={'上游端点'} subtitle={'模型别名背后的同构 OpenAI 兼容副本池。'} />
 					<section class="panel">
@@ -1222,59 +1178,41 @@
 					</section>
 						<UpstreamTable rows={inventory.inventory.upstreams} healthResults={inventory.healthResults} modelLabel={modelLabel} onCheck={checkUpstream} onState={setUpstreamState} onPatch={patchUpstream} onDelete={deleteUpstream} onError={(m) => (session.pageError = m)} />
 				{:else if active === 'subjects'}
-					<PageTitle title={'用户'} subtitle={'由网关管理的人类用户和服务账号。'} />
-						<section class="panel">
-							<h2>创建用户</h2>
-							<div class="form-grid">
-								<label>真实姓名<input bind:value={subjectForm.name} /></label>
-								<label>工号<input bind:value={subjectForm.login_username} placeholder="l00014624" /></label>
-								<label>初始密码<input type="password" bind:value={subjectForm.password} /></label>
-								<label>类型<select bind:value={subjectForm.type}><option value="user">用户</option><option value="service">服务账号</option></select></label>
-								<label>备注<input bind:value={subjectForm.notes} /></label>
-								<button type="button" onclick={createSubject}>创建用户</button>
-							</div>
-						</section>
-						<section class="panel">
-							<h2>重置用户密码</h2>
-							<div class="form-grid">
-								<label>搜索用户<input bind:value={subjectPasswordSearch} placeholder="输入姓名或工号" /></label>
-								<label>用户<select bind:value={subjectPasswordForm.subject_id}><option value="">选择用户</option>{#each subjectOptions(subjectPasswordSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label>
-								<label>新密码<input type="password" bind:value={subjectPasswordForm.new_password} /></label>
-								<button type="button" onclick={resetSubjectPassword}>重置密码</button>
-							</div>
-						</section>
-						<section class="panel">
-							<h2>用户</h2>
-							<div class="form-grid"><label>搜索用户<input bind:value={subjectSearch} placeholder="输入姓名、工号或备注" /></label></div>
-							<div class="table-wrap"><table><thead><tr><th>真实姓名</th><th>工号</th><th>类型</th><th>状态</th><th>备注</th><th>操作</th></tr></thead><tbody>{#each subjectPageRows as subject}<tr><td>{subject.name}<br /><span class="muted">{short(subject.id)}</span></td><td>{subject.login_username ?? '无'}</td><td>{subjectTypeLabel(subject.type)}</td><td><StateBadge value={subject.state} /></td><td>{subject.notes}</td><td class="actions"><button class="secondary" type="button" onclick={() => patchSubject(subject.id, { name: prompt('真实姓名', subject.name) ?? subject.name })}>编辑姓名</button><button class="secondary" type="button" onclick={() => patchSubject(subject.id, { notes: prompt('备注', subject.notes ?? '') ?? subject.notes })}>编辑备注</button><button class="secondary" type="button" onclick={() => setSubjectState(subject.id, subject.state === 'active' ? 'disabled' : 'active')}>{subject.state === 'active' ? '禁用' : '启用'}</button><button class="danger" type="button" onclick={() => deleteSubject(subject)}>删除</button></td></tr>{:else}<tr><td colspan="6" class="empty">没有匹配的用户。</td></tr>{/each}</tbody></table></div>
-							<Pagination total={subjectRows.length} page={subjectPage} size={PAGE_SIZE.defaultList} onPage={(page) => (subjectPage = page)} />
-						</section>
+					<AdminSubjects
+						{subjectRows}
+						{subjectPageRows}
+						bind:subjectForm
+						bind:subjectPasswordForm
+						bind:subjectSearch
+						bind:subjectPasswordSearch
+						bind:subjectPage
+						{subjectOptions}
+						onCreate={createSubject}
+						onResetPassword={resetSubjectPassword}
+						onPatch={patchSubject}
+						onSetState={setSubjectState}
+						onDelete={deleteSubject}
+					/>
 				{:else if active === 'projects'}
-					<PageTitle title={'项目'} subtitle={'用量归因和项目成员关系。'} />
-					<div class="split">
-						<section class="panel">
-							<h2>创建项目</h2>
-							<div class="form-grid">
-								<label>名称<input bind:value={projectForm.name} /></label>
-								<label>搜索负责人<input bind:value={projectOwnerSearch} placeholder="输入姓名或工号" /></label>
-								<label>负责人<select bind:value={projectForm.owner_subject_id}><option value="">无</option>{#each subjectOptions(projectOwnerSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label>
-								<label>备注<input bind:value={projectForm.notes} /></label>
-								<button type="button" onclick={createProject}>创建项目</button>
-							</div>
-						</section>
-						<section class="panel">
-							<h2>添加项目成员</h2>
-							<div class="form-grid">
-								<label>项目<select bind:value={membershipForm.project_id}><option value="">项目</option>{#each dropdownProjects as project}<option value={project.id}>{project.name}</option>{/each}</select></label>
-								<label>搜索用户<input bind:value={projectMemberSearch} placeholder="输入姓名或工号" /></label>
-								<label>用户<select bind:value={membershipForm.subject_id}><option value="">用户</option>{#each subjectOptions(projectMemberSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label>
-								<label>角色<select bind:value={membershipForm.role}>{#each managedRoles as role}<option value={role.value}>{role.label}</option>{/each}</select></label>
-								<button type="button" onclick={createMembership}>添加成员</button>
-							</div>
-						</section>
-					</div>
-					<section class="panel"><h2>项目</h2><div class="form-grid"><label>搜索项目<input bind:value={projectSearch} placeholder="项目名、负责人或备注" /></label></div><div class="table-wrap"><table><thead><tr><th>名称</th><th>负责人</th><th>状态</th><th>备注</th><th>操作</th></tr></thead><tbody>{#each projectPageRows as project}<tr><td>{project.name}<br /><span class="muted">{short(project.id)}</span></td><td>{subjectLabel(project.owner_subject_id)}</td><td><StateBadge value={project.state} /></td><td>{project.notes}</td><td><button class="secondary" type="button" onclick={() => patchProject(project.id, { notes: prompt('备注', project.notes ?? '') ?? project.notes })}>编辑备注</button></td></tr>{:else}<tr><td colspan="5" class="empty">没有匹配的项目。</td></tr>{/each}</tbody></table></div><Pagination total={projectRows.length} page={projectPage} size={PAGE_SIZE.defaultList} onPage={(page) => (projectPage = page)} /></section>
-					<section class="panel"><h2>项目成员</h2><div class="table-wrap"><table><thead><tr><th>项目</th><th>用户</th><th>角色</th></tr></thead><tbody>{#each inventory.inventory.memberships as membership}<tr><td>{projectLabel(membership.project_id)}</td><td>{subjectLabel(membership.subject_id)}</td><td>{membership.role}</td></tr>{/each}</tbody></table></div></section>
+					<AdminProjects
+						memberships={inventory.inventory.memberships}
+						{dropdownProjects}
+						{managedRoles}
+						{projectRows}
+						{projectPageRows}
+						bind:projectForm
+						bind:membershipForm
+						bind:projectOwnerSearch
+						bind:projectMemberSearch
+						bind:projectSearch
+						bind:projectPage
+						{subjectOptions}
+						{subjectLabel}
+						{projectLabel}
+						onCreateProject={createProject}
+						onCreateMembership={createMembership}
+						onPatchProject={patchProject}
+					/>
 				{:else if active === 'keys'}
 					<PageTitle title={'网关密钥'} subtitle={'签发、轮换和停用网关管理的密钥。'} />
 					<section class="panel"><h2>签发密钥</h2><div class="form-grid"><label>搜索用户<input bind:value={keySubjectSearch} placeholder="输入姓名或工号" /></label><label>用户<select bind:value={keyForm.subject_id}><option value="">用户</option>{#each subjectOptions(keySubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>项目<select bind:value={keyForm.project_id}><option value="">项目</option>{#each dropdownProjects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><label>名称<input bind:value={keyForm.name} /></label><button type="button" onclick={issueKey}>签发密钥</button></div></section>
@@ -1302,66 +1240,35 @@
 					<section class="panel"><h2>创建限流策略</h2><p>实际生效限制会取密钥、用户、项目和环境默认值中的最小启用策略。</p><div class="form-grid"><label>范围<select bind:value={rateForm.scope} onchange={() => (rateForm.scope_id = '')}><option value="key">密钥</option><option value="subject">用户</option><option value="project">项目</option></select></label>{#if rateForm.scope === 'subject'}<label>搜索用户<input bind:value={rateSubjectSearch} placeholder="输入姓名或工号" /></label>{/if}<label>对象<select bind:value={rateForm.scope_id}><option value="">对象</option>{#each scopeOptions(rateForm.scope, rateSubjectSearch) as option}<option value={option.id}>{option.label}</option>{/each}</select></label><label>每分钟请求数<input type="number" min="0" bind:value={rateForm.requests_per_minute} /></label><label>并发限制<input type="number" min="0" bind:value={rateForm.concurrency_limit} /></label><button type="button" onclick={createRatePolicy}>创建策略</button></div></section>
 					<section class="panel"><h2>策略</h2><div class="table-wrap"><table><thead><tr><th>范围</th><th>对象</th><th>RPM</th><th>并发</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each inventory.inventory.ratePolicies as policy}<tr><td>{scopeLabel(policy.scope)}</td><td>{policy.scope === 'subject' ? subjectLabel(policy.scope_id) : policy.scope === 'project' ? projectLabel(policy.scope_id) : keyLabel(policy.scope_id)}</td><td>{policy.requests_per_minute ?? '继承'}</td><td>{policy.concurrency_limit ?? '继承'}</td><td><StateBadge value={policy.state} /></td><td><button class="secondary" type="button" onclick={() => setRateState(policy.id, policy.state === 'active' ? 'disabled' : 'active')}>{policy.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
 				{:else if active === 'usage'}
-					<PageTitle title={'用量总览'} subtitle={'默认查看最近一周的推理压力；需要更细或更长窗口时直接调整时间范围。'} />
-					<section class="panel">
-						<h2>资源概览</h2>
-						<div class="grid">
-							<div class="metric"><span>用户</span><strong>{inventory.inventory.subjects.length}</strong></div>
-							<div class="metric"><span>项目</span><strong>{inventory.inventory.projects.length}</strong></div>
-							<div class="metric"><span>密钥</span><strong>{inventory.inventory.keys.length}</strong></div>
-							<div class="metric"><span>模型</span><strong>{inventory.inventory.models.length}</strong></div>
-						</div>
-					</section>
-					<section class="panel">
-						<div class="section-head">
-							<div>
-								<h2>实时负载</h2>
-								<p>每个上游副本的 vLLM 压力来自对应 <code>/metrics</code>；多个浏览器共享 Redis 缓存。</p>
-							</div>
-							<div class="actions">
-								<StateBadge value={inventory.realtimeStatus} tone={inventory.realtimeStatus === '已连接' ? 'success' : 'neutral'} />
-								<button class={inventory.realtimeLocked ? '' : 'secondary'} type="button" onclick={() => (inventory.realtimeLocked = !inventory.realtimeLocked)}>{inventory.realtimeLocked ? '解锁排序' : '锁定顺序·显示全部'}</button>
-								<button class="secondary" type="button" onclick={inventory.startRealtimeStream}>重连</button>
-							</div>
-						</div>
-						<div class="grid">
-							<div class="metric"><span>vLLM 指标 token/s</span><strong>{inventory.realtime?.vllm.tokens_per_second == null ? '等待样本' : tokenRateLabel(inventory.realtime.vllm.tokens_per_second)}</strong></div>
-							<div class="metric"><span>网关当前上游连接</span><strong>{inventory.realtime?.active_connections ?? 0}</strong></div>
-							<div class="metric"><span>vLLM running / waiting</span><strong>{inventory.realtime?.vllm.running ?? '无'} / {inventory.realtime?.vllm.waiting ?? '无'}</strong></div>
-							<div class="metric"><span>最高 KV cache</span><strong>{ratioLabel(inventory.realtime?.vllm.max_kv_cache_usage)}</strong></div>
-							<div class="metric"><span>metrics 可用上游</span><strong>{inventory.realtime?.vllm.ok_upstreams ?? 0} / {inventory.realtime?.vllm.configured_upstreams ?? inventory.realtime?.vllm.observed_upstreams ?? 0}</strong></div>
-							<div class="metric"><span>metrics 已忽略</span><strong>{inventory.realtime?.vllm.ignored_upstreams ?? 0}</strong></div>
-							<div class="metric"><span>上游抓取缓存</span><strong>{inventory.realtime?.metrics_cache_seconds ?? inventory.realtime?.window_seconds ?? 3} 秒</strong></div>
-							<div class="metric"><span>更新时间</span><strong>{realtimeUpdatedLabel}</strong></div>
-						</div>
-						<div class="table-wrap">
-							<table>
-								<thead><tr><th>上游</th><th>模型</th><th>类型</th><th>token/s</th><th>网关连接</th><th>vLLM running / waiting</th><th>Router 负载</th><th>KV / Prefix</th><th>metrics</th></tr></thead>
-								<tbody>
-									{#each realtimeRows as upstream (upstream.upstream_id)}
-										<tr>
-											<td>{upstream.upstream_name}<br /><span class="muted">{short(upstream.upstream_id)}</span></td>
-											<td>{upstream.model_alias || '未知'}</td>
-											<td>{metricsKindLabel(upstream.vllm?.kind)}</td>
-											<td>{upstream.vllm?.tokens_per_second == null ? '等待样本' : tokenRateLabel(upstream.vllm.tokens_per_second)}</td>
-											<td>{upstream.active_connections}</td>
-											<td>{upstream.vllm?.running ?? '无'} / {upstream.vllm?.waiting ?? '无'}</td>
-											<td>{upstream.vllm?.router?.running_requests ?? upstream.vllm?.router?.worker_load ?? '无'} / {upstream.vllm?.router?.active_workers ?? '无'}</td>
-											<td>{ratioLabel(upstream.vllm?.kv_cache_usage)} / {ratioLabel(upstream.vllm?.prefix_cache_hit_ratio)}</td>
-											<td>{upstream.vllm?.ok ? '正常' : upstream.vllm?.error ?? '未抓取'}<br /><span class="muted">{upstream.vllm?.metrics_url ?? ''}</span></td>
-										</tr>
-									{:else}
-										<tr><td colspan="9" class="empty">暂无实时负载数据。</td></tr>
-									{/each}
-								</tbody>
-							</table>
-						</div>
-					</section>
-					<section class="panel"><div class="actions"><button class="secondary" type="button" onclick={() => setUsageRange(1 / 24)}>最近 1 小时</button><button class="secondary" type="button" onclick={() => setUsageRange(1)}>最近 1 天</button><button class="secondary" type="button" onclick={() => setUsageRange(7)}>最近 1 周</button><button class="secondary" type="button" onclick={() => setUsageRange(30)}>最近 1 月</button></div><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>时间粒度<select bind:value={analyticsBucket}><option value="minute">分钟</option><option value="hour">小时</option><option value="day">天</option></select></label><label>分析维度<select bind:value={analyticsDimension}><option value="model">模型</option><option value="subject">用户</option><option value="project">项目</option><option value="endpoint">协议</option><option value="outcome">结果</option><option value="streaming">流式</option></select></label><label>模型筛选<select bind:value={modelFilter}><option value="">全部</option>{#each inventory.inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>搜索用户<input bind:value={usageSubjectSearch} placeholder="输入姓名或工号" /></label><label>用户筛选<select bind:value={subjectFilter}><option value="">全部</option>{#each subjectOptions(usageSubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>项目筛选<select bind:value={projectFilter}><option value="">全部</option>{#each inventory.inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><button type="button" onclick={refreshUsageAnalytics} disabled={session.loading}>{session.loading ? '查询中' : '查询'}</button></div></section>
-					<div class="grid"><div class="metric"><span>请求数</span><strong>{totals.requests}</strong></div><div class="metric"><span>总 token</span><strong>{totals.total}</strong></div><div class="metric"><span>成功</span><strong>{totals.success}</strong></div><div class="metric"><span>失败</span><strong>{totals.failure}</strong></div><div class="metric"><span>平均延迟</span><strong>{msLabel(analyticsPerformance.latencyWeight ? analyticsPerformance.latencyTotal / analyticsPerformance.latencyWeight : null)}</strong></div><div class="metric"><span>平均 TTFT</span><strong>{msLabel(analyticsPerformance.ttftWeight ? analyticsPerformance.ttftTotal / analyticsPerformance.ttftWeight : null)}</strong></div><div class="metric"><span>Retry / Fallback</span><strong>{analyticsPerformance.retry} / {analyticsPerformance.fallback}</strong></div><div class="metric"><span>vLLM 指标覆盖</span><strong>{analyticsPerformance.vllmObserved} / {analyticsPerformance.requests}</strong></div></div>
-					<section class="panel"><h2>最近 5 个时间桶</h2><AnalyticsBucketTable rows={visibleAnalyticsBuckets} maxTokens={analyticsMaxTokens} /></section>
-					<section class="panel"><h2>Top 5 Drilldown</h2><AnalyticsDrilldownTable rows={visibleAnalyticsDrilldown} /></section>
-					<section class="panel"><h2>Top 5 汇总明细</h2><UsageTable rows={visibleUsageRows} subjectLabel={subjectLabel} projectLabel={projectLabel} /></section>
+					<AdminUsage
+						inventory={inventory.inventory}
+						realtimeStatus={inventory.realtimeStatus}
+						bind:realtimeLocked={inventory.realtimeLocked}
+						realtime={inventory.realtime}
+						{realtimeRows}
+						{realtimeUpdatedLabel}
+						{totals}
+						{analyticsPerformance}
+						{analyticsMaxTokens}
+						{visibleAnalyticsBuckets}
+						{visibleAnalyticsDrilldown}
+						{visibleUsageRows}
+						bind:usageStart
+						bind:usageEnd
+						bind:analyticsBucket
+						bind:analyticsDimension
+						bind:modelFilter
+						bind:subjectFilter
+						bind:projectFilter
+						bind:usageSubjectSearch
+						{subjectOptions}
+						{subjectLabel}
+						{projectLabel}
+						{setUsageRange}
+						onRefreshUsageAnalytics={refreshUsageAnalytics}
+						onStartRealtimeStream={inventory.startRealtimeStream}
+						loading={session.loading}
+					/>
 				{:else if active === 'ranking'}
 					<PageTitle title={'排行榜'} subtitle={'按时间范围统计 token 用量最高的用户。'} />
 					<section class="panel"><div class="actions"><button class="secondary" type="button" onclick={() => setUsageRange(1 / 24)}>最近 1 小时</button><button class="secondary" type="button" onclick={() => setUsageRange(1)}>最近 1 天</button><button class="secondary" type="button" onclick={() => setUsageRange(7)}>最近 1 周</button><button class="secondary" type="button" onclick={() => setUsageRange(30)}>最近 1 月</button></div><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>模型筛选<select bind:value={rankingModel}><option value="">全部</option>{#each inventory.inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>Top N<input type="number" bind:value={rankingLimit} min="1" max="100" /></label><button type="button" onclick={refreshUsageRanking} disabled={session.loading}>{session.loading ? '查询中' : '查询'}</button></div></section>
