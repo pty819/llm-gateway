@@ -54,6 +54,9 @@
 	import AdminModels from '$lib/components/admin/Models.svelte';
 	import AdminSubjects from '$lib/components/admin/Subjects.svelte';
 	import AdminProjects from '$lib/components/admin/Projects.svelte';
+	import AdminTeams from '$lib/components/admin/Teams.svelte';
+	import AdminUpstreams from '$lib/components/admin/Upstreams.svelte';
+	import AdminDiagnostics from '$lib/components/admin/Diagnostics.svelte';
 	import { parseCidrList, parseJsonObject, validateCidrList, validateHttpUrl } from '$lib/validators';
 
 	import {
@@ -1161,22 +1164,19 @@
 						onDelete={deleteModel}
 					/>
 				{:else if active === 'upstreams'}
-					<PageTitle title={'上游端点'} subtitle={'模型别名背后的同构 OpenAI 兼容副本池。'} />
-					<section class="panel">
-						<h2>创建上游</h2>
-						<div class="form-grid">
-							<label>模型<select bind:value={upstreamForm.model_alias_id}><option value="">选择模型</option>{#each inventory.inventory.models as model}<option value={model.id}>{model.alias}</option>{/each}</select></label>
-							<label>名称<input bind:value={upstreamForm.name} /></label>
-							<label>Base URL<input bind:value={upstreamForm.base_url} placeholder="http://host:8000/v1" /></label>
-							<label>Metrics URL<input bind:value={upstreamForm.metrics_url} placeholder="可选，例如 http://router-host:29000/metrics" /></label>
-							<label>健康检查路径<input bind:value={upstreamForm.health_path} /></label>
-							<label>API key 引用<input bind:value={upstreamForm.api_key_ref} /></label>
-							<label>API key 明文<input type="password" bind:value={upstreamForm.api_key_value} /></label>
-							<label>额外请求头<textarea bind:value={upstreamForm.extra_headers}></textarea></label>
-							<button type="button" onclick={createUpstream}>创建上游</button>
-						</div>
-					</section>
-						<UpstreamTable rows={inventory.inventory.upstreams} healthResults={inventory.healthResults} modelLabel={modelLabel} onCheck={checkUpstream} onState={setUpstreamState} onPatch={patchUpstream} onDelete={deleteUpstream} onError={(m) => (session.pageError = m)} />
+					<AdminUpstreams
+						upstreams={inventory.inventory.upstreams}
+						models={inventory.inventory.models}
+						healthResults={inventory.healthResults}
+						{modelLabel}
+						bind:upstreamForm
+						onCreate={createUpstream}
+						onCheck={checkUpstream}
+						onSetState={setUpstreamState}
+						onPatch={patchUpstream}
+						onDelete={deleteUpstream}
+						onError={(m) => (session.pageError = m)}
+					/>
 				{:else if active === 'subjects'}
 					<AdminSubjects
 						{subjectRows}
@@ -1218,15 +1218,33 @@
 					<section class="panel"><h2>签发密钥</h2><div class="form-grid"><label>搜索用户<input bind:value={keySubjectSearch} placeholder="输入姓名或工号" /></label><label>用户<select bind:value={keyForm.subject_id}><option value="">用户</option>{#each subjectOptions(keySubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>项目<select bind:value={keyForm.project_id}><option value="">项目</option>{#each dropdownProjects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><label>名称<input bind:value={keyForm.name} /></label><button type="button" onclick={issueKey}>签发密钥</button></div></section>
 					<section class="panel"><h2>密钥</h2><div class="form-grid"><label>搜索用户/密钥<input bind:value={keyListSubjectSearch} placeholder="姓名、工号、密钥名或前缀" /></label><label>项目<select bind:value={keyProjectFilter}><option value="">全部项目</option>{#each inventory.inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><label>状态<select bind:value={keyStateFilter}><option value="">全部状态</option><option value="active">启用</option><option value="disabled">停用</option></select></label></div><div class="table-wrap"><table><thead><tr><th>名称</th><th>前缀</th><th>用户</th><th>项目</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each keyPageRows as key}<tr><td>{key.name}</td><td><code>{key.key_prefix}</code></td><td>{subjectLabel(key.subject_id)}</td><td>{projectLabel(key.project_id)}</td><td><StateBadge value={key.state} /></td><td><button class="secondary" type="button" onclick={() => setKeyState(key.id, key.state === 'active' ? 'disabled' : 'active')}>{key.state === 'active' ? '禁用' : '启用'}</button></td></tr>{:else}<tr><td colspan="6" class="empty">没有匹配的密钥。</td></tr>{/each}</tbody></table></div><Pagination total={keyRows.length} page={keyPage} size={PAGE_SIZE.defaultList} onPage={(page) => (keyPage = page)} /></section>
 				{:else if active === 'teams'}
-					<PageTitle title={'权限组'} subtitle={'自助注册用户会继承其所有启用权限组的模型访问权限。'} />
-					<div class="split">
-						<section class="panel"><h2>创建权限组</h2><div class="form-grid"><label>名称<input bind:value={teamForm.name} /></label><label>备注<input bind:value={teamForm.notes} /></label><button type="button" onclick={createTeam}>创建权限组</button></div></section>
-						<section class="panel"><h2>把用户加入权限组</h2><div class="form-grid"><label>搜索用户<input bind:value={teamSubjectSearch} placeholder="输入姓名或工号" /></label><label>权限组<select bind:value={teamMembershipForm.team_id}><option value="">权限组</option>{#each inventory.inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><label>用户<select bind:value={teamMembershipForm.subject_id}><option value="">用户</option>{#each subjectOptions(teamSubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>角色<select bind:value={teamMembershipForm.role}>{#each managedRoles as role}<option value={role.value}>{role.label}</option>{/each}</select></label><button type="button" onclick={createTeamMembership}>添加成员</button></div></section>
-					</div>
-					<section class="panel"><h2>给权限组授权模型</h2><div class="form-grid"><label>模型<select bind:value={modelTeamGrantForm.model_alias_id}><option value="">模型</option>{#each inventory.inventory.models as model}<option value={model.id}>{model.alias}</option>{/each}</select></label><label>权限组<select bind:value={modelTeamGrantForm.team_id}><option value="">权限组</option>{#each inventory.inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><button type="button" onclick={createModelTeamGrant}>授权模型</button></div></section>
-					<section class="panel"><h2>权限组</h2><div class="table-wrap"><table><thead><tr><th>名称</th><th>状态</th><th>内置</th><th>备注</th><th>操作</th></tr></thead><tbody>{#each inventory.inventory.teams as team}<tr><td>{team.name}<br /><span class="muted">{short(team.id)}</span></td><td><StateBadge value={team.state} /></td><td><StateBadge value={team.is_builtin} tone="accent" /></td><td>{team.notes}</td><td><button class="secondary" type="button" onclick={() => patchTeam(team.id, { state: team.state === 'active' ? 'disabled' : 'active' })}>{team.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
-					<section class="panel"><h2>成员关系</h2><div class="form-grid"><label>权限组<select bind:value={teamMembershipTeamFilter}><option value="">全部权限组</option>{#each inventory.inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><label>搜索用户<input bind:value={teamMembershipSubjectSearch} placeholder="姓名或工号" /></label><label>角色<input bind:value={teamMembershipRoleFilter} placeholder="member" /></label><label>状态<select bind:value={teamMembershipStateFilter}><option value="">全部状态</option><option value="active">启用</option><option value="disabled">停用</option></select></label></div><div class="table-wrap"><table><thead><tr><th>权限组</th><th>用户</th><th>角色</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each teamMembershipPageRows as membership}<tr><td>{teamLabel(membership.team_id)}</td><td>{subjectLabel(membership.subject_id)}</td><td>{membership.role}</td><td><StateBadge value={membership.state} /></td><td><button class="secondary" type="button" onclick={() => setTeamMembershipState(membership.id, membership.state === 'active' ? 'disabled' : 'active')}>{membership.state === 'active' ? '禁用' : '启用'}</button></td></tr>{:else}<tr><td colspan="5" class="empty">没有匹配的成员关系。</td></tr>{/each}</tbody></table></div><Pagination total={teamMembershipRows.length} page={teamMembershipPage} size={PAGE_SIZE.defaultList} onPage={(page) => (teamMembershipPage = page)} /></section>
-					<section class="panel"><h2>模型授权</h2><div class="table-wrap"><table><thead><tr><th>模型</th><th>权限组</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each inventory.inventory.modelTeamGrants as grant}<tr><td>{modelLabel(grant.model_alias_id)}</td><td>{teamLabel(grant.team_id)}</td><td><StateBadge value={grant.state} /></td><td><button class="secondary" type="button" onclick={() => setModelTeamGrantState(grant.id, grant.state === 'active' ? 'disabled' : 'active')}>{grant.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
+					<AdminTeams
+						teams={inventory.inventory.teams}
+						models={inventory.inventory.models}
+						modelTeamGrants={inventory.inventory.modelTeamGrants}
+						{managedRoles}
+						{teamMembershipRows}
+						{teamMembershipPageRows}
+						bind:teamForm
+						bind:teamMembershipForm
+						bind:modelTeamGrantForm
+						bind:teamSubjectSearch
+						bind:teamMembershipTeamFilter
+						bind:teamMembershipSubjectSearch
+						bind:teamMembershipRoleFilter
+						bind:teamMembershipStateFilter
+						bind:teamMembershipPage
+						{subjectOptions}
+						{subjectLabel}
+						{modelLabel}
+						{teamLabel}
+						onCreateTeam={createTeam}
+						onCreateTeamMembership={createTeamMembership}
+						onCreateModelTeamGrant={createModelTeamGrant}
+						onPatchTeam={patchTeam}
+						onSetTeamMembershipState={setTeamMembershipState}
+						onSetModelTeamGrantState={setModelTeamGrantState}
+					/>
 				{:else if active === 'skill-market'}
 					<SkillMarketSection client={session.api} teams={inventory.inventory.teams} />
 				{:else if active === 'mcp-market'}
@@ -1277,20 +1295,21 @@
 					<PageTitle title={'审计'} subtitle={'最近的权限变更和安全相关事件。'} />
 					<section class="panel"><AuditTable rows={auditPageRows} onDetail={(event) => (auditDetail = event)} /><Pagination total={auditRows.length} page={auditPage} size={PAGE_SIZE.audit} onPage={(page) => (auditPage = page)} /></section>
 				{:else if active === 'diagnostics'}
-					<PageTitle title={'诊断'} subtitle={'运行时依赖和上游健康检查。'} />
-					<div class="grid"><div class="metric"><span>Postgres</span><strong>{session.ready?.checks.postgres ? '正常' : '异常'}</strong></div><div class="metric"><span>Redis</span><strong>{session.ready?.checks.redis ? '正常' : '异常'}</strong></div><div class="metric"><span>环境</span><strong>{inventory.diagnostics?.environment}</strong></div></div>
-					<section class="panel">
-						<h2>健康巡检</h2>
-						<p class="muted">自动探测每个活跃上游的 <code>/models</code>，故障时在 Redis 标记 UNHEALTHY 并从路由排除。关闭后 sidecar 仍运行但跳过探测，已有标记靠 TTL 自动过期恢复。</p>
-						<div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap">
-							<strong>自动巡检：{inventory.healthCheckConfig?.enabled ? '已开启' : '已关闭'}</strong>
-							{#if inventory.healthCheckConfig}
-								<span class="muted">来源：{inventory.healthCheckConfig.source === 'redis_override' ? '运行时覆盖' : '环境变量默认'}</span>
-								<button class="secondary" type="button" disabled={inventory.healthCheckToggling} onclick={inventory.toggleHealthCheck}>{inventory.healthCheckConfig.enabled ? '关闭巡检' : '开启巡检'}</button>
-							{/if}
-						</div>
-					</section>
-					<UpstreamTable rows={inventory.inventory.upstreams} healthResults={inventory.healthResults} modelLabel={modelLabel} onCheck={checkUpstream} onState={setUpstreamState} onPatch={patchUpstream} onDelete={deleteUpstream} onError={(m) => (session.pageError = m)} />
+					<AdminDiagnostics
+						ready={session.ready}
+						diagnostics={inventory.diagnostics}
+						upstreams={inventory.inventory.upstreams}
+						healthResults={inventory.healthResults}
+						healthCheckConfig={inventory.healthCheckConfig}
+						healthCheckToggling={inventory.healthCheckToggling}
+						{modelLabel}
+						onToggleHealthCheck={inventory.toggleHealthCheck}
+						onCheck={checkUpstream}
+						onSetState={setUpstreamState}
+						onPatch={patchUpstream}
+						onDelete={deleteUpstream}
+						onError={(m) => (session.pageError = m)}
+					/>
 				{/if}
 			</section>
 		</main>
