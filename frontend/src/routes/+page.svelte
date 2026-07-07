@@ -26,14 +26,12 @@
 		HealthCheckConfig,
 		Inventory,
 		IPPolicyMode,
-		LoginResponse,
 		ManagedRankingRow,
 		OwnUsageSummary,
 		PaginatedResponse,
 		Project,
 		ProjectMembership,
 		ReadyStatus,
-		RegisterResponse,
 		ResourceState,
 		RuntimeMetricsSnapshot,
 		Subject,
@@ -42,6 +40,7 @@
 		TeamMembership,
 		UpstreamHealth
 	} from '$lib/api/types';
+	import { createSessionStore } from '$lib/state/session.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import JsonViewer from '$lib/components/JsonViewer.svelte';
 	import CommandBlock from '$lib/components/CommandBlock.svelte';
@@ -58,11 +57,6 @@
 	import OwnedDashboard from '$lib/components/OwnedDashboard.svelte';
 	import SkillMarketSection from '$lib/components/SkillMarketSection.svelte';
 	import McpMarketSection from '$lib/components/McpMarketSection.svelte';
-	import {
-		clearStoredSessionToken,
-		loadStoredSessionToken,
-		persistSessionToken
-	} from '$lib/state/admin-token';
 	import { parseCidrList, parseJsonObject, validateCidrList, validateHttpUrl } from '$lib/validators';
 
 	// Strip any legacy LiteLLM provider prefix (openai/, openai/chat_completions/,
@@ -120,13 +114,7 @@
 	};
 
 	let active = $state('usage');
-	let sessionToken = $state('');
-	let rememberSession = $state(true);
-	let connected = $state(false);
-	let loading = $state(false);
-	let pageError = $state('');
-	let plaintextKey = $state('');
-	let ready = $state<ReadyStatus | null>(null);
+	const session = createSessionStore();
 	let diagnostics = $state<Diagnostics | null>(null);
 	let healthCheckConfig = $state<HealthCheckConfig | null>(null);
 	let healthCheckToggling = $state(false);
@@ -235,7 +223,6 @@
 		requests_per_minute: '',
 		concurrency_limit: ''
 	});
-	const api = $derived(new AdminApiClient('', sessionToken));
 	const isAdmin = $derived(Boolean(profile?.subject.is_admin));
 	const mustProvideRealName = $derived(Boolean(profile?.subject.requires_real_name));
 	const managedProjects = $derived(profile?.managed?.projects ?? []);
@@ -380,94 +367,62 @@
 		ownUsageStart = range.start;
 		ownUsageEnd = range.end;
 		gatewayBaseUrl = inferGatewayBaseUrl();
-		sessionToken = loadStoredSessionToken();
-		rememberSession = Boolean(sessionToken);
-		void refreshReady();
-		if (sessionToken) void loadProfile(true);
+		session.rememberSession = Boolean(session.sessionToken);
+		void session.refreshReady();
+		if (session.sessionToken) void loadProfile(true);
 	});
 
 	onDestroy(() => {
 		stopRealtimeStream();
 	});
 
-	async function loginAccount(fromStorage = false) {
-		if (!loginForm.username.trim() || !loginForm.password) {
-			pageError = '请输入用户名和密码。';
-			return;
+	// After a successful auth, hydrate page-level state (profile, diagnostics,
+	// realtime, inventory) based on admin vs. non-admin. Shared by login,
+	// register and loadProfile.
+	async function onAuthed(authProfile: AuthProfile, authedApi: AdminApiClient): Promise<void> {
+		profile = authProfile;
+		if (authProfile.subject.is_admin) {
+			diagnostics = await authedApi.get<Diagnostics>('/admin/diagnostics');
+			await refreshAll();
+			startRealtimeStream();
+		} else {
+			stopRealtimeStream();
+			await refreshManagedRoles();
+			await fetchOwnUsage();
 		}
-		await run(async () => {
-			const response = await new AdminApiClient().post<LoginResponse>('/auth/login', loginForm);
-			sessionToken = response.session_token;
-			profile = response.profile;
-			connected = true;
-			if (!fromStorage) persistSessionToken(sessionToken, rememberSession);
-			if (profile.subject.is_admin) {
-				const authedApi = new AdminApiClient('', sessionToken);
-				diagnostics = await authedApi.get<Diagnostics>('/admin/diagnostics');
-				await refreshAll();
-				startRealtimeStream();
-			} else {
-				stopRealtimeStream();
-				await refreshManagedRoles();
-				await fetchOwnUsage();
-			}
+	}
+
+	async function loginAccount(fromStorage = false) {
+		await session.login(loginForm, {
+			remember: session.rememberSession,
+			fromStorage,
+			onAuthed
 		});
 	}
 
 	async function registerAccount() {
-		if (!employeeIdPattern.test(registerForm.username.trim())) {
-			pageError = '工号必须是 1 个字母加 8 位数字，例如 l00014624。';
-			return;
-		}
-		if (!registerForm.full_name.trim() || registerForm.password.length < 8) {
-			pageError = '请输入真实姓名，密码至少 8 个字符。';
-			return;
-		}
-		await run(async () => {
-			const response = await new AdminApiClient().post<RegisterResponse>('/auth/register', registerForm);
-			sessionToken = response.session_token;
-			profile = response.profile;
-			plaintextKey = response.gateway_key.plaintext_key;
-			connected = true;
-			persistSessionToken(sessionToken, rememberSession);
-			registerForm = { username: '', full_name: '', password: '' };
-			await refreshManagedRoles();
-			await fetchOwnUsage();
+		const result = await session.register(registerForm, {
+			remember: session.rememberSession,
+			onAuthed
 		});
+		if (result.ok) registerForm = { username: '', full_name: '', password: '' };
 	}
 
 	async function loadProfile(fromStorage = false) {
-		await run(async () => {
-			profile = await api.get<AuthProfile>('/auth/me');
-			connected = true;
-			if (!fromStorage) persistSessionToken(sessionToken, rememberSession);
-			if (profile.subject.is_admin) {
-				diagnostics = await api.get<Diagnostics>('/admin/diagnostics');
-				await refreshAll();
-				startRealtimeStream();
-			} else {
-				stopRealtimeStream();
-				await refreshManagedRoles();
-				await fetchOwnUsage();
-			}
-		});
+		await session.loadProfile({ fromStorage, remember: session.rememberSession, onAuthed });
 	}
 
 	function disconnect() {
 		stopRealtimeStream();
-		sessionToken = '';
+		session.logout();
 		profile = null;
-		connected = false;
-		plaintextKey = '';
 		copiedItem = '';
-		pageError = '';
-		clearStoredSessionToken();
 		inventory = emptyInventory();
 	}
 
 	function startRealtimeStream() {
 		stopRealtimeStream();
-		if (!sessionToken || typeof window === 'undefined') return;
+		if (!session.sessionToken || typeof window === 'undefined') return;
 		const controller = new AbortController();
 		realtimeAbort = controller;
 		realtimeStatus = '连接中';
@@ -485,7 +440,7 @@
 	async function consumeRealtimeStream(controller: AbortController) {
 		try {
 			const response = await fetch('/admin/realtime/stream?window_seconds=10&interval_seconds=1', {
-				headers: { 'x-session-token': sessionToken },
+				headers: { 'x-session-token': session.sessionToken },
 				signal: controller.signal
 			});
 			if (!response.ok || !response.body) throw new Error(`实时指标连接失败: HTTP ${response.status}`);
@@ -523,30 +478,21 @@
 		realtime = JSON.parse(data) as RuntimeMetricsSnapshot;
 	}
 
-	async function refreshReady() {
-		try {
-			const response = await fetch('/health/ready');
-			ready = (await response.json()) as ReadyStatus;
-		} catch {
-			ready = null;
-		}
-	}
-
 	async function toggleHealthCheck() {
 		if (!healthCheckConfig || healthCheckToggling) return;
 		const next = !healthCheckConfig.enabled;
 		healthCheckToggling = true;
 		await run(async () => {
-			healthCheckConfig = await api.setHealthCheckConfig(next);
+			healthCheckConfig = await session.api.setHealthCheckConfig(next);
 		});
 		healthCheckToggling = false;
 	}
 
 	async function refreshAll() {
 		await run(async () => {
-			await refreshReady();
+			await session.refreshReady();
 			if (!isAdmin) {
-				profile = await api.get<AuthProfile>('/auth/me');
+				profile = await session.api.get<AuthProfile>('/auth/me');
 				await refreshManagedRoles();
 				await fetchOwnUsage();
 				return;
@@ -566,19 +512,19 @@
 				audit,
 				hcConfig
 			] = await Promise.all([
-				api.get<PaginatedResponse<Subject>>('/admin/subjects'),
-				api.get<PaginatedResponse<Project>>('/admin/projects'),
-				api.get<PaginatedResponse<ProjectMembership>>('/admin/project-memberships'),
-				api.get<PaginatedResponse<GatewayKey>>('/admin/gateway-keys'),
-				api.get<Inventory['models']>('/admin/model-aliases'),
-				api.get<Inventory['entitlements']>('/admin/model-entitlements'),
-				api.get<PaginatedResponse<Team>>('/admin/teams'),
-				api.get<PaginatedResponse<TeamMembership>>('/admin/team-memberships'),
-				api.get<Inventory['modelTeamGrants']>('/admin/model-team-grants'),
-				api.get<Inventory['upstreams']>('/admin/upstreams'),
-				api.get<Inventory['ratePolicies']>('/admin/rate-policies'),
-				api.get<Inventory['audit']>('/admin/audit-events'),
-				api.get<HealthCheckConfig>('/admin/health-check')
+				session.api.get<PaginatedResponse<Subject>>('/admin/subjects'),
+				session.api.get<PaginatedResponse<Project>>('/admin/projects'),
+				session.api.get<PaginatedResponse<ProjectMembership>>('/admin/project-memberships'),
+				session.api.get<PaginatedResponse<GatewayKey>>('/admin/gateway-keys'),
+				session.api.get<Inventory['models']>('/admin/model-aliases'),
+				session.api.get<Inventory['entitlements']>('/admin/model-entitlements'),
+				session.api.get<PaginatedResponse<Team>>('/admin/teams'),
+				session.api.get<PaginatedResponse<TeamMembership>>('/admin/team-memberships'),
+				session.api.get<Inventory['modelTeamGrants']>('/admin/model-team-grants'),
+				session.api.get<Inventory['upstreams']>('/admin/upstreams'),
+				session.api.get<Inventory['ratePolicies']>('/admin/rate-policies'),
+				session.api.get<Inventory['audit']>('/admin/audit-events'),
+				session.api.get<HealthCheckConfig>('/admin/health-check')
 			]);
 			healthCheckConfig = hcConfig;
 			inventory = {
@@ -613,17 +559,17 @@
 				project_id: projectFilter
 			};
 			const [usageTotals, usage, buckets, drilldown] = await Promise.all([
-				api.get<Inventory['usageTotals']>('/admin/usage/totals', analyticsParams),
-				api.get<Inventory['usage']>('/admin/usage/summary', {
+				session.api.get<Inventory['usageTotals']>('/admin/usage/totals', analyticsParams),
+				session.api.get<Inventory['usage']>('/admin/usage/summary', {
 					...analyticsParams,
 					limit: PAGE_SIZE.usagePreview
 				}),
-				api.get<Inventory['analyticsBuckets']>('/admin/analytics/time-buckets', {
+				session.api.get<Inventory['analyticsBuckets']>('/admin/analytics/time-buckets', {
 					...analyticsParams,
 					bucket: analyticsBucket,
 					limit: PAGE_SIZE.usagePreview
 				}),
-				api.get<Inventory['analyticsDrilldown']>('/admin/analytics/drilldown', {
+				session.api.get<Inventory['analyticsDrilldown']>('/admin/analytics/drilldown', {
 					...analyticsParams,
 					dimension: analyticsDimension,
 					limit: PAGE_SIZE.usagePreview
@@ -635,7 +581,7 @@
 
 	async function refreshUsageRanking() {
 		await run(async () => {
-			const ranking = await api.get<Inventory['ranking']>('/admin/usage/ranking', {
+			const ranking = await session.api.get<Inventory['ranking']>('/admin/usage/ranking', {
 				start: usageStart,
 				end: usageEnd,
 				model: rankingModel,
@@ -647,11 +593,11 @@
 
 	async function createSubject() {
 		if (subjectForm.login_username && !employeeIdPattern.test(subjectForm.login_username.trim())) {
-			pageError = '工号必须是 1 个字母加 8 位数字，例如 l00014624。';
+			session.pageError = '工号必须是 1 个字母加 8 位数字，例如 l00014624。';
 			return;
 		}
 		await run(async () => {
-			await api.post('/admin/subjects', clean({ ...subjectForm }));
+			await session.api.post('/admin/subjects', clean({ ...subjectForm }));
 			subjectForm = { name: '', login_username: '', password: '', type: 'user', notes: '' };
 			await refreshAll();
 		});
@@ -659,25 +605,25 @@
 
 	async function patchSubject(id: string, patch: Record<string, unknown>) {
 		await run(async () => {
-			await api.patch(`/admin/subjects/${id}`, patch);
+			await session.api.patch(`/admin/subjects/${id}`, patch);
 			await refreshAll();
 		});
 	}
 
 	async function setSubjectState(id: string, state: ResourceState) {
 		await run(async () => {
-			await api.patch(`/admin/subjects/${id}/state`, { state });
+			await session.api.patch(`/admin/subjects/${id}/state`, { state });
 			await refreshAll();
 		});
 	}
 
 	async function resetSubjectPassword() {
 		if (!subjectPasswordForm.subject_id || subjectPasswordForm.new_password.length < 8) {
-			pageError = '请选择用户，新密码至少 8 个字符。';
+			session.pageError = '请选择用户，新密码至少 8 个字符。';
 			return;
 		}
 		await run(async () => {
-			await api.patch(`/admin/subjects/${subjectPasswordForm.subject_id}/password`, {
+			await session.api.patch(`/admin/subjects/${subjectPasswordForm.subject_id}/password`, {
 				new_password: subjectPasswordForm.new_password
 			});
 			subjectPasswordForm = { subject_id: '', new_password: '' };
@@ -687,14 +633,14 @@
 	async function deleteSubject(subject: Inventory['subjects'][number]) {
 		if (!window.confirm(`确认删除用户 ${subject.name}（${subject.login_username ?? '无工号'}）？`)) return;
 		await run(async () => {
-			await api.delete(`/admin/subjects/${subject.id}`);
+			await session.api.delete(`/admin/subjects/${subject.id}`);
 			await refreshAll();
 		});
 	}
 
 	async function createProject() {
 		await run(async () => {
-			await api.post('/admin/projects', clean({ ...projectForm }));
+			await session.api.post('/admin/projects', clean({ ...projectForm }));
 			projectForm = { name: '', owner_subject_id: '', notes: '' };
 			await refreshAll();
 		});
@@ -702,14 +648,14 @@
 
 	async function patchProject(id: string, patch: Record<string, unknown>) {
 		await run(async () => {
-			await api.patch(`/admin/projects/${id}`, clean(patch));
+			await session.api.patch(`/admin/projects/${id}`, clean(patch));
 			await refreshAll();
 		});
 	}
 
 	async function createMembership() {
 		await run(async () => {
-			await api.post('/admin/project-memberships', clean({ ...membershipForm }));
+			await session.api.post('/admin/project-memberships', clean({ ...membershipForm }));
 			membershipForm = { project_id: '', subject_id: '', role: 'member' };
 			await refreshAll();
 		});
@@ -717,8 +663,8 @@
 
 	async function issueKey() {
 		await run(async () => {
-			const response = await api.post<GatewayKeyCreateResponse>('/admin/gateway-keys', clean({ ...keyForm }));
-			plaintextKey = response.plaintext_key;
+			const response = await session.api.post<GatewayKeyCreateResponse>('/admin/gateway-keys', clean({ ...keyForm }));
+			session.plaintextKey = response.plaintext_key;
 			keyForm = { subject_id: '', project_id: '', name: '' };
 			await refreshAll();
 		});
@@ -726,28 +672,28 @@
 
 	async function issueOwnKey() {
 		await run(async () => {
-			const response = await api.post<GatewayKeyCreateResponse>('/auth/keys', clean({ ...ownKeyForm }));
-			plaintextKey = response.plaintext_key;
+			const response = await session.api.post<GatewayKeyCreateResponse>('/auth/keys', clean({ ...ownKeyForm }));
+			session.plaintextKey = response.plaintext_key;
 			ownKeyForm = { name: '个人密钥' };
-			profile = await api.get<AuthProfile>('/auth/me');
+			profile = await session.api.get<AuthProfile>('/auth/me');
 			await fetchOwnUsage();
 		});
 	}
 
 	async function setOwnKeyState(key: { id: string; state: string }, newState: 'active' | 'disabled') {
 		await run(async () => {
-			await api.patch(`/auth/keys/${key.id}/state`, { state: newState });
-			profile = await api.get<AuthProfile>('/auth/me');
+			await session.api.patch(`/auth/keys/${key.id}/state`, { state: newState });
+			profile = await session.api.get<AuthProfile>('/auth/me');
 		});
 	}
 
 	async function changeOwnPassword() {
 		if (!ownPasswordForm.current_password || ownPasswordForm.new_password.length < 8) {
-			pageError = '请输入当前密码，新密码至少 8 个字符。';
+			session.pageError = '请输入当前密码，新密码至少 8 个字符。';
 			return;
 		}
 		await run(async () => {
-			await api.patch('/auth/password', ownPasswordForm);
+			await session.api.patch('/auth/password', ownPasswordForm);
 			ownPasswordForm = { current_password: '', new_password: '' };
 		});
 	}
@@ -758,23 +704,23 @@
 			realNameError = '请填写真实姓名。';
 			return;
 		}
-		loading = true;
-		pageError = '';
+		session.loading = true;
+		session.pageError = '';
 		try {
-			profile = await api.patch<AuthProfile>('/auth/profile', {
+			profile = await session.api.patch<AuthProfile>('/auth/profile', {
 				full_name: realNameForm.full_name.trim()
 			});
 			realNameForm = { full_name: '' };
 		} catch (error) {
 			realNameError = errorMessage(error);
 		} finally {
-			loading = false;
+			session.loading = false;
 		}
 	}
 
 	async function setKeyState(id: string, state: ResourceState) {
 		await run(async () => {
-			await api.patch(`/admin/gateway-keys/${id}/state`, { state });
+			await session.api.patch(`/admin/gateway-keys/${id}/state`, { state });
 			await refreshAll();
 		});
 	}
@@ -782,11 +728,11 @@
 	async function createModel() {
 		const cidrCheck = modelForm.ip_policy_mode === 'allowlist' ? validateCidrList(modelForm.ip_allowlist_cidrs) : { ok: true };
 		if (!cidrCheck.ok) {
-			pageError = cidrCheck.message ?? 'CIDR 列表不合法';
+			session.pageError = cidrCheck.message ?? 'CIDR 列表不合法';
 			return;
 		}
 		await run(async () => {
-			await api.post(
+			await session.api.post(
 				'/admin/model-aliases',
 				clean({
 					alias: modelForm.alias,
@@ -819,7 +765,7 @@
 
 	async function patchModel(id: string, patch: Record<string, unknown>) {
 		await run(async () => {
-			await api.patch(`/admin/model-aliases/${id}`, patch);
+			await session.api.patch(`/admin/model-aliases/${id}`, patch);
 			await refreshAll();
 		});
 	}
@@ -839,7 +785,7 @@
 		}
 		const cidrCheck = validateCidrList(trimmed);
 		if (!cidrCheck.ok) {
-			pageError = cidrCheck.message ?? 'CIDR 列表不合法';
+			session.pageError = cidrCheck.message ?? 'CIDR 列表不合法';
 			return;
 		}
 		await patchModel(cidrEditorModel.id, {
@@ -853,12 +799,12 @@
 		if (!window.confirm(`确认删除模型别名 ${model.alias}？`)) return;
 		await run(async () => {
 			try {
-				await api.delete(`/admin/model-aliases/${model.id}`);
+				await session.api.delete(`/admin/model-aliases/${model.id}`);
 			} catch (error) {
 				if (isModelUpstreamConflict(error)) {
 					const upstreamCount = Number((error.detail as { upstream_count?: number }).upstream_count ?? 0);
 					if (window.confirm(`这个模型还有 ${upstreamCount} 个上游端点依赖。是否一起删除这些上游依赖？`)) {
-						await api.delete(`/admin/model-aliases/${model.id}`, { cascade_upstreams: true });
+						await session.api.delete(`/admin/model-aliases/${model.id}`, { cascade_upstreams: true });
 					} else {
 						return;
 					}
@@ -873,7 +819,7 @@
 	async function deleteUpstream(upstream: Inventory['upstreams'][number]) {
 		if (!window.confirm(`确认删除上游端点 ${upstream.name}？`)) return;
 		await run(async () => {
-			await api.delete(`/admin/upstreams/${upstream.id}`);
+			await session.api.delete(`/admin/upstreams/${upstream.id}`);
 			await refreshAll();
 		});
 	}
@@ -881,22 +827,22 @@
 	async function createUpstream() {
 		const urlCheck = validateHttpUrl(upstreamForm.base_url, '上游地址');
 		if (!urlCheck.ok) {
-			pageError = urlCheck.message ?? '上游地址不合法';
+			session.pageError = urlCheck.message ?? '上游地址不合法';
 			return;
 		}
 		if (upstreamForm.metrics_url.trim()) {
 			const metricsUrlCheck = validateHttpUrl(upstreamForm.metrics_url, 'Metrics URL');
 			if (!metricsUrlCheck.ok) {
-				pageError = metricsUrlCheck.message ?? 'Metrics URL 不合法';
+				session.pageError = metricsUrlCheck.message ?? 'Metrics URL 不合法';
 				return;
 			}
 		}
 		if (!upstreamForm.health_path.startsWith('/')) {
-			pageError = '健康检查路径必须以 / 开头。';
+			session.pageError = '健康检查路径必须以 / 开头。';
 			return;
 		}
 		await run(async () => {
-			await api.post(
+			await session.api.post(
 				'/admin/upstreams',
 				clean({
 					...upstreamForm,
@@ -919,14 +865,14 @@
 
 	async function setUpstreamState(id: string, state: ResourceState) {
 		await run(async () => {
-			await api.patch(`/admin/upstreams/${id}`, { state });
+			await session.api.patch(`/admin/upstreams/${id}`, { state });
 			await refreshAll();
 		});
 	}
 
 	async function patchUpstream(id: string, patch: Record<string, unknown>) {
 		await run(async () => {
-			await api.patch(`/admin/upstreams/${id}`, clean(patch));
+			await session.api.patch(`/admin/upstreams/${id}`, clean(patch));
 			await refreshAll();
 		});
 	}
@@ -934,7 +880,7 @@
 	async function checkUpstream(id: string) {
 		healthResults[id] = '检查中';
 		try {
-			healthResults[id] = await api.get<UpstreamHealth>(`/admin/upstreams/${id}/health`);
+			healthResults[id] = await session.api.get<UpstreamHealth>(`/admin/upstreams/${id}/health`);
 		} catch (error) {
 			healthResults[id] = errorMessage(error);
 		}
@@ -942,7 +888,7 @@
 
 	async function createEntitlement() {
 		await run(async () => {
-			await api.post(
+			await session.api.post(
 				'/admin/model-entitlements',
 				clean({
 					model_alias_id: entitlementForm.model_alias_id,
@@ -958,14 +904,14 @@
 
 	async function setEntitlementState(id: string, state: ResourceState) {
 		await run(async () => {
-			await api.patch(`/admin/model-entitlements/${id}/state`, { state });
+			await session.api.patch(`/admin/model-entitlements/${id}/state`, { state });
 			await refreshAll();
 		});
 	}
 
 	async function createTeam() {
 		await run(async () => {
-			await api.post('/admin/teams', clean({ ...teamForm }));
+			await session.api.post('/admin/teams', clean({ ...teamForm }));
 			teamForm = { name: '', notes: '' };
 			await refreshAll();
 		});
@@ -973,14 +919,14 @@
 
 	async function patchTeam(id: string, patch: Record<string, unknown>) {
 		await run(async () => {
-			await api.patch(`/admin/teams/${id}`, clean(patch));
+			await session.api.patch(`/admin/teams/${id}`, clean(patch));
 			await refreshAll();
 		});
 	}
 
 	async function createTeamMembership() {
 		await run(async () => {
-			await api.post('/admin/team-memberships', clean({ ...teamMembershipForm }));
+			await session.api.post('/admin/team-memberships', clean({ ...teamMembershipForm }));
 			teamMembershipForm = { team_id: '', subject_id: '', role: 'member' };
 			await refreshAll();
 		});
@@ -988,14 +934,14 @@
 
 	async function setTeamMembershipState(id: string, state: ResourceState) {
 		await run(async () => {
-			await api.patch(`/admin/team-memberships/${id}/state`, { state });
+			await session.api.patch(`/admin/team-memberships/${id}/state`, { state });
 			await refreshAll();
 		});
 	}
 
 	async function createModelTeamGrant() {
 		await run(async () => {
-			await api.post('/admin/model-team-grants', clean({ ...modelTeamGrantForm }));
+			await session.api.post('/admin/model-team-grants', clean({ ...modelTeamGrantForm }));
 			modelTeamGrantForm = { model_alias_id: '', team_id: '' };
 			await refreshAll();
 		});
@@ -1003,14 +949,14 @@
 
 	async function setModelTeamGrantState(id: string, state: ResourceState) {
 		await run(async () => {
-			await api.patch(`/admin/model-team-grants/${id}/state`, { state });
+			await session.api.patch(`/admin/model-team-grants/${id}/state`, { state });
 			await refreshAll();
 		});
 	}
 
 	async function createRatePolicy() {
 		await run(async () => {
-			await api.post(
+			await session.api.post(
 				'/admin/rate-policies',
 				clean({
 					scope: rateForm.scope,
@@ -1026,7 +972,7 @@
 
 	async function setRateState(id: string, state: ResourceState) {
 		await run(async () => {
-			await api.patch(`/admin/rate-policies/${id}`, { state });
+			await session.api.patch(`/admin/rate-policies/${id}`, { state });
 			await refreshAll();
 		});
 	}
@@ -1036,7 +982,7 @@
 	}
 
 	async function fetchOwnUsage() {
-		ownUsage = await api.get<OwnUsageSummary>('/auth/usage/summary', {
+		ownUsage = await session.api.get<OwnUsageSummary>('/auth/usage/summary', {
 			start: ownUsageStart,
 			end: ownUsageEnd
 		});
@@ -1044,7 +990,7 @@
 
 	async function refreshManagedSubjects() {
 		await run(async () => {
-			managedSubjectCandidates = await api.get<Subject[]>('/auth/managed/subjects', {
+			managedSubjectCandidates = await session.api.get<Subject[]>('/auth/managed/subjects', {
 				q: managedSubjectSearch,
 				limit: PAGE_SIZE.selectOptions
 			});
@@ -1053,7 +999,7 @@
 
 	async function refreshManagedRoles() {
 		if (!hasManagedResources) return;
-		managedRoles = await api.get<{ value: string; label: string }[]>('/auth/managed/roles');
+		managedRoles = await session.api.get<{ value: string; label: string }[]>('/auth/managed/roles');
 	}
 
 	async function refreshManagedProjectMemberships(resourceId = managedProjectMemberForm.resource_id) {
@@ -1061,7 +1007,7 @@
 			managedProjectMemberships = [];
 			return;
 		}
-		managedProjectMemberships = await api.get<ProjectMembership[]>('/auth/managed/project-memberships', {
+		managedProjectMemberships = await session.api.get<ProjectMembership[]>('/auth/managed/project-memberships', {
 			resource_id: resourceId
 		});
 	}
@@ -1071,14 +1017,14 @@
 			managedTeamMemberships = [];
 			return;
 		}
-		managedTeamMemberships = await api.get<TeamMembership[]>('/auth/managed/team-memberships', {
+		managedTeamMemberships = await session.api.get<TeamMembership[]>('/auth/managed/team-memberships', {
 			resource_id: resourceId
 		});
 	}
 
 	async function refreshManagedUsage() {
 		await run(async () => {
-			managedUsage = await api.get<OwnUsageSummary>('/auth/managed/usage/summary', {
+			managedUsage = await session.api.get<OwnUsageSummary>('/auth/managed/usage/summary', {
 				scope: managedUsageScope,
 				resource_id: managedUsageResourceId,
 				start: ownUsageStart,
@@ -1098,7 +1044,7 @@
 			if (managedRankingStart) params.start = managedRankingStart;
 			if (managedRankingEnd) params.end = managedRankingEnd;
 			if (managedRankingModel) params.model = managedRankingModel;
-			const data = await api.get<{ ranking: ManagedRankingRow[] }>(
+			const data = await session.api.get<{ ranking: ManagedRankingRow[] }>(
 				'/auth/managed/usage/ranking',
 				params
 			);
@@ -1108,11 +1054,11 @@
 
 	async function addManagedProjectMember() {
 		if (!managedProjectMemberForm.resource_id || !managedProjectMemberForm.subject_id) {
-			pageError = '请选择项目和用户。';
+			session.pageError = '请选择项目和用户。';
 			return;
 		}
 		await run(async () => {
-			await api.post('/auth/managed/project-memberships', {
+			await session.api.post('/auth/managed/project-memberships', {
 				resource_id: managedProjectMemberForm.resource_id,
 				subject_id: managedProjectMemberForm.subject_id,
 				role: managedProjectMemberForm.role || 'member'
@@ -1124,18 +1070,18 @@
 	async function removeManagedProjectMember(membership: ProjectMembership) {
 		if (!window.confirm(`确认从项目中移除 ${membershipSubjectLabel(membership)}？`)) return;
 		await run(async () => {
-			await api.delete(`/auth/managed/project-memberships/${membership.id}`);
+			await session.api.delete(`/auth/managed/project-memberships/${membership.id}`);
 			await refreshManagedProjectMemberships();
 		});
 	}
 
 	async function addManagedTeamMember() {
 		if (!managedTeamMemberForm.resource_id || !managedTeamMemberForm.subject_id) {
-			pageError = '请选择权限组和用户。';
+			session.pageError = '请选择权限组和用户。';
 			return;
 		}
 		await run(async () => {
-			await api.post('/auth/managed/team-memberships', {
+			await session.api.post('/auth/managed/team-memberships', {
 				resource_id: managedTeamMemberForm.resource_id,
 				subject_id: managedTeamMemberForm.subject_id,
 				role: managedTeamMemberForm.role || 'member'
@@ -1146,7 +1092,7 @@
 
 	async function setManagedTeamMemberState(membership: TeamMembership, state: ResourceState) {
 		await run(async () => {
-			await api.patch(`/auth/managed/team-memberships/${membership.id}`, { state });
+			await session.api.patch(`/auth/managed/team-memberships/${membership.id}`, { state });
 			await refreshManagedTeamMemberships();
 		});
 	}
@@ -1178,14 +1124,14 @@
 	}
 
 	async function run(fn: () => Promise<void>) {
-		loading = true;
-		pageError = '';
+		session.loading = true;
+		session.pageError = '';
 		try {
 			await fn();
 		} catch (error) {
-			pageError = errorMessage(error);
+			session.pageError = errorMessage(error);
 		} finally {
-			loading = false;
+			session.loading = false;
 		}
 	}
 
@@ -1253,17 +1199,17 @@
 	}
 </script>
 
-{#if !connected}
+{#if !session.connected}
 	<AuthScreen
-		{ready}
+		ready={session.ready}
 		bind:loginForm
 		bind:registerForm
-		bind:rememberSession
-		{pageError}
-		{loading}
+		bind:rememberSession={session.rememberSession}
+		pageError={session.pageError}
+		loading={session.loading}
 		onLogin={loginAccount}
 		onRegister={registerAccount}
-		onRefreshReady={refreshReady}
+		onRefreshReady={session.refreshReady}
 	/>
 {:else}
 	<div class="app">
@@ -1300,16 +1246,16 @@
 		<main class="main">
 			<div class="topbar">
 				<div class="actions">
-					<StateBadge value={ready?.ok ? 'ready' : 'not_ready'} tone={ready?.ok ? 'success' : 'danger'} />
-					<span class="muted">Postgres {ready?.checks.postgres ? '正常' : '异常'} · Redis {ready?.checks.redis ? '正常' : '异常'}</span>
+					<StateBadge value={session.ready?.ok ? 'ready' : 'not_ready'} tone={session.ready?.ok ? 'success' : 'danger'} />
+					<span class="muted">Postgres {session.ready?.checks.postgres ? '正常' : '异常'} · Redis {session.ready?.checks.redis ? '正常' : '异常'}</span>
 				</div>
 				<div class="actions">
-					<button class="secondary" type="button" onclick={refreshAll} disabled={loading}>{loading ? '处理中' : '刷新'}</button>
+					<button class="secondary" type="button" onclick={refreshAll} disabled={session.loading}>{session.loading ? '处理中' : '刷新'}</button>
 					<button class="secondary" type="button" onclick={disconnect}>退出登录</button>
 				</div>
 			</div>
 			<section class="content">
-				{#if pageError}<div class="error">{pageError}</div>{/if}
+				{#if session.pageError}<div class="error">{session.pageError}</div>{/if}
 
 				{#if !isAdmin && active !== 'skill-market' && active !== 'mcp-market'}
 					<OwnedDashboard
@@ -1342,7 +1288,7 @@
 					{codexEnvCommand}
 					{codexConfigCommand}
 					{copiedItem}
-						{loading}
+						loading={session.loading}
 						onRefreshOwnUsage={refreshOwnUsage}
 						onRefreshManagedUsage={refreshManagedUsage}
 						managedRanking={managedRanking}
@@ -1365,10 +1311,10 @@
 					/>
 				{:else if active === 'skill-market'}
 					<PageTitle title={'Skill 市场'} subtitle={'上传和管理你的 Skill 制品,并授权给权限组。'} />
-					<SkillMarketSection client={api} teams={marketTeams} />
+					<SkillMarketSection client={session.api} teams={marketTeams} />
 				{:else if active === 'mcp-market'}
 					<PageTitle title={'MCP 市场'} subtitle={'发布和管理你的 MCP 连接配置,并授权给权限组。'} />
-					<McpMarketSection client={api} teams={marketTeams} />
+					<McpMarketSection client={session.api} teams={marketTeams} />
 				{:else if active === 'models'}
 					<PageTitle title={'模型别名'} subtitle={'配置下游模型名称、上游模型映射、能力标记和模型级 IP 策略。'} />
 					<section class="panel">
@@ -1430,7 +1376,7 @@
 							<button type="button" onclick={createUpstream}>创建上游</button>
 						</div>
 					</section>
-						<UpstreamTable rows={inventory.upstreams} healthResults={healthResults} modelLabel={modelLabel} onCheck={checkUpstream} onState={setUpstreamState} onPatch={patchUpstream} onDelete={deleteUpstream} onError={(m) => (pageError = m)} />
+						<UpstreamTable rows={inventory.upstreams} healthResults={healthResults} modelLabel={modelLabel} onCheck={checkUpstream} onState={setUpstreamState} onPatch={patchUpstream} onDelete={deleteUpstream} onError={(m) => (session.pageError = m)} />
 				{:else if active === 'subjects'}
 					<PageTitle title={'用户'} subtitle={'由网关管理的人类用户和服务账号。'} />
 						<section class="panel">
@@ -1500,9 +1446,9 @@
 					<section class="panel"><h2>成员关系</h2><div class="form-grid"><label>权限组<select bind:value={teamMembershipTeamFilter}><option value="">全部权限组</option>{#each inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><label>搜索用户<input bind:value={teamMembershipSubjectSearch} placeholder="姓名或工号" /></label><label>角色<input bind:value={teamMembershipRoleFilter} placeholder="member" /></label><label>状态<select bind:value={teamMembershipStateFilter}><option value="">全部状态</option><option value="active">启用</option><option value="disabled">停用</option></select></label></div><div class="table-wrap"><table><thead><tr><th>权限组</th><th>用户</th><th>角色</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each teamMembershipPageRows as membership}<tr><td>{teamLabel(membership.team_id)}</td><td>{subjectLabel(membership.subject_id)}</td><td>{membership.role}</td><td><StateBadge value={membership.state} /></td><td><button class="secondary" type="button" onclick={() => setTeamMembershipState(membership.id, membership.state === 'active' ? 'disabled' : 'active')}>{membership.state === 'active' ? '禁用' : '启用'}</button></td></tr>{:else}<tr><td colspan="5" class="empty">没有匹配的成员关系。</td></tr>{/each}</tbody></table></div><Pagination total={teamMembershipRows.length} page={teamMembershipPage} size={PAGE_SIZE.defaultList} onPage={(page) => (teamMembershipPage = page)} /></section>
 					<section class="panel"><h2>模型授权</h2><div class="table-wrap"><table><thead><tr><th>模型</th><th>权限组</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each inventory.modelTeamGrants as grant}<tr><td>{modelLabel(grant.model_alias_id)}</td><td>{teamLabel(grant.team_id)}</td><td><StateBadge value={grant.state} /></td><td><button class="secondary" type="button" onclick={() => setModelTeamGrantState(grant.id, grant.state === 'active' ? 'disabled' : 'active')}>{grant.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
 				{:else if active === 'skill-market'}
-					<SkillMarketSection client={api} teams={inventory.teams} />
+					<SkillMarketSection client={session.api} teams={inventory.teams} />
 				{:else if active === 'mcp-market'}
-					<McpMarketSection client={api} teams={inventory.teams} />
+					<McpMarketSection client={session.api} teams={inventory.teams} />
 				{:else if active === 'entitlements'}
 					<PageTitle title={'旧授权'} subtitle={'给项目、用户或单个网关密钥授予模型访问权限。'} />
 					<section class="panel"><h2>创建授权</h2><div class="form-grid"><label>模型<select bind:value={entitlementForm.model_alias_id}><option value="">模型</option>{#each inventory.models as model}<option value={model.id}>{model.alias}</option>{/each}</select></label><label>范围<select bind:value={entitlementForm.scope} onchange={() => (entitlementForm.scope_id = '')}><option value="project">项目</option><option value="subject">用户</option><option value="key">密钥</option></select></label>{#if entitlementForm.scope === 'subject'}<label>搜索用户<input bind:value={entitlementSubjectSearch} placeholder="输入姓名或工号" /></label>{/if}<label>授权对象<select bind:value={entitlementForm.scope_id}><option value="">对象</option>{#each scopeOptions(entitlementForm.scope, entitlementSubjectSearch) as option}<option value={option.id}>{option.label}</option>{/each}</select></label><button type="button" onclick={createEntitlement}>授权访问</button></div></section>
@@ -1567,21 +1513,21 @@
 							</table>
 						</div>
 					</section>
-					<section class="panel"><div class="actions"><button class="secondary" type="button" onclick={() => setUsageRange(1 / 24)}>最近 1 小时</button><button class="secondary" type="button" onclick={() => setUsageRange(1)}>最近 1 天</button><button class="secondary" type="button" onclick={() => setUsageRange(7)}>最近 1 周</button><button class="secondary" type="button" onclick={() => setUsageRange(30)}>最近 1 月</button></div><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>时间粒度<select bind:value={analyticsBucket}><option value="minute">分钟</option><option value="hour">小时</option><option value="day">天</option></select></label><label>分析维度<select bind:value={analyticsDimension}><option value="model">模型</option><option value="subject">用户</option><option value="project">项目</option><option value="endpoint">协议</option><option value="outcome">结果</option><option value="streaming">流式</option></select></label><label>模型筛选<select bind:value={modelFilter}><option value="">全部</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>搜索用户<input bind:value={usageSubjectSearch} placeholder="输入姓名或工号" /></label><label>用户筛选<select bind:value={subjectFilter}><option value="">全部</option>{#each subjectOptions(usageSubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>项目筛选<select bind:value={projectFilter}><option value="">全部</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><button type="button" onclick={refreshUsageAnalytics} disabled={loading}>{loading ? '查询中' : '查询'}</button></div></section>
+					<section class="panel"><div class="actions"><button class="secondary" type="button" onclick={() => setUsageRange(1 / 24)}>最近 1 小时</button><button class="secondary" type="button" onclick={() => setUsageRange(1)}>最近 1 天</button><button class="secondary" type="button" onclick={() => setUsageRange(7)}>最近 1 周</button><button class="secondary" type="button" onclick={() => setUsageRange(30)}>最近 1 月</button></div><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>时间粒度<select bind:value={analyticsBucket}><option value="minute">分钟</option><option value="hour">小时</option><option value="day">天</option></select></label><label>分析维度<select bind:value={analyticsDimension}><option value="model">模型</option><option value="subject">用户</option><option value="project">项目</option><option value="endpoint">协议</option><option value="outcome">结果</option><option value="streaming">流式</option></select></label><label>模型筛选<select bind:value={modelFilter}><option value="">全部</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>搜索用户<input bind:value={usageSubjectSearch} placeholder="输入姓名或工号" /></label><label>用户筛选<select bind:value={subjectFilter}><option value="">全部</option>{#each subjectOptions(usageSubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>项目筛选<select bind:value={projectFilter}><option value="">全部</option>{#each inventory.projects as project}<option value={project.id}>{project.name}</option>{/each}</select></label><button type="button" onclick={refreshUsageAnalytics} disabled={session.loading}>{session.loading ? '查询中' : '查询'}</button></div></section>
 					<div class="grid"><div class="metric"><span>请求数</span><strong>{totals.requests}</strong></div><div class="metric"><span>总 token</span><strong>{totals.total}</strong></div><div class="metric"><span>成功</span><strong>{totals.success}</strong></div><div class="metric"><span>失败</span><strong>{totals.failure}</strong></div><div class="metric"><span>平均延迟</span><strong>{msLabel(analyticsPerformance.latencyWeight ? analyticsPerformance.latencyTotal / analyticsPerformance.latencyWeight : null)}</strong></div><div class="metric"><span>平均 TTFT</span><strong>{msLabel(analyticsPerformance.ttftWeight ? analyticsPerformance.ttftTotal / analyticsPerformance.ttftWeight : null)}</strong></div><div class="metric"><span>Retry / Fallback</span><strong>{analyticsPerformance.retry} / {analyticsPerformance.fallback}</strong></div><div class="metric"><span>vLLM 指标覆盖</span><strong>{analyticsPerformance.vllmObserved} / {analyticsPerformance.requests}</strong></div></div>
 					<section class="panel"><h2>最近 5 个时间桶</h2><AnalyticsBucketTable rows={visibleAnalyticsBuckets} maxTokens={analyticsMaxTokens} /></section>
 					<section class="panel"><h2>Top 5 Drilldown</h2><AnalyticsDrilldownTable rows={visibleAnalyticsDrilldown} /></section>
 					<section class="panel"><h2>Top 5 汇总明细</h2><UsageTable rows={visibleUsageRows} subjectLabel={subjectLabel} projectLabel={projectLabel} /></section>
 				{:else if active === 'ranking'}
 					<PageTitle title={'排行榜'} subtitle={'按时间范围统计 token 用量最高的用户。'} />
-					<section class="panel"><div class="actions"><button class="secondary" type="button" onclick={() => setUsageRange(1 / 24)}>最近 1 小时</button><button class="secondary" type="button" onclick={() => setUsageRange(1)}>最近 1 天</button><button class="secondary" type="button" onclick={() => setUsageRange(7)}>最近 1 周</button><button class="secondary" type="button" onclick={() => setUsageRange(30)}>最近 1 月</button></div><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>模型筛选<select bind:value={rankingModel}><option value="">全部</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>Top N<input type="number" bind:value={rankingLimit} min="1" max="100" /></label><button type="button" onclick={refreshUsageRanking} disabled={loading}>{loading ? '查询中' : '查询'}</button></div></section>
+					<section class="panel"><div class="actions"><button class="secondary" type="button" onclick={() => setUsageRange(1 / 24)}>最近 1 小时</button><button class="secondary" type="button" onclick={() => setUsageRange(1)}>最近 1 天</button><button class="secondary" type="button" onclick={() => setUsageRange(7)}>最近 1 周</button><button class="secondary" type="button" onclick={() => setUsageRange(30)}>最近 1 月</button></div><div class="form-grid"><label>开始时间<input type="datetime-local" bind:value={usageStart} /></label><label>结束时间<input type="datetime-local" bind:value={usageEnd} /></label><label>模型筛选<select bind:value={rankingModel}><option value="">全部</option>{#each inventory.models as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label><label>Top N<input type="number" bind:value={rankingLimit} min="1" max="100" /></label><button type="button" onclick={refreshUsageRanking} disabled={session.loading}>{session.loading ? '查询中' : '查询'}</button></div></section>
 					<section class="panel"><div class="table-wrap"><table><thead><tr><th>#</th><th>用户 / Subject</th><th>请求数</th><th>输入 token</th><th>输出 token</th><th>总 token</th></tr></thead><tbody>{#each rankingPageRows as row, i}<tr><td>{(rankingPage - 1) * PAGE_SIZE.ranking + i + 1}</td><td>{row.subject_name} / {row.login_username ?? row.subject_id}</td><td>{row.request_count}</td><td>{row.prompt_tokens}</td><td>{row.completion_tokens}</td><td>{row.total_tokens}</td></tr>{:else}<tr><td colspan="6" class="empty">暂无用量数据。</td></tr>{/each}</tbody></table></div><Pagination total={rankingRows.length} page={rankingPage} size={PAGE_SIZE.ranking} onPage={(page) => (rankingPage = page)} /></section>
 				{:else if active === 'audit'}
 					<PageTitle title={'审计'} subtitle={'最近的权限变更和安全相关事件。'} />
 					<section class="panel"><AuditTable rows={auditPageRows} onDetail={(event) => (auditDetail = event)} /><Pagination total={auditRows.length} page={auditPage} size={PAGE_SIZE.audit} onPage={(page) => (auditPage = page)} /></section>
 				{:else if active === 'diagnostics'}
 					<PageTitle title={'诊断'} subtitle={'运行时依赖和上游健康检查。'} />
-					<div class="grid"><div class="metric"><span>Postgres</span><strong>{ready?.checks.postgres ? '正常' : '异常'}</strong></div><div class="metric"><span>Redis</span><strong>{ready?.checks.redis ? '正常' : '异常'}</strong></div><div class="metric"><span>环境</span><strong>{diagnostics?.environment}</strong></div></div>
+					<div class="grid"><div class="metric"><span>Postgres</span><strong>{session.ready?.checks.postgres ? '正常' : '异常'}</strong></div><div class="metric"><span>Redis</span><strong>{session.ready?.checks.redis ? '正常' : '异常'}</strong></div><div class="metric"><span>环境</span><strong>{diagnostics?.environment}</strong></div></div>
 					<section class="panel">
 						<h2>健康巡检</h2>
 						<p class="muted">自动探测每个活跃上游的 <code>/models</code>，故障时在 Redis 标记 UNHEALTHY 并从路由排除。关闭后 sidecar 仍运行但跳过探测，已有标记靠 TTL 自动过期恢复。</p>
@@ -1593,7 +1539,7 @@
 							{/if}
 						</div>
 					</section>
-					<UpstreamTable rows={inventory.upstreams} healthResults={healthResults} modelLabel={modelLabel} onCheck={checkUpstream} onState={setUpstreamState} onPatch={patchUpstream} onDelete={deleteUpstream} onError={(m) => (pageError = m)} />
+					<UpstreamTable rows={inventory.upstreams} healthResults={healthResults} modelLabel={modelLabel} onCheck={checkUpstream} onState={setUpstreamState} onPatch={patchUpstream} onDelete={deleteUpstream} onError={(m) => (session.pageError = m)} />
 				{/if}
 			</section>
 		</main>
@@ -1626,7 +1572,7 @@
 	</div>
 {/if}
 
-{#if connected && mustProvideRealName}
+{#if session.connected && mustProvideRealName}
 	<div class="modal-backdrop" role="presentation">
 		<section class="modal" aria-label="补充真实姓名">
 			<header>
@@ -1636,10 +1582,10 @@
 			<label>真实姓名<input bind:value={realNameForm.full_name} autocomplete="name" onkeydown={(event) => event.key === 'Enter' && submitRealName()} /></label>
 			{#if realNameError}<p class="error">{realNameError}</p>{/if}
 			<footer class="actions">
-				<button type="button" onclick={submitRealName} disabled={loading}>{loading ? '保存中' : '保存并继续'}</button>
+				<button type="button" onclick={submitRealName} disabled={session.loading}>{session.loading ? '保存中' : '保存并继续'}</button>
 			</footer>
 		</section>
 	</div>
 {/if}
 
-<SecretOnceDialog secret={plaintextKey} onClose={() => (plaintextKey = '')} />
+<SecretOnceDialog secret={session.plaintextKey} onClose={() => (session.plaintextKey = '')} />
