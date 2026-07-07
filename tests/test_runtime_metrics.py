@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from typing import Any, cast
 from uuid import uuid4
@@ -19,8 +20,10 @@ from llm_gateway.services.runtime_metrics import (
     runtime_snapshot,
 )
 from llm_gateway.services.upstream_routing import (
+    _read_sticky_upstream_id,
     select_upstream_for_key,
     sticky_route_key,
+    touch_sticky_route,
 )
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
@@ -112,6 +115,66 @@ class FailingRedis(FakeRedis):
     async def zremrangebyscore(self, name: str, minimum: Any, maximum: Any) -> None:
         del name, minimum, maximum
         raise ConnectionError("redis unavailable")
+
+
+class TTLAwareFakeRedis(FakeRedis):
+    """FakeRedis variant that honors `setex` TTL via a controllable clock.
+
+    The base FakeRedis discards the `seconds` argument entirely, so it can't
+    exercise sticky-route expiry/refresh behavior. This subclass records an
+    expiry timestamp per key and evicts on read once the clock passes it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._expiry: dict[str, float] = {}
+        self._now: float = 0.0
+
+    def _clock(self) -> float:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
+
+    def _expired(self, name: str) -> bool:
+        expire_at = self._expiry.get(name)
+        if expire_at is not None and self._clock() > expire_at:
+            self.values.pop(name, None)
+            self._expiry.pop(name, None)
+            return True
+        return False
+
+    async def setex(self, name: str, seconds: int, value: str) -> None:
+        self.values[name] = value
+        # Production code passes `now` into touch_sticky_route and embeds it in
+        # the payload as `last_active_at`, but redis.setex only receives
+        # `seconds`/`value`. Recover the effective clock from the payload so the
+        # recorded expiry reflects the producer's `now` rather than this fake's
+        # internal clock (which only moves via `advance`). Also nudge the
+        # internal clock forward so subsequent `advance`/reads stay consistent.
+        effective_now = self._clock()
+        try:
+            payload = json.loads(value)
+            if isinstance(payload, dict) and "last_active_at" in payload:
+                effective_now = max(effective_now, float(payload["last_active_at"]))
+        except (TypeError, ValueError):
+            pass
+        self._now = max(self._now, effective_now)
+        self._expiry[name] = effective_now + seconds
+
+    async def get(self, name: str) -> str | None:
+        if self._expired(name):
+            return None
+        return self.values.get(name)
+
+    async def mget(self, names: list[str]) -> list[str | None]:
+        out: list[str | None] = []
+        for name in names:
+            if self._expired(name):
+                out.append(None)
+            else:
+                out.append(self.values.get(name))
+        return out
 
 
 async def test_runtime_snapshot_groups_active_connections():
@@ -448,3 +511,217 @@ async def test_select_upstream_surfaces_redis_failures():
             upstreams=[upstream],
             now=100.0,
         )
+
+
+def _make_alias_with_upstreams(sticky_ttl: int = 1200):
+    """Build a ModelAlias + two distinct UpstreamTargets, mirroring existing tests."""
+    from llm_gateway.db.models import ModelAlias, UpstreamTarget
+
+    model = ModelAlias(
+        alias=f"sticky-model-{uuid4()}",
+        upstream_model_name="sticky-upstream-model",
+        sticky_ttl_seconds=sticky_ttl,
+    )
+    upstream_a = UpstreamTarget(
+        model_alias_id=model.id,
+        name="upstream-a",
+        base_url="http://a.example/v1",
+    )
+    upstream_b = UpstreamTarget(
+        model_alias_id=model.id,
+        name="upstream-b",
+        base_url="http://b.example/v1",
+    )
+    return model, [upstream_a, upstream_b]
+
+
+def _seed_kv_cache(redis, upstream_id, kv_cache_usage: float) -> None:
+    redis.values[f"{VLLM_METRICS_CACHE_PREFIX}:{upstream_id}"] = json.dumps(
+        {"ok": True, "kv_cache_usage": kv_cache_usage}
+    )
+
+
+async def test_sticky_ttl_refreshed_on_each_touch():
+    redis = cast(Any, TTLAwareFakeRedis())
+    key_id = uuid4()
+    model_alias_id = uuid4()
+    upstream_a = uuid4()
+
+    await touch_sticky_route(
+        redis,
+        key_id=key_id,
+        model_alias_id=model_alias_id,
+        upstream_id=upstream_a,
+        ttl_seconds=50,
+        now=100.0,
+    )
+    assert redis._expiry[sticky_route_key(key_id=key_id, model_alias_id=model_alias_id)] == 150.0
+
+    await touch_sticky_route(
+        redis,
+        key_id=key_id,
+        model_alias_id=model_alias_id,
+        upstream_id=upstream_a,
+        ttl_seconds=50,
+        now=200.0,
+    )
+    assert redis._expiry[sticky_route_key(key_id=key_id, model_alias_id=model_alias_id)] == 250.0
+
+    redis.advance(40)  # now=240, still valid (250)
+    assert await _read_sticky_upstream_id(
+        redis, key_id=key_id, model_alias_id=model_alias_id
+    ) == str(upstream_a)
+    redis.advance(11)  # now=251, expired (250)
+    assert (
+        await _read_sticky_upstream_id(redis, key_id=key_id, model_alias_id=model_alias_id) is None
+    )
+
+
+async def test_sticky_expires_after_ttl_and_reselects():
+    redis = cast(Any, TTLAwareFakeRedis())
+    model, (upstream_a, upstream_b) = _make_alias_with_upstreams(sticky_ttl=50)
+    key_id = uuid4()
+
+    _seed_kv_cache(redis, upstream_a.id, 0.8)
+    _seed_kv_cache(redis, upstream_b.id, 0.2)
+
+    selected, _loads = await select_upstream_for_key(
+        redis,
+        key_id=key_id,
+        model_alias=model,
+        upstreams=[upstream_a, upstream_b],
+        now=100.0,
+    )
+    assert selected.id == upstream_b.id
+
+    redis.advance(51)  # now=151, sticky expired (was 150)
+
+    # Flip load: upstream_a now lighter.
+    _seed_kv_cache(redis, upstream_a.id, 0.1)
+    _seed_kv_cache(redis, upstream_b.id, 0.9)
+
+    selected_again, _loads = await select_upstream_for_key(
+        redis,
+        key_id=key_id,
+        model_alias=model,
+        upstreams=[upstream_a, upstream_b],
+        now=151.0,
+    )
+    assert selected_again.id == upstream_a.id
+
+    payload = redis.values[sticky_route_key(key_id=key_id, model_alias_id=model.id)]
+    assert json.loads(payload)["upstream_id"] == str(upstream_a.id)
+
+
+async def test_post_call_touch_extends_ttl_beyond_pre_call():
+    redis = cast(Any, TTLAwareFakeRedis())
+    model, (upstream_a, _upstream_b) = _make_alias_with_upstreams(sticky_ttl=50)
+    key_id = uuid4()
+
+    _seed_kv_cache(redis, upstream_a.id, 0.1)
+
+    selected, _loads = await select_upstream_for_key(
+        redis,
+        key_id=key_id,
+        model_alias=model,
+        upstreams=[upstream_a, _upstream_b],
+        now=100.0,
+    )
+    # Pre-call write -> expiry 150.
+    assert redis._expiry[sticky_route_key(key_id=key_id, model_alias_id=model.id)] == 150.0
+
+    # Post-call refresh at now=120 -> expiry 170.
+    await touch_sticky_route(
+        redis,
+        key_id=key_id,
+        model_alias_id=model.id,
+        upstream_id=selected.id,
+        ttl_seconds=50,
+        now=120.0,
+    )
+    assert redis._expiry[sticky_route_key(key_id=key_id, model_alias_id=model.id)] == 170.0
+
+    redis.advance(40)  # now=160, valid (170)
+    assert await _read_sticky_upstream_id(redis, key_id=key_id, model_alias_id=model.id) == str(
+        selected.id
+    )
+    redis.advance(11)  # now=171, expired
+    assert await _read_sticky_upstream_id(redis, key_id=key_id, model_alias_id=model.id) is None
+
+
+async def test_sticky_survives_when_load_changes_with_ttl():
+    redis = cast(Any, TTLAwareFakeRedis())
+    model, (upstream_a, upstream_b) = _make_alias_with_upstreams(sticky_ttl=100)
+    key_id = uuid4()
+
+    _seed_kv_cache(redis, upstream_a.id, 0.8)
+    _seed_kv_cache(redis, upstream_b.id, 0.2)
+
+    selected, _loads = await select_upstream_for_key(
+        redis,
+        key_id=key_id,
+        model_alias=model,
+        upstreams=[upstream_a, upstream_b],
+        now=100.0,
+    )
+    assert selected.id == upstream_b.id
+    # First select refreshed sticky to expiry 200 (100 + 100).
+    assert redis._expiry[sticky_route_key(key_id=key_id, model_alias_id=model.id)] == 200.0
+
+    # Flip load: upstream_a now lighter, but within TTL sticky wins.
+    _seed_kv_cache(redis, upstream_a.id, 0.1)
+    _seed_kv_cache(redis, upstream_b.id, 0.9)
+    selected_again, _loads = await select_upstream_for_key(
+        redis,
+        key_id=key_id,
+        model_alias=model,
+        upstreams=[upstream_a, upstream_b],
+        now=110.0,
+    )
+    assert selected_again.id == upstream_b.id
+    # Second select refreshed sticky to expiry 210 (110 + 100).
+    assert redis._expiry[sticky_route_key(key_id=key_id, model_alias_id=model.id)] == 210.0
+
+    redis.advance(99)  # now=209, still valid (210)
+    assert await _read_sticky_upstream_id(redis, key_id=key_id, model_alias_id=model.id) == str(
+        upstream_b.id
+    )
+    redis.advance(2)  # now=211, expired
+    assert await _read_sticky_upstream_id(redis, key_id=key_id, model_alias_id=model.id) is None
+
+
+async def test_health_filter_removes_sticky_upstream_then_reselects():
+    redis = cast(Any, TTLAwareFakeRedis())
+    model, (upstream_a, upstream_b) = _make_alias_with_upstreams(sticky_ttl=100)
+    key_id = uuid4()
+
+    _seed_kv_cache(redis, upstream_a.id, 0.8)
+    _seed_kv_cache(redis, upstream_b.id, 0.2)
+
+    selected, _loads = await select_upstream_for_key(
+        redis,
+        key_id=key_id,
+        model_alias=model,
+        upstreams=[upstream_a, upstream_b],
+        now=100.0,
+    )
+    assert selected.id == upstream_b.id
+
+    # Mark upstream_b unhealthy, mirroring upstream_health key layout.
+    unhealthy_blob = json.dumps({"reason": "test", "status_code": 500, "since": 100.0})
+    await redis.setex(f"llm_gateway:upstream:unhealthy:{upstream_b.id}", 300, unhealthy_blob)
+
+    # filter_unhealthy would have dropped b; pass only [a] as candidates.
+    selected_again, _loads = await select_upstream_for_key(
+        redis,
+        key_id=key_id,
+        model_alias=model,
+        upstreams=[upstream_a],
+        now=101.0,
+    )
+    assert selected_again.id == upstream_a.id
+
+    # Sticky rewritten to point to a (not still b).
+    assert await _read_sticky_upstream_id(redis, key_id=key_id, model_alias_id=model.id) == str(
+        upstream_a.id
+    )
