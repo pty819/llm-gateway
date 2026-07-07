@@ -63,7 +63,7 @@ Initialize or migrate the database:
 uv run python scripts/init_db.py
 ```
 
-Run this command on every backend upgrade before starting the new server. The script is intentionally idempotent: it stamps a legacy schema that already has gateway tables but no Alembic version, then upgrades to the current migration head. This keeps PostgreSQL aligned with the backend without asking operators to hand-edit tables.
+Run this command on every backend upgrade before starting the new server. The script is intentionally idempotent: it runs `alembic upgrade head`, which is a no-op when the database is already current. This keeps PostgreSQL aligned with the backend without asking operators to hand-edit tables.
 
 For local upgrades that should also sync Python and frontend dependencies:
 
