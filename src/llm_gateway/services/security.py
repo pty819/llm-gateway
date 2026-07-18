@@ -361,6 +361,14 @@ async def ensure_builtin_identity(session: AsyncSession, settings: Settings) -> 
         await ensure_model_team_grant(
             session, model_alias_id=model_alias.id, team_id=admin_team.id
         )
+        # Register each configured model with LiteLLM so the Responses API
+        # stream path uses real SSE streaming instead of fake-streaming. Must
+        # run on every worker at startup; see register_model_for_native_streaming.
+        from llm_gateway.services.litellm_client import (
+            register_model_for_native_streaming,
+        )
+
+        register_model_for_native_streaming(model_alias)
 
     return admin
 

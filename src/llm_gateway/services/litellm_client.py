@@ -29,6 +29,61 @@ def configure_litellm_routing() -> None:
 configure_litellm_routing()
 
 
+def register_model_for_native_streaming(model_alias: ModelAlias) -> None:
+    """Register a ModelAlias with LiteLLM so the Responses API uses real
+    streaming instead of fake-streaming.
+
+    Root cause being worked around: LiteLLM's ``OpenAIResponsesAPIConfig
+    .should_fake_stream`` consults ``supports_native_streaming`` from the
+    LiteLLM model registry. Custom vLLM model names (``qwen3``,
+    ``Qwen2.5-72B-Instruct``) are NOT in the registry, so
+    ``supports_native_streaming`` raises -> returns False -> LiteLLM silently
+    drops ``stream=True`` from the upstream request, POSTs a non-streaming
+    /responses call to vLLM, then slices the full JSON into fake SSE chunks.
+
+    Symptoms: "stream disconnected before completion" / "error sending for
+    url" on the gateway's /v1/responses path, while Codex hitting vLLM
+    directly (real stream=True) works fine. vLLM's Responses endpoint DOES
+    support native SSE streaming, so we override the registry entry to claim
+    the model supports native streaming. This makes LiteLLM send stream=True
+    through to vLLM and parse the real SSE events via
+    ``ResponsesAPIStreamingIterator``.
+
+    Safe to call repeatedly (register_model upserts). Idempotent across
+    workers because the registry is per-process; every worker must call this
+    at startup and on model create/update. The registry entry is minimal -
+    just enough to flip the fake-stream decision - and does not affect
+    pricing or routing for chat-completions (which never consult this flag
+    for openai/* models).
+    """
+    litellm_model = model_alias.litellm_model or ""
+    # LiteLLM keys its model_cost registry by the bare model name (without the
+    # "openai/" provider prefix). get_model_info / _get_model_info_helper also
+    # look up by the stripped name, so we register under the stripped key.
+    registry_key = litellm_model.split("/", 1)[1] if "/" in litellm_model else litellm_model
+    if not registry_key:
+        return
+    try:
+        litellm.register_model(
+            {
+                registry_key: {
+                    "litellm_provider": "openai",
+                    "supports_native_streaming": True,
+                    # Mark as a custom/unknown-mode entry so LiteLLM does not
+                    # assume chat-completion-only capabilities. ``mode`` is
+                    # optional but helps get_model_info succeed without raising.
+                    "mode": "chat",
+                }
+            }
+        )
+    except Exception:
+        # Registration is best-effort: if it ever fails we fall back to the
+        # fake-stream behavior (the status quo ante), which still produces
+        # correct output for short responses - just not real streaming. Never
+        # let a registry hiccough block model creation or startup.
+        pass
+
+
 def _api_key(upstream: UpstreamTarget) -> str | None:
     return upstream.api_key_value or upstream.api_key_ref
 

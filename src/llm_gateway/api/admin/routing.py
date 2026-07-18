@@ -129,6 +129,14 @@ async def create_model_alias(
     )
     await session.commit()
     await session.refresh(model_alias)
+    # Register with LiteLLM so /v1/responses uses real SSE streaming instead
+    # of fake-streaming (custom vLLM model names are not in LiteLLM's registry
+    # and would otherwise trigger the non-streaming fallback).
+    from llm_gateway.services.litellm_client import (
+        register_model_for_native_streaming,
+    )
+
+    register_model_for_native_streaming(model_alias)
     return model_alias
 
 
@@ -153,6 +161,13 @@ async def update_model_alias(
     )
     await session.commit()
     await session.refresh(model_alias)
+    # Re-register in case litellm_model changed - the registry key is derived
+    # from it, so a rename needs a fresh entry to keep real streaming working.
+    from llm_gateway.services.litellm_client import (
+        register_model_for_native_streaming,
+    )
+
+    register_model_for_native_streaming(model_alias)
     return model_alias
 
 
