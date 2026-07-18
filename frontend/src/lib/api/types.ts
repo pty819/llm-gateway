@@ -27,6 +27,17 @@ export type Subject = Timestamped & {
 	requires_real_name?: boolean;
 };
 
+/** Per-subject rate-limit override (Redis-backed, absolute highest priority).
+ * A null field means "no override for this dimension" → inherit default. */
+export type SubjectRateOverride = {
+	rpm: number | null;
+	concurrency: number | null;
+};
+
+/** Map returned by GET /admin/subjects/rate-overrides.
+ * Keys are subject IDs; absent subjects have no override set. */
+export type SubjectRateOverrideMap = Record<string, SubjectRateOverride>;
+
 export type Project = Timestamped & {
 	id: string;
 	name: string;
@@ -357,6 +368,7 @@ export type ApiError = {
 
 export type Inventory = {
 	subjects: Subject[];
+	subjectRateOverrides: SubjectRateOverrideMap;
 	projects: Project[];
 	memberships: ProjectMembership[];
 	keys: GatewayKey[];

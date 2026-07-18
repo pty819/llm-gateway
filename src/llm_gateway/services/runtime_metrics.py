@@ -16,7 +16,12 @@ from llm_gateway.db.models import ModelAlias, UpstreamTarget
 
 ACTIVE_KEY = "llm_gateway:runtime:active_connections"
 DEFAULT_WINDOW_SECONDS = 10
-ACTIVE_STALE_SECONDS = 60 * 60
+# Stale threshold for the runtime active-connection ZSET: any member older than
+# this is pruned on every snapshot. Must exceed the longest possible single
+# upstream call (upstream_timeout_seconds defaults to 6000s = 100min) so a
+# genuinely in-flight long-running request is never pruned mid-stream. A leaked
+# member from a crashed/cancelled connection is recovered within this window.
+ACTIVE_STALE_SECONDS = 60 * 60 * 3  # 3 hours
 VLLM_METRICS_CACHE_PREFIX = "llm_gateway:runtime:vllm_metrics"
 VLLM_METRICS_LOCK_PREFIX = "llm_gateway:runtime:vllm_metrics_lock"
 VLLM_METRICS_COUNTER_PREFIX = "llm_gateway:runtime:vllm_counter"
@@ -94,8 +99,15 @@ async def tracked_runtime_connection(redis: Redis, *, request_id: str, route):
         yield
     finally:
         if member:
-            with suppress(Exception):
-                await mark_connection_closed(redis, member)
+            # Shield the close marker from task cancellation: when a client
+            # disconnects or a streaming request is interrupted, the enclosing
+            # coroutine is left in cancelling state and any plain await in
+            # finally is immediately re-cancelled, leaking the ZSET member.
+            # shield() lets this single zrem complete before the cancellation
+            # propagates. Failures are swallowed — the ACTIVE_STALE_SECONDS
+            # prune is the backstop.
+            with suppress(Exception, asyncio.CancelledError):
+                await asyncio.shield(mark_connection_closed(redis, member))
 
 
 async def runtime_snapshot(

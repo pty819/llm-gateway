@@ -480,6 +480,18 @@ code {
 	color: var(--text-muted);
 }
 
+.rate-override {
+	display: inline-flex;
+	flex-direction: column;
+	gap: 2px;
+	font-size: 0.85em;
+	line-height: 1.2;
+}
+
+.rate-override strong {
+	font-variant-numeric: tabular-nums;
+}
+
 .toolbar {
 	display: flex;
 	flex-wrap: wrap;

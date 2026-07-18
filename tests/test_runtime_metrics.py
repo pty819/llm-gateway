@@ -155,7 +155,9 @@ async def test_runtime_snapshot_prunes_stale_active_connections():
     )
     await mark_connection_open(redis, request_id="stale", info=info, now=1.0)
 
-    snapshot = await runtime_snapshot(redis, window_seconds=10, now=3_700.0)
+    # ACTIVE_STALE_SECONDS is 3 hours (10800s); a marker older than that must
+    # be pruned. Test at 11000s — comfortably past the threshold.
+    snapshot = await runtime_snapshot(redis, window_seconds=10, now=11_000.0)
 
     assert snapshot["active_connections"] == 0
     assert redis.zsets[ACTIVE_KEY] == {}

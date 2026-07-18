@@ -18,6 +18,8 @@ wheels/
 .omc/
 .omx/
 .codegraph/
+.serena/
+.zcode/
 .DS_Store
 
 # Local git worktrees (subagent-driven development)

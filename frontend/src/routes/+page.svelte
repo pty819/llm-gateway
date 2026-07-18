@@ -37,6 +37,8 @@
 		ResourceState,
 		RuntimeMetricsSnapshot,
 		Subject,
+		SubjectRateOverride,
+		SubjectRateOverrideMap,
 		SubjectType,
 		Team,
 		TeamMembership,
@@ -557,6 +559,7 @@
 			}
 			const [
 				subjectsPage,
+				subjectRateOverrides,
 				projectsPage,
 				membershipsPage,
 				keysPage,
@@ -571,6 +574,7 @@
 				hcConfig
 			] = await Promise.all([
 				api.get<PaginatedResponse<Subject>>('/admin/subjects'),
+				api.get<SubjectRateOverrideMap>('/admin/subjects/rate-overrides'),
 				api.get<PaginatedResponse<Project>>('/admin/projects'),
 				api.get<PaginatedResponse<ProjectMembership>>('/admin/project-memberships'),
 				api.get<PaginatedResponse<GatewayKey>>('/admin/gateway-keys'),
@@ -587,6 +591,7 @@
 			healthCheckConfig = hcConfig;
 			inventory = {
 				subjects: subjectsPage.items,
+				subjectRateOverrides,
 				projects: projectsPage.items,
 				memberships: membershipsPage.items,
 				keys: keysPage.items,
@@ -671,6 +676,39 @@
 	async function setSubjectState(id: string, state: ResourceState) {
 		await run(async () => {
 			await api.patch(`/admin/subjects/${id}/state`, { state });
+			await refreshAll();
+		});
+	}
+
+	/** Edit one dimension of a subject's per-user rate override.
+	 * Reads the current override, replaces only the edited field, and PUTs the
+	 * merged result (the backend's PUT is full-replace semantics). An empty
+	 * prompt input clears that field back to null (inherit default). */
+	async function editSubjectRateField(id: string, field: 'rpm' | 'concurrency') {
+		const current = inventory.subjectRateOverrides[id] ?? { rpm: null, concurrency: null };
+		const label = field === 'rpm' ? '每分钟请求数上限（留空表示继承默认）' : '并发上限（留空表示继承默认）';
+		const raw = prompt(label, String(current[field] ?? ''));
+		if (raw === null) return; // user cancelled — do nothing
+		const trimmed = raw.trim();
+		const next = trimmed === '' ? null : Number(trimmed);
+		if (next !== null && (!Number.isFinite(next) || next <= 0)) {
+			pageError = '上限必须是正整数。';
+			return;
+		}
+		const merged: SubjectRateOverride = {
+			rpm: field === 'rpm' ? next : current.rpm,
+			concurrency: field === 'concurrency' ? next : current.concurrency
+		};
+		await run(async () => {
+			await api.put(`/admin/subjects/${id}/rate-override`, merged);
+			await refreshAll();
+		});
+	}
+
+	/** Clear a subject's per-user override entirely (both dimensions). */
+	async function clearSubjectRateOverride(id: string) {
+		await run(async () => {
+			await api.delete(`/admin/subjects/${id}/rate-override`);
 			await refreshAll();
 		});
 	}
@@ -1197,6 +1235,7 @@
 	function emptyInventory(): Inventory {
 		return {
 			subjects: [],
+			subjectRateOverrides: {},
 			projects: [],
 			memberships: [],
 			keys: [],
@@ -1471,7 +1510,7 @@
 						<section class="panel">
 							<h2>用户</h2>
 							<div class="form-grid"><label>搜索用户<input bind:value={subjectSearch} placeholder="输入姓名、工号或备注" /></label></div>
-							<div class="table-wrap"><table><thead><tr><th>真实姓名</th><th>工号</th><th>类型</th><th>状态</th><th>备注</th><th>操作</th></tr></thead><tbody>{#each subjectPageRows as subject}<tr><td>{subject.name}<br /><span class="muted">{short(subject.id)}</span></td><td>{subject.login_username ?? '无'}</td><td>{subjectTypeLabel(subject.type)}</td><td><StateBadge value={subject.state} /></td><td>{subject.notes}</td><td class="actions"><button class="secondary" type="button" onclick={() => patchSubject(subject.id, { name: prompt('真实姓名', subject.name) ?? subject.name })}>编辑姓名</button><button class="secondary" type="button" onclick={() => patchSubject(subject.id, { notes: prompt('备注', subject.notes ?? '') ?? subject.notes })}>编辑备注</button><button class="secondary" type="button" onclick={() => setSubjectState(subject.id, subject.state === 'active' ? 'disabled' : 'active')}>{subject.state === 'active' ? '禁用' : '启用'}</button><button class="danger" type="button" onclick={() => deleteSubject(subject)}>删除</button></td></tr>{:else}<tr><td colspan="6" class="empty">没有匹配的用户。</td></tr>{/each}</tbody></table></div>
+							<div class="table-wrap"><table><thead><tr><th>真实姓名</th><th>工号</th><th>类型</th><th>状态</th><th>限流</th><th>备注</th><th>操作</th></tr></thead><tbody>{#each subjectPageRows as subject}{@const ov = inventory.subjectRateOverrides[subject.id]}<tr><td>{subject.name}<br /><span class="muted">{short(subject.id)}</span></td><td>{subject.login_username ?? '无'}</td><td>{subjectTypeLabel(subject.type)}</td><td><StateBadge value={subject.state} /></td><td class="rate-cell">{#if ov && (ov.rpm !== null || ov.concurrency !== null)}<span class="rate-override"><span title="并发上限">并发: <strong>{ov.concurrency ?? '继承'}</strong></span><span title="每分钟请求数上限">RPM: <strong>{ov.rpm ?? '继承'}</strong></span></span>{:else}<span class="muted">继承</span>{/if}</td><td>{subject.notes}</td><td class="actions"><button class="secondary" type="button" onclick={() => patchSubject(subject.id, { name: prompt('真实姓名', subject.name) ?? subject.name })}>编辑姓名</button><button class="secondary" type="button" onclick={() => patchSubject(subject.id, { notes: prompt('备注', subject.notes ?? '') ?? subject.notes })}>编辑备注</button><button class="secondary" type="button" onclick={() => editSubjectRateField(subject.id, 'concurrency')}>编辑并发</button><button class="secondary" type="button" onclick={() => editSubjectRateField(subject.id, 'rpm')}>编辑 RPM</button>{#if ov && (ov.rpm !== null || ov.concurrency !== null)}<button class="secondary" type="button" onclick={() => clearSubjectRateOverride(subject.id)}>清除限流</button>{/if}<button class="secondary" type="button" onclick={() => setSubjectState(subject.id, subject.state === 'active' ? 'disabled' : 'active')}>{subject.state === 'active' ? '禁用' : '启用'}</button><button class="danger" type="button" onclick={() => deleteSubject(subject)}>删除</button></td></tr>{:else}<tr><td colspan="7" class="empty">没有匹配的用户。</td></tr>{/each}</tbody></table></div>
 							<Pagination total={subjectRows.length} page={subjectPage} size={PAGE_SIZE.defaultList} onPage={(page) => (subjectPage = page)} />
 						</section>
 				{:else if active === 'projects'}

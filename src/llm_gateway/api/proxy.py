@@ -84,6 +84,7 @@ async def _prepare(
             subject_id=auth.subject.id,
             project_id=auth.project.id,
             defaults=settings,
+            redis=redis,
         )
         route = await resolve_route_context(
             session,
@@ -286,7 +287,11 @@ async def _proxy_endpoint(
         )
         return _error_response(status.HTTP_502_BAD_GATEWAY, "adapter_failure", exc)
     finally:
-        await _touch_route_sticky(redis, auth=auth, route=route)
+        # Shield the sticky-route touch from cancellation (same rationale as
+        # the streaming finally block: a cancelled request must not leak state
+        # or skip accounting).
+        with suppress(Exception, asyncio.CancelledError):
+            await asyncio.shield(_touch_route_sticky(redis, auth=auth, route=route))
 
 
 async def _stream_endpoint(
@@ -335,23 +340,33 @@ async def _stream_endpoint(
         error = exc
         yield f"event: error\ndata: {str(exc)}\n\n"
     finally:
-        with suppress(Exception):
-            await release_concurrency_slot(redis, concurrency_key)
-        await _touch_route_sticky(redis, auth=auth, route=route)
-        await record_proxy_fact(
-            request_id=request_id,
-            started_at=started_at,
-            endpoint_family=endpoint_family,
-            auth=auth,
-            route=route,
-            streaming=True,
-            outcome=outcome,
-            usage=usage,
-            first_token_at=first_token_at,
-            error_class=type(error).__name__ if error else None,
-            error_detail=str(error) if error else None,
-            endpoint=stream_endpoint,
-        )
+        # Cleanup must complete even when the request is being cancelled
+        # (client disconnect, Starlette timeout, etc.). When a task is in
+        # cancelling state a plain await in finally is immediately re-cancelled
+        # before the I/O fires, leaking concurrency slots and runtime markers
+        # until their TTLs expire. asyncio.shield() lets each best-effort
+        # cleanup run to completion before the outer cancellation resumes.
+        with suppress(Exception, asyncio.CancelledError):
+            await asyncio.shield(release_concurrency_slot(redis, concurrency_key))
+        with suppress(Exception, asyncio.CancelledError):
+            await asyncio.shield(_touch_route_sticky(redis, auth=auth, route=route))
+        with suppress(Exception, asyncio.CancelledError):
+            await asyncio.shield(
+                record_proxy_fact(
+                    request_id=request_id,
+                    started_at=started_at,
+                    endpoint_family=endpoint_family,
+                    auth=auth,
+                    route=route,
+                    streaming=True,
+                    outcome=outcome,
+                    usage=usage,
+                    first_token_at=first_token_at,
+                    error_class=type(error).__name__ if error else None,
+                    error_detail=str(error) if error else None,
+                    endpoint=stream_endpoint,
+                )
+            )
 
 
 @router.post("/v1/chat/completions")

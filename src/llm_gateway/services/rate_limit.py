@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+import asyncio
 import inspect
 import time
 from typing import Any
@@ -29,6 +30,14 @@ class RateLimitExceeded(Exception):
 
 
 CONCURRENCY_SLOT_PREFIX = "concurrency:key"
+# TTL on the concurrency ZSET: a hard cap on how long a leaked slot can block
+# new requests after a client disconnect / process crash / cancellation.
+# Chosen to comfortably exceed the longest expected single upstream call
+# (upstream_timeout_seconds defaults to 6000s = 100min) while still giving
+# operators a deterministic recovery window. Must be longer than
+# upstream_timeout_seconds so a genuinely slow request never has its slot
+# pruned mid-flight.
+CONCURRENCY_SLOT_TTL_SECONDS = 60 * 60 * 2  # 2 hours
 ACQUIRE_CONCURRENCY_SLOT_SCRIPT = """
 local key = KEYS[1]
 local member = ARGV[1]
@@ -45,6 +54,16 @@ if current > limit then
 end
 return current
 """
+# Atomic release so cleanup after a cancelled/disconnected request cannot be
+# split across round-trips — Lua runs server-side, immune to client-side
+# CancelledError propagation.
+RELEASE_CONCURRENCY_SLOT_SCRIPT = """
+local key = KEYS[1]
+local member = ARGV[1]
+local removed = redis.call("ZREM", key, member)
+redis.call("EXPIRE", key, tonumber(ARGV[2]))
+return removed
+"""
 
 
 class EffectiveRatePolicy:
@@ -60,13 +79,30 @@ async def resolve_effective_rate_policy(
     subject_id: UUID,
     project_id: UUID,
     defaults: Settings,
+    redis: Redis | None = None,
 ) -> EffectiveRatePolicy:
+    from llm_gateway.services import subject_rate_override
     from llm_gateway.services.cache import policy_cache
 
+    # Per-subject Redis override: absolute highest priority. If a dimension is
+    # set here, it short-circuits the entire min() resolution for that
+    # dimension — the admin's explicit per-user limit wins over every other
+    # source (env defaults, key/project/subject RatePolicies). Read live from
+    # Redis every request (single GET, sub-millisecond) so an admin's edit
+    # takes effect immediately with no cache lag. Degrades open: Redis down →
+    # fall through to the normal PG-based path.
+    override = await subject_rate_override.get_override(redis, subject_id)
+
+    # The PG-based resolution result is still cached per (key, subject, project)
+    # for 30s. But when a Redis override is present we bypass that cache: the
+    # override is the live source of truth and must not be masked by a stale
+    # cached PG result. When no override exists, the cache is safe to use.
     cache_key = f"rate:{key_id}:{subject_id}:{project_id}"
-    cached = policy_cache.get(cache_key)
-    if cached is not None:
-        return cached
+    if override is None:
+        cached = policy_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
     requests_per_minute = defaults.default_request_limit_per_minute
     concurrency_limit = defaults.default_concurrency_limit
     for scope, scope_id in (
@@ -88,10 +124,23 @@ async def resolve_effective_rate_policy(
                 )
             if policy.concurrency_limit is not None:
                 concurrency_limit = min(concurrency_limit, policy.concurrency_limit)
+
+    # Apply the Redis override last so it wins absolutely for the dimensions it
+    # covers. A None dimension leaves the PG-computed value in place.
+    if override is not None:
+        if override.concurrency is not None:
+            concurrency_limit = override.concurrency
+        if override.rpm is not None:
+            requests_per_minute = override.rpm
+
     effective = EffectiveRatePolicy(
         requests_per_minute=requests_per_minute, concurrency_limit=concurrency_limit
     )
-    policy_cache.set(cache_key, effective)
+    # Only cache the PG-only result. A result that incorporates a live Redis
+    # override must not be cached, or an admin edit would be masked for up to
+    # the cache TTL.
+    if override is None:
+        policy_cache.set(cache_key, effective)
     return effective
 
 
@@ -145,7 +194,7 @@ async def acquire_concurrency_slot(
     *,
     key_id: UUID,
     limit: int,
-    ttl_seconds: int = 900,
+    ttl_seconds: int = CONCURRENCY_SLOT_TTL_SECONDS,
     now: float | None = None,
 ) -> str:
     now = now if now is not None else time.time()
@@ -176,7 +225,29 @@ async def release_concurrency_slot(redis: Redis, slot_token: str) -> None:
     if parsed is None:
         return
     slot_key, member = parsed
-    await redis.zrem(slot_key, member)
+    try:
+        # Use a server-side Lua script so release is atomic: a single Eval call
+        # cannot be split by client-side CancelledError the way separate zrem
+        # + expire could. Even if the calling coroutine is cancelled while the
+        # Eval is in flight, Redis already executed it — the slot is removed.
+        if hasattr(redis, "eval"):
+            eval_result = redis.eval(
+                RELEASE_CONCURRENCY_SLOT_SCRIPT,
+                1,
+                slot_key,
+                member,
+                str(CONCURRENCY_SLOT_TTL_SECONDS),
+            )
+            if inspect.isawaitable(eval_result):
+                await asyncio.shield(eval_result)
+        else:
+            await asyncio.shield(redis.zrem(slot_key, member))
+    except (RedisError, asyncio.CancelledError):
+        # Best-effort release: if Redis is gone or the release itself is being
+        # cancelled, the TTL on the ZSET (CONCURRENCY_SLOT_TTL_SECONDS) is the
+        # backstop — the stale member will be pruned automatically. Never let
+        # a release failure propagate as a caller-visible error.
+        pass
 
 
 @asynccontextmanager
@@ -185,7 +256,7 @@ async def concurrency_slot(
     *,
     key_id: UUID,
     limit: int,
-    ttl_seconds: int = 900,
+    ttl_seconds: int = CONCURRENCY_SLOT_TTL_SECONDS,
     now: float | None = None,
 ) -> AsyncGenerator[None, None]:
     slot_token = await acquire_concurrency_slot(
@@ -194,7 +265,11 @@ async def concurrency_slot(
     try:
         yield
     finally:
-        await release_concurrency_slot(redis, slot_token)
+        # Shield release so client disconnect / task cancellation cannot
+        # prevent the slot from being returned. The release is a single Lua
+        # Eval (atomic server-side), so even if shield is partially cancelled
+        # the Redis command still completes.
+        await asyncio.shield(release_concurrency_slot(redis, slot_token))
 
 
 def _concurrency_slot_key(key_id: UUID) -> str:

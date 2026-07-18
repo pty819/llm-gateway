@@ -2,6 +2,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from redis.asyncio import Redis
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
@@ -15,7 +16,7 @@ from llm_gateway.api.admin._common import (
     _get_or_404,
     _validate_login_username,
 )
-from llm_gateway.api.deps import session_dep
+from llm_gateway.api.deps import redis_dep, session_dep
 from llm_gateway.db.models import (
     AuditEvent,
     GatewayKey,
@@ -31,6 +32,7 @@ from llm_gateway.db.models import (
     UserSession,
     utcnow,
 )
+from llm_gateway.services import subject_rate_override
 from llm_gateway.services.resource_payloads import apply_model_patch, paginated, redact_gateway_key
 from llm_gateway.services.facts import record_audit_event
 from llm_gateway.services.security import create_gateway_key, hash_password
@@ -79,6 +81,23 @@ class GatewayKeyCreate(BaseModel):
     subject_id: UUID
     project_id: UUID
     name: str
+
+
+class SubjectRateOverridePayload(BaseModel):
+    """Per-subject rate-limit override (concurrency + RPM).
+
+    Both fields optional: null means "no override for this dimension". The
+    override takes absolute precedence over every other rate-limit source —
+    it is not a min() participant. Setting both to null clears the override.
+    """
+
+    rpm: int | None = Field(default=None, ge=1, le=1_000_000)
+    concurrency: int | None = Field(default=None, ge=1, le=1_000_000)
+
+
+class SubjectRateOverrideResponse(BaseModel):
+    rpm: int | None
+    concurrency: int | None
 
 
 @router.post("/subjects")
@@ -210,7 +229,9 @@ async def set_subject_state(
 
 @router.delete("/subjects/{subject_id}")
 async def delete_subject(
-    subject_id: UUID, session: AsyncSession = Depends(session_dep)
+    subject_id: UUID,
+    session: AsyncSession = Depends(session_dep),
+    redis: Redis = Depends(redis_dep),
 ):
     subject = await _get_or_404(session, Subject, subject_id)
     if subject.is_admin:
@@ -297,7 +318,151 @@ async def delete_subject(
     )
     await session.delete(subject)
     await session.commit()
+    # Best-effort: clear any per-subject rate override from Redis. Degrades
+    # open — clear_override swallows Redis errors so a Redis outage can't
+    # block subject deletion. A stale leftover key is harmless (the subject
+    # no longer exists, so it will never be read).
+    await subject_rate_override.clear_override(redis, subject_id)
     return {"ok": True}
+
+
+@router.get("/subjects/{subject_id}/rate-override")
+async def get_subject_rate_override(
+    subject_id: UUID,
+    session: AsyncSession = Depends(session_dep),
+    redis: Redis = Depends(redis_dep),
+) -> SubjectRateOverrideResponse:
+    """Read a single subject's per-user rate-limit override.
+
+    Returns {rpm: null, concurrency: null} when no override is set — the
+    subject then falls back to the normal RatePolicy + default resolution.
+    """
+    await _get_or_404(session, Subject, subject_id)
+    override = await subject_rate_override.get_override(redis, subject_id)
+    if override is None:
+        return SubjectRateOverrideResponse(rpm=None, concurrency=None)
+    return SubjectRateOverrideResponse(
+        rpm=override.rpm, concurrency=override.concurrency
+    )
+
+
+@router.get("/subjects/rate-overrides")
+async def list_subject_rate_overrides(
+    redis: Redis = Depends(redis_dep),
+) -> dict[str, dict[str, int | None]]:
+    """Batched read of all per-subject overrides for the admin user list.
+
+    Returns {subject_id: {rpm, concurrency}} for every subject that has a
+    non-empty override. Subjects without an override are omitted (not present
+    as null entries) so the frontend treats absence as "inherit default".
+
+    One MGET round-trip scans the Redis keyspace via SCAN (not KEYS, to stay
+    safe at scale). Designed to be called once per page load, not per row.
+    """
+    overrides = await _scan_all_overrides(redis)
+    return {
+        sid: {"rpm": o.rpm, "concurrency": o.concurrency}
+        for sid, o in overrides.items()
+    }
+
+
+async def _scan_all_overrides(
+    redis: Redis,
+) -> dict[str, subject_rate_override.SubjectRateOverride]:
+    """SCAN the override keyspace and batch-read values.
+
+    Uses SCAN (cursor-based) rather than KEYS so a large keyspace doesn't
+    block Redis. Degrades open to an empty map on Redis failure.
+    """
+    prefix = subject_rate_override._KEY_PREFIX
+    ids: list[str] = []
+    cursor: int | bytes = 0
+    try:
+        while True:
+            cursor, batch = await redis.scan(
+                cursor=cursor, match=f"{prefix}*", count=200
+            )
+            for key in batch:
+                key_str = key.decode("utf-8") if isinstance(key, bytes) else str(key)
+                if key_str.startswith(prefix):
+                    ids.append(key_str[len(prefix) :])
+            # redis-py returns cursor 0 (int) when the scan is complete. Some
+            # backends return bytes; normalize both before comparing.
+            normalized = (
+                int(cursor) if isinstance(cursor, bytes) else int(cursor or 0)
+            )
+            if normalized == 0:
+                break
+    except Exception:  # noqa: BLE001 — degrade open, list is advisory
+        return {}
+    return await subject_rate_override.list_overrides(redis, ids)
+
+
+@router.put("/subjects/{subject_id}/rate-override")
+async def put_subject_rate_override(
+    subject_id: UUID,
+    payload: SubjectRateOverridePayload,
+    session: AsyncSession = Depends(session_dep),
+    redis: Redis = Depends(redis_dep),
+) -> SubjectRateOverrideResponse:
+    """Set or replace a subject's per-user rate-limit override.
+
+    PUT semantics: the entire override is replaced. To change only one
+    dimension, the frontend should read the current value, merge, and PUT the
+    combined result. Writing {rpm: null, concurrency: null} clears the
+    override entirely (deletes the Redis key).
+
+    The override takes absolute precedence over every other rate-limit source
+    and is read live from Redis on every request, so the new value applies to
+    the next request immediately — no restart, no cache invalidation, no PG
+    query on the hot path.
+
+    Validates non-positive values at the service layer too (coerced to null),
+    so a 0/negative limit can never lock a user out.
+    """
+    await _get_or_404(session, Subject, subject_id)
+    result = await subject_rate_override.set_override(
+        redis,
+        subject_id,
+        rpm=payload.rpm,
+        concurrency=payload.concurrency,
+    )
+    await record_audit_event(
+        session,
+        action="subject.rate_override.set",
+        resource_type="subject",
+        resource_id=subject_id,
+        outcome="success",
+        detail={"rpm": result.rpm, "concurrency": result.concurrency},
+    )
+    await session.commit()
+    return SubjectRateOverrideResponse(
+        rpm=result.rpm, concurrency=result.concurrency
+    )
+
+
+@router.delete("/subjects/{subject_id}/rate-override")
+async def delete_subject_rate_override(
+    subject_id: UUID,
+    session: AsyncSession = Depends(session_dep),
+    redis: Redis = Depends(redis_dep),
+) -> SubjectRateOverrideResponse:
+    """Clear a subject's per-user override entirely.
+
+    After this the subject falls back to the normal RatePolicy + default
+    resolution. Idempotent — clearing when no override exists is a no-op.
+    """
+    await _get_or_404(session, Subject, subject_id)
+    await subject_rate_override.clear_override(redis, subject_id)
+    await record_audit_event(
+        session,
+        action="subject.rate_override.clear",
+        resource_type="subject",
+        resource_id=subject_id,
+        outcome="success",
+    )
+    await session.commit()
+    return SubjectRateOverrideResponse(rpm=None, concurrency=None)
 
 
 @router.post("/projects")
