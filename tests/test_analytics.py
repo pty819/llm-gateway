@@ -331,7 +331,7 @@ async def test_drilldown_by_subject_joins_subjects_and_str_id():
 
     assert len(rows) >= 1
     row = next(r for r in rows if r["dimension_label"] == "DdSubjUser")
-    # dimension_id 是 str（对齐 DuckDB），不是 UUID
+    # dimension_id 是 str，不是 UUID
     assert isinstance(row["dimension_id"], str)
 
 
@@ -403,7 +403,7 @@ async def test_drilldown_by_outcome():
 
 
 async def test_usage_ranking_excludes_null_subject():
-    """subject_id IS NULL 的行不应进入排名（对齐 DuckDB 的关键等价性分支）。"""
+    """subject_id IS NULL 的行不应进入排名。"""
     from uuid import uuid4
 
     from llm_gateway.db.models import Project, Subject, SubjectType, utcnow
