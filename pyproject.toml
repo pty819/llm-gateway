@@ -11,7 +11,10 @@ dependencies = [
     "greenlet>=3.5.1",
     "httpx2>=2.5.0",
     "litellm>=1.86.0",
-    "mcp>=1.28.1",
+	# mcp 2.0 removed the bundled FastMCP server this module builds on
+	# (mcp.server.fastmcp); migrating to the standalone fastmcp package is
+	# tracked separately. Stay on 1.x until then.
+	"mcp>=1.28.1,<2",
     "pydantic-settings>=2.14.1",
     "python-dotenv>=1.2.2",
     "python-multipart>=0.0.20",
