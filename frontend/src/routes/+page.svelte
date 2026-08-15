@@ -894,7 +894,6 @@
 				fetchModelTeamGrants(),
 				fetchTeams(),
 				fetchTeamMemberships(),
-				fetchRatePolicies(),
 				fetchAudit(),
 				fetchUpstreamOptions(),
 				loadBaseOptions()
@@ -976,8 +975,9 @@
 	/** 限流覆盖编辑(抽屉表单替代原 prompt):PUT 全量合并语义保持不变。 */
 	async function saveRateEditor() {
 		if (!rateEditor) return;
-		const parseField = (raw: string): number | null => {
-			const trimmed = raw.trim();
+		// number input 的 bind:value 会给出 number(空时 ''/null),统一先转字符串再校验。
+		const parseField = (raw: unknown): number | null => {
+			const trimmed = String(raw ?? '').trim();
 			if (trimmed === '') return null;
 			const value = Number(trimmed);
 			if (!Number.isFinite(value) || value <= 0 || !Number.isInteger(value)) throw new Error('上限必须是正整数。');
@@ -2262,48 +2262,6 @@
 								onPage={(page) => { grantPage = page; void run(fetchModelTeamGrants); }}
 							/>
 </section>
-				{:else if active === 'rate'}
-					<div class="toolbar">
-						<select
-							aria-label="按范围筛选策略"
-							value={rateScopeFilter}
-							onchange={() => { ratePage = 1; void run(fetchRatePolicies); }}
-						>
-							<option value="">全部范围</option>
-							<option value="subject">用户</option>
-							<option value="project">项目</option>
-							<option value="key">密钥</option>
-						</select>
-						<button type="button" onclick={() => { rateDrawerOpen = true; void fetchKeyOptions().catch(() => undefined); }}><Plus size={15} />创建限流策略</button>
-					</div>
-					<section class="panel flush">
-						<div class="table-wrap">
-							<table>
-								<thead><tr><th>范围</th><th>对象</th><th>RPM</th><th>并发</th><th>状态</th></tr></thead>
-								<tbody>
-									{#each inventory.ratePolicies as policy}
-										<tr>
-											<td>{scopeLabel(policy.scope)}</td>
-											<td>{policy.scope_name ?? (policy.scope === 'subject' ? subjectLabel(policy.scope_id) : policy.scope === 'project' ? projectLabel(policy.scope_id) : keyLabel(policy.scope_id))}</td>
-											<td class="mono">{policy.requests_per_minute ?? '继承'}</td>
-											<td class="mono">{policy.concurrency_limit ?? '继承'}</td>
-											<td><Switch checked={policy.state === 'active'} label="切换策略状态" onToggle={() => void setRateState(policy.id, policy.state === 'active' ? 'disabled' : 'active')} /></td>
-										</tr>
-									{:else}
-										<tr><td colspan="5"><EmptyState title="暂无限流策略" hint="创建策略来限制每分钟请求数或并发。" actionLabel="创建策略" onAction={() => (rateDrawerOpen = true)} /></td></tr>
-									{/each}
-								</tbody>
-							</table>
-						</div>
-						<Pagination
-							total={inventory.ratePoliciesTotal}
-							page={ratePage}
-							size={listPageSize}
-							onPage={(page) => { ratePage = page; void run(fetchRatePolicies); }}
-							sizes={[20, 50, 100]}
-							onSizeChange={(size) => { listPageSize = size; ratePage = 1; void run(fetchRatePolicies); }}
-						/>
-					</section>
 				{:else if active === 'usage'}
 					<section class="ribbon">
 						<div class="ribbon-head">
