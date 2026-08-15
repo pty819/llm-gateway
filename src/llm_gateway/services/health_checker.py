@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import httpx2 as httpx
 from redis.asyncio import Redis
@@ -67,17 +69,14 @@ def classify_health(
 async def _probe_upstream(upstream, *, timeout_seconds: float) -> HealthVerdict:
     """GET {base_url}/{health_path} and classify the response.
 
-    Mirrors the request construction of litellm_client.check_upstream_health
-    (same base_url join, same header injection) but applies the stricter
-    classify_health verdict used by the background checker.
+    URL and headers come from litellm_client.probe_request_parts so the
+    background prober and the admin manual Check hit the identical request;
+    this function owns the STRICTER verdict (classify_health) used for
+    automatic marking.
     """
-    # base_url 形如 "http://host:port/v1"，health_path 形如 "/models"。
-    # 用字符串拼接保留与 check_upstream_health 完全一致的 URL 形态。
-    url = upstream.base_url.rstrip("/") + "/" + upstream.health_path.lstrip("/")
-    headers = dict(upstream.extra_headers or {})
-    api_key = upstream.api_key_value or upstream.api_key_ref
-    if api_key:
-        headers.setdefault("Authorization", f"Bearer {api_key}")
+    from llm_gateway.services.litellm_client import probe_request_parts
+
+    url, headers = probe_request_parts(upstream)
     try:
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
             response = await client.get(url, headers=headers)
@@ -115,7 +114,7 @@ async def _mark_unhealthy(
         async with AsyncSessionLocal() as session:
             await record_audit_event(
                 session,
-                action="upstream.auto_disable",
+                action="upstream.marked_unhealthy",
                 resource_type="upstream_target",
                 resource_id=upstream_id,
                 outcome="unhealthy",
@@ -154,17 +153,36 @@ async def _collect_active_upstreams(session) -> list:
     return list(result.scalars().all())
 
 
-def _quorum_breach(unhealthy_count: int, total: int, quorum_min: int) -> bool:
-    """True when too many upstreams failed in one cycle to be a real outage.
+# Failure reasons that could equally originate on the checker's side (frozen
+# event loop, lost network) as on the upstream's. The complementary set —
+# http_5xx / unexpected_status — proves the upstream answered, so those
+# verdicts are always real and never subject to the quorum fuse.
+_NETWORK_FAILURE_REASONS = frozenset(
+    {"connect_timeout", "read_timeout", "timeout", "connection_error", "unknown_error"}
+)
 
-    Cross-machine, cross-model upstreams failing in the same 3s window is the
-    checker-side incident signature (event-loop freeze, network blip). When
-    unhealthy_count >= quorum_min we skip batch-marking and emit a single
-    quorum-failed audit row instead, so a frozen loop can no longer take out
-    the whole fleet. quorum_min=2 means a single genuine failure still gets
-    marked; only a suspicious batch is suppressed.
+
+def _quorum_breach(
+    unhealthy: list[tuple[object, HealthVerdict]], total: int, quorum_min: int
+) -> bool:
+    """True only for the checker-side outage signature.
+
+    Suppress marking when EVERY probed upstream failed with a network-class
+    reason and the batch is at least quorum_min: cross-machine, cross-model
+    upstreams all failing that way in one 3s window is far more likely to be
+    the checker itself (event-loop freeze, dead network) than the fleet, and a
+    frozen loop must not be able to take out the whole fleet.
+
+    Any cycle where at least one upstream answered — healthy, 5xx, or non-404
+    4xx — proves the checker can still reach the fleet, so every unhealthy
+    verdict in that cycle is real and gets marked, however many there are.
+    This is the fix for the field failure where several genuinely dead
+    endpoints were permanently suppressed by the old count-only quorum (≥2
+    dead endpoints fleet-wide blocked ALL marking, cycle after cycle).
     """
-    return total >= quorum_min and unhealthy_count >= quorum_min
+    if total < quorum_min or len(unhealthy) < total:
+        return False
+    return all(verdict.reason in _NETWORK_FAILURE_REASONS for _, verdict in unhealthy)
 
 
 async def _record_quorum_failure(
@@ -201,6 +219,53 @@ async def _record_quorum_failure(
         logger.exception("health_check_quorum_audit_failed")
 
 
+# Per-cycle liveness heartbeat. "Is the sidecar actually probing?" becomes a
+# single Redis GET instead of an inference from missing auto-disables — the
+# original failure mode where a not-running sidecar was indistinguishable from
+# a healthy fleet. No TTL: the `at` timestamp lets readers judge staleness, and
+# a dead sidecar leaves an honest "last cycle: long ago" signal behind.
+_HEARTBEAT_KEY = "llm_gateway:health_check:last_cycle"
+
+
+async def _write_heartbeat(
+    redis: Redis,
+    *,
+    total: int,
+    unhealthy: int,
+    marked: int,
+    suppressed: bool,
+) -> None:
+    payload = json.dumps(
+        {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "total": total,
+            "unhealthy": unhealthy,
+            "marked": marked,
+            "suppressed": suppressed,
+        }
+    )
+    try:
+        await redis.set(_HEARTBEAT_KEY, payload)
+    except Exception:
+        logger.exception("health_check_heartbeat_failed")
+
+
+async def read_last_cycle(redis: Redis | None) -> dict | None:
+    """Read the sidecar's last-cycle heartbeat, or None if it never ran.
+
+    Used by the admin health-check endpoint so the UI can show "last probe
+    cycle: Ns ago" — or "sidecar not reporting" when the key is missing/stale.
+    """
+    if redis is None:
+        return None
+    try:
+        raw = await redis.get(_HEARTBEAT_KEY)
+    except Exception:
+        logger.exception("health_check_heartbeat_read_failed")
+        return None
+    return upstream_health.parse_payload(raw)
+
+
 async def _run_once(
     *,
     redis: Redis,
@@ -212,10 +277,10 @@ async def _run_once(
 
     Two-layer defense against the event-loop-freeze outage pattern:
 
-    1. Quorum fuse: if ≥quorum_min upstreams fail in one cycle, treat it as a
-       checker-side incident and skip ALL marking — never let a frozen loop
-       take out the whole fleet. A single genuine failure (below quorum) is
-       still marked.
+    1. Quorum fuse: when the WHOLE batch fails with network-class reasons, the
+       failure is attributed to the checker and no marking happens — a frozen
+       loop must not take out the fleet. Partial failures (any upstream
+       answered) are always real and always marked.
     2. Redis TTL: every marker carries unhealthy_ttl_seconds, so a sidecar
        crash never wedges an upstream permanently — it auto-recovers.
 
@@ -227,6 +292,9 @@ async def _run_once(
         upstreams = await _collect_active_upstreams(session)
 
     if not upstreams:
+        await _write_heartbeat(
+            redis, total=0, unhealthy=0, marked=0, suppressed=False
+        )
         return
 
     verdicts = await asyncio.gather(
@@ -240,18 +308,27 @@ async def _run_once(
         (u, v) for u, v in zip(upstreams, verdicts, strict=True) if not v.healthy
     ]
 
-    # Quorum fuse: suspicious batch → skip marking, emit one summary audit.
-    if _quorum_breach(len(unhealthy), len(upstreams), quorum_min):
+    # Quorum fuse: checker-side outage signature → skip marking, emit one
+    # summary audit.
+    if _quorum_breach(unhealthy, len(upstreams), quorum_min):
         logger.warning(
             "health_check_quorum_breach unhealthy=%d total=%d — skipping batch mark",
             len(unhealthy),
             len(upstreams),
         )
         await _record_quorum_failure(unhealthy)
+        await _write_heartbeat(
+            redis,
+            total=len(upstreams),
+            unhealthy=len(unhealthy),
+            marked=0,
+            suppressed=True,
+        )
         return
 
     # Healthy probes clear stale markers (auto-recovery). Unhealthy probes
-    # below quorum set Redis markers + audit rows.
+    # set Redis markers + audit rows.
+    marked = 0
     for upstream, verdict in zip(upstreams, verdicts, strict=True):
         if verdict.healthy:
             try:
@@ -269,10 +346,18 @@ async def _run_once(
                 verdict=verdict,
                 ttl_seconds=unhealthy_ttl_seconds,
             )
+            marked += 1
         except Exception:
             logger.exception(
                 "health_check_mark_failed upstream_id=%s", upstream.id
             )
+    await _write_heartbeat(
+        redis,
+        total=len(upstreams),
+        unhealthy=len(unhealthy),
+        marked=marked,
+        suppressed=False,
+    )
 
 
 # --- Settings accessors (lazy import to avoid module-import-time config load) ---
@@ -341,11 +426,6 @@ async def set_enabled_override(redis: Redis, enabled: bool) -> None:
         await redis.delete(_ENABLED_OVERRIDE_KEY)
     else:
         await redis.set(_ENABLED_OVERRIDE_KEY, _DISABLED_SENTINEL)
-
-
-async def clear_enabled_override(redis: Redis) -> None:
-    """Withdraw the runtime override, falling back to the env-var default."""
-    await redis.delete(_ENABLED_OVERRIDE_KEY)
 
 
 async def effective_enabled(redis: Redis) -> tuple[bool, str]:

@@ -117,6 +117,9 @@
 						</td>
 						<td>
 							<Switch checked={upstream.state === 'active'} label="切换上游状态" onToggle={() => onState(upstream.id, upstream.state === 'active' ? 'disabled' : 'active')} />
+							{#if upstream.state === 'active' && upstream.runtime_healthy === false}
+								<br /><span class="sub" style="color: var(--danger);">巡检不健康 · 已排除路由</span>
+							{/if}
 						</td>
 						<td class="nowrap">
 							<RowMenu

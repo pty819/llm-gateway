@@ -434,16 +434,17 @@ Repeat for `gpu-b` and `gpu-c`. Use the **Check** button to verify each replica 
 >
 > **Two-state model:** Configuration state (admin-owned, `upstream_targets.state` in PG) and runtime liveness (sidecar-owned, Redis) are separate. Admin sets `active`/`disabled` in PG to decide whether an upstream participates in routing at all. The sidecar probes only `active` upstreams and writes `UNHEALTHY` markers to Redis (`llm_gateway:upstream:unhealthy:{id}`, TTL 30s) for those that fail. Routing excludes any upstream with an active marker. A passing probe clears the marker; if the sidecar dies, the TTL expires and the upstream auto-recovers — "能用就行", no manual restore needed.
 >
-> **Three defenses:** (1) Process isolation — the sidecar's GIL is independent of all gateway workers. (2) Quorum fuse — if ≥`LLM_GATEWAY_HEALTH_CHECK_QUORUM_MIN` (default 2) upstreams fail in one cycle, the batch is suppressed as a checker-side incident rather than applied, so a frozen loop can't take out the fleet. (3) Redis TTL — markers auto-expire, so a dead sidecar never wedges an upstream permanently.
+> **Three defenses:** (1) Process isolation — the sidecar's GIL is independent of all gateway workers. (2) Quorum fuse — when the *entire* batch fails with network-class reasons (timeouts, connection errors) in one cycle, it is suppressed as a checker-side incident rather than applied, so a frozen loop can't take out the fleet; partial failures — any cycle where at least one upstream answered (healthy or 5xx/4xx) — are always real and always marked, however many dead endpoints there are. (3) Redis TTL — markers auto-expire, so a dead sidecar never wedges an upstream permanently.
 >
 > The main gateway process can now run with multiple uvicorn workers (`workers=N`) safely: health checking lives in the sidecar (one copy, regardless of worker count), so there is no N× probe amplification or N× concurrent disable writes. Workers share no in-process state with the sidecar — they observe liveness via Redis on the routing path, with graceful degradation to PG-only if Redis is unreachable.
 >
-> Run alongside the gateway:
+> **Starting it:** `scripts/start_local.py` spawns the sidecar automatically alongside backend and frontend (`--skip-sidecar` to opt out). For manual deployments run it alongside the gateway, supervised (systemd/compose), not with a bare `&` that dies with the terminal:
 > ```bash
 > uv run python -m llm_gateway.health_sidecar &
 > uv run python main.py
 > ```
-> Tune with `LLM_GATEWAY_HEALTH_CHECK_ENABLED`, `LLM_GATEWAY_HEALTH_CHECK_INTERVAL_SECONDS`, `LLM_GATEWAY_HEALTH_CHECK_TIMEOUT_SECONDS`, `LLM_GATEWAY_HEALTH_CHECK_UNHEALTHY_TTL_SECONDS`, `LLM_GATEWAY_HEALTH_CHECK_QUORUM_MIN`. The `/models` 404 from 昇腾 PD-separated deployments is treated as healthy. Timeout verdicts are split into `connect_timeout` (the event-loop-freeze signature) and `read_timeout` (genuinely slow upstream) in the audit log.
+> `LLM_GATEWAY_HEALTH_CHECK_AUTOSTART=true` runs the probe loop inside the main process instead — a fallback for deployments that cannot spawn a second process; you lose the freeze isolation, so prefer the sidecar. The sidecar publishes a per-cycle heartbeat (`llm_gateway:health_check:last_cycle` in Redis) surfaced by `GET /admin/health-check` (`last_cycle`), so "sidecar not running" is visible in the UI instead of silent.
+> Tune with `LLM_GATEWAY_HEALTH_CHECK_ENABLED`, `LLM_GATEWAY_HEALTH_CHECK_INTERVAL_SECONDS`, `LLM_GATEWAY_HEALTH_CHECK_TIMEOUT_SECONDS`, `LLM_GATEWAY_HEALTH_CHECK_UNHEALTHY_TTL_SECONDS`, `LLM_GATEWAY_HEALTH_CHECK_QUORUM_MIN`. The `/models` 404 from 昇腾 PD-separated deployments is treated as healthy. Timeout verdicts are split into `connect_timeout` (the event-loop-freeze signature) and `read_timeout` (genuinely slow upstream) in the audit log. Unhealthy verdicts are audited as `upstream.marked_unhealthy`.
 
 ### Step 3 — Grant Access (Teams or Entitlements page)
 

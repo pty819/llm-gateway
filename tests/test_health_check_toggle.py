@@ -100,17 +100,6 @@ async def test_set_enabled_override_true_deletes_key(monkeypatch):
     assert _OVERRIDE_KEY not in redis.store
 
 
-async def test_clear_enabled_override_removes_key():
-    from llm_gateway.services import health_checker
-
-    redis = _FakeRedis()
-    redis.store[_OVERRIDE_KEY] = "0"
-
-    await health_checker.clear_enabled_override(redis)
-
-    assert _OVERRIDE_KEY not in redis.store
-
-
 # --- _main_loop respects runtime toggle ------------------------------------
 
 

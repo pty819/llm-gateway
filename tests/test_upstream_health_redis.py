@@ -1,6 +1,6 @@
 """Tests for the Redis-backed runtime liveness layer (upstream_health).
 
-Verifies mark/clear/filter/is_unhealthy semantics, TTL behavior, JSON payload
+Verifies mark/clear/filter semantics, TTL behavior, JSON payload
 shape, and graceful degradation when Redis is None or raises.
 """
 
@@ -121,24 +121,6 @@ async def test_clear_unhealthy_on_healthy_upstream_is_noop():
     await upstream_health.clear_unhealthy(redis, uid)
 
     assert _key(uid) not in redis.store
-
-
-# --- is_unhealthy -----------------------------------------------------------
-
-
-async def test_is_unhealthy_true_when_marker_present():
-    redis = _FakeRedis()
-    uid = uuid4()
-    redis.store[_key(uid)] = '{"reason":"http_5xx"}'
-
-    assert await upstream_health.is_unhealthy(redis, uid) is True
-
-
-async def test_is_unhealthy_false_when_marker_absent():
-    redis = _FakeRedis()
-    uid = uuid4()
-
-    assert await upstream_health.is_unhealthy(redis, uid) is False
 
 
 # --- filter_unhealthy -------------------------------------------------------

@@ -72,11 +72,6 @@ async def clear_unhealthy(redis: Redis, upstream_id: UUID | str) -> None:
     await redis.delete(_key(upstream_id))
 
 
-async def is_unhealthy(redis: Redis, upstream_id: UUID | str) -> bool:
-    """Single-upstream liveness check. True iff an UNHEALTHY marker exists."""
-    return bool(await redis.exists(_key(upstream_id)))
-
-
 async def filter_unhealthy(
     redis: Redis | None,
     upstream_ids: list[UUID | str],

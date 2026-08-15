@@ -255,7 +255,7 @@ async def test_mark_unhealthy_writes_redis_marker_and_audit(monkeypatch):
     assert payload["status_code"] == 500
     # Audit row written with the new outcome
     assert len(recorded) == 1
-    assert recorded[0]["action"] == "upstream.auto_disable"
+    assert recorded[0]["action"] == "upstream.marked_unhealthy"
     assert recorded[0]["resource_id"] == upstream.id
     assert recorded[0]["outcome"] == "unhealthy"
     assert recorded[0]["detail"]["verdict"] == "http_5xx"
@@ -497,7 +497,7 @@ async def test_run_once_noop_when_no_active_upstreams(monkeypatch):
 
 
 async def test_quorum_breach_suppresses_batch_mark(monkeypatch):
-    """≥quorum_min failures in one cycle → skip ALL marking, write one audit.
+    """WHOLE batch failing with network-class reasons → skip marking, one audit.
 
     The fleet-wide false-positive signature: a frozen event loop makes every
     probe time out in the same tick. The quorum fuse must refuse to apply that
@@ -543,13 +543,126 @@ async def test_quorum_breach_suppresses_batch_mark(monkeypatch):
         quorum_min=2,
     )
 
-    # No markers written — quorum suppressed the batch
-    assert redis.store == {}
+    # No markers written — quorum suppressed the batch (only the liveness
+    # heartbeat key is present).
+    assert redis.store == {
+        "llm_gateway:health_check:last_cycle": redis.store[
+            "llm_gateway:health_check:last_cycle"
+        ]
+    }
+    heartbeat = json.loads(redis.store["llm_gateway:health_check:last_cycle"])
+    assert heartbeat["suppressed"] is True
+    assert heartbeat["unhealthy"] == 3
     # One quorum-failed audit row summarizing the incident
     assert len(quorum_audits) == 1
     assert quorum_audits[0]["action"] == "upstream.health_check_quorum_failed"
     assert quorum_audits[0]["outcome"] == "skipped"
     assert quorum_audits[0]["detail"]["unhealthy_count"] == 3
+
+
+async def test_multiple_dead_endpoints_alongside_healthy_are_marked(monkeypatch):
+    """Field regression: several genuinely dead endpoints + healthy ones.
+
+    The old count-only quorum permanently suppressed ALL marking whenever ≥2
+    upstreams failed in one cycle, so a fleet with multiple dead endpoints
+    never got them marked (the exact production failure). With healthy
+    upstreams answering in the same cycle, the checker is demonstrably alive,
+    so every dead verdict must be applied regardless of how many there are.
+    """
+    from llm_gateway.services import health_checker
+
+    dead = []
+    for name in ("dead-a", "dead-b", "dead-c"):
+        upstream = _FakePersistedUpstream()
+        upstream.name = name
+        dead.append(upstream)
+    good1 = _FakePersistedUpstream()
+    good1.name = "good1"
+    good2 = _FakePersistedUpstream()
+    good2.name = "good2"
+    active = dead + [good1, good2]
+    redis = _FakeRedis()
+
+    async def _fake_collect_active_upstreams(session):
+        return list(active)
+
+    monkeypatch.setattr(
+        health_checker, "_collect_active_upstreams", _fake_collect_active_upstreams
+    )
+
+    async def _fake_probe_upstream(upstream, *, timeout_seconds):
+        if upstream in dead:
+            # A dead endpoint machine: connection refused.
+            return HealthVerdict(False, None, "connection_error")
+        return HealthVerdict(True, 200, "ok")
+
+    monkeypatch.setattr(health_checker, "_probe_upstream", _fake_probe_upstream)
+    monkeypatch.setattr(
+        "llm_gateway.services.health_checker.AsyncSessionLocal",
+        _make_fake_session_local(),
+    )
+    monkeypatch.setattr(
+        "llm_gateway.services.health_checker.record_audit_event",
+        _make_fake_record_audit([]),
+    )
+
+    await health_checker._run_once(
+        redis=redis,
+        timeout_seconds=3.0,
+        unhealthy_ttl_seconds=30,
+        quorum_min=2,
+    )
+
+    for upstream in dead:
+        assert f"llm_gateway:upstream:unhealthy:{upstream.id}" in redis.store
+    for upstream in (good1, good2):
+        assert f"llm_gateway:upstream:unhealthy:{upstream.id}" not in redis.store
+    heartbeat = json.loads(redis.store["llm_gateway:health_check:last_cycle"])
+    assert heartbeat["marked"] == 3
+    assert heartbeat["suppressed"] is False
+
+
+async def test_whole_batch_5xx_failures_are_marked_not_suppressed(monkeypatch):
+    """All upstreams failing with http_5xx → marked: they ANSWERED, so the
+    checker is fine and the fleet is genuinely broken (not a freeze signature)."""
+    from llm_gateway.services import health_checker
+
+    a = _FakePersistedUpstream()
+    a.name = "a"
+    b = _FakePersistedUpstream()
+    b.name = "b"
+    active = [a, b]
+    redis = _FakeRedis()
+
+    async def _fake_collect_active_upstreams(session):
+        return list(active)
+
+    monkeypatch.setattr(
+        health_checker, "_collect_active_upstreams", _fake_collect_active_upstreams
+    )
+
+    async def _fake_probe_upstream(upstream, *, timeout_seconds):
+        return HealthVerdict(False, 500, "http_5xx")
+
+    monkeypatch.setattr(health_checker, "_probe_upstream", _fake_probe_upstream)
+    monkeypatch.setattr(
+        "llm_gateway.services.health_checker.AsyncSessionLocal",
+        _make_fake_session_local(),
+    )
+    monkeypatch.setattr(
+        "llm_gateway.services.health_checker.record_audit_event",
+        _make_fake_record_audit([]),
+    )
+
+    await health_checker._run_once(
+        redis=redis,
+        timeout_seconds=3.0,
+        unhealthy_ttl_seconds=30,
+        quorum_min=2,
+    )
+
+    assert f"llm_gateway:upstream:unhealthy:{a.id}" in redis.store
+    assert f"llm_gateway:upstream:unhealthy:{b.id}" in redis.store
 
 
 async def test_quorum_below_threshold_still_marks(monkeypatch):
@@ -599,19 +712,35 @@ async def test_quorum_below_threshold_still_marks(monkeypatch):
 
 
 def test_quorum_breach_logic():
-    """Direct unit test for the threshold predicate."""
+    """Direct unit test for the checker-outage-signature predicate."""
     from llm_gateway.services.health_checker import _quorum_breach
 
-    # 2 of 9 with quorum_min=2 → breach (suspicious batch)
-    assert _quorum_breach(2, 9, 2) is True
-    # 9 of 9 → breach (fleet-wide — the freeze signature)
-    assert _quorum_breach(9, 9, 2) is True
+    def _batch(*reasons: str):
+        return [
+            (_FakePersistedUpstream(), HealthVerdict(False, None, reason))
+            for reason in reasons
+        ]
+
+    # Whole batch, all network-class → breach (checker-side freeze signature)
+    assert (
+        _quorum_breach(
+            _batch("connect_timeout", "connect_timeout", "connection_error"), 3, 2
+        )
+        is True
+    )
+    # Whole batch but upstreams ANSWERED (5xx / non-404 4xx) → not a breach:
+    # the checker is fine, the fleet is genuinely broken.
+    assert _quorum_breach(_batch("http_5xx", "http_5xx"), 2, 2) is False
+    assert _quorum_breach(_batch("http_5xx", "unexpected_status"), 2, 2) is False
+    # 2 dead of 5 (others healthy) → not a breach: multiple simultaneous dead
+    # endpoints are real and must be marked.
+    assert _quorum_breach(_batch("connection_error", "connect_timeout"), 5, 2) is False
     # 1 of 9 → no breach (single genuine failure)
-    assert _quorum_breach(1, 9, 2) is False
+    assert _quorum_breach(_batch("connect_timeout"), 9, 2) is False
     # 1 of 1 → no breach (only one upstream, can't be a "batch")
-    assert _quorum_breach(1, 1, 2) is False
+    assert _quorum_breach(_batch("connect_timeout"), 1, 2) is False
     # 0 of 9 → no breach
-    assert _quorum_breach(0, 9, 2) is False
+    assert _quorum_breach([], 9, 2) is False
 
 
 # --- Lifecycle (start/stop) ------------------------------------------------
@@ -805,12 +934,12 @@ async def test_run_once_integration_marks_redis_and_leaves_pg_active(
                 select(AuditEvent)
                 .where(
                     AuditEvent.resource_id == gateway_fixture.upstream_id,
-                    AuditEvent.action == "upstream.auto_disable",
+                    AuditEvent.action == "upstream.marked_unhealthy",
                 )
                 .order_by(AuditEvent.created_at.desc())
             )
         ).scalars().all()
-        assert audit_rows, "expected an upstream.auto_disable audit row"
+        assert audit_rows, "expected an upstream.marked_unhealthy audit row"
         latest = audit_rows[0]
         assert latest.outcome == "unhealthy"
         assert latest.detail.get("verdict") == "http_5xx"

@@ -11,9 +11,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from redis.asyncio import Redis
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from llm_gateway.api.deps import redis_dep, session_dep
+from llm_gateway.api.deps import redis_dep
 from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.services import health_checker
 from llm_gateway.services.facts import record_audit_event
@@ -25,6 +24,11 @@ router = APIRouter()
 class HealthCheckConfig(BaseModel):
     enabled: bool
     source: str  # "redis_override" | "env_default"
+    # Last probe-cycle heartbeat published by the sidecar, or None when no
+    # sidecar has ever probed. `at` (ISO timestamp) lets the UI flag staleness:
+    # a missing/stale heartbeat on an "enabled" checker means the sidecar
+    # process is not running — previously undiagnosable from the outside.
+    last_cycle: dict | None = None
 
 
 class HealthCheckPatch(BaseModel):
@@ -40,7 +44,10 @@ async def get_health_check_config(redis: Redis = Depends(redis_dep)):
     override or the baked-in default.
     """
     enabled, source = await health_checker.effective_enabled(redis)
-    return HealthCheckConfig(enabled=enabled, source=source)
+    last_cycle = await health_checker.read_last_cycle(redis)
+    return HealthCheckConfig(
+        enabled=enabled, source=source, last_cycle=last_cycle
+    )
 
 
 @router.patch("/health-check", response_model=HealthCheckConfig)

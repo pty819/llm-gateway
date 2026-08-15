@@ -30,6 +30,11 @@ def main() -> None:
         action="store_true",
         help="Forwarded to upgrade_local.py when upgrade is enabled.",
     )
+    parser.add_argument(
+        "--skip-sidecar",
+        action="store_true",
+        help="Do not spawn the health-check sidecar process.",
+    )
     args = parser.parse_args()
 
     if not args.skip_upgrade:
@@ -72,15 +77,29 @@ def main() -> None:
         cwd=FRONTEND,
         env=env,
     )
+    sidecar = None
+    if not args.skip_sidecar:
+        # The health-check sidecar is a separate process by design (process
+        # isolation: a main-process freeze must not stall upstream probes).
+        # Nothing else starts it, so local runs spawn it here — omitting it was
+        # the field failure mode where dead endpoints were never auto-marked.
+        sidecar = subprocess.Popen(
+            ["uv", "run", "python", "-m", "llm_gateway.health_sidecar"],
+            cwd=ROOT,
+            env=env,
+        )
     print(f"Backend:  http://{args.host}:{args.backend_port}")
     print(f"Frontend: http://{args.host}:{args.frontend_port}")
+    if sidecar is not None:
+        print("Sidecar:  health-check prober (python -m llm_gateway.health_sidecar)")
 
+    managed = [backend, frontend] + ([sidecar] if sidecar is not None else [])
     try:
-        exit_code = wait_for_any([backend, frontend])
+        exit_code = wait_for_any(managed)
     except KeyboardInterrupt:
         exit_code = 130
     finally:
-        stop_processes([backend, frontend])
+        stop_processes(managed)
     raise SystemExit(exit_code)
 
 
