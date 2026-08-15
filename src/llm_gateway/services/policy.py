@@ -31,6 +31,11 @@ class PolicyDenied(Exception):
 class RouteContext:
     model_alias: ModelAlias
     upstream: UpstreamTarget
+    # Teams whose ACTIVE membership + ACTIVE ModelTeamGrant authorized this
+    # request. Computed once here and reused by resolve_team_quota so the
+    # Team⋈TeamMembership⋈ModelTeamGrant join runs ONE time per request, not
+    # once for authorization and again for quota resolution.
+    authorized_team_ids: tuple = ()
 
 
 def client_ip_allowed(model_alias: ModelAlias, client_ip: str) -> bool:
@@ -64,7 +69,14 @@ async def resolve_route_context(
     if not model_alias or model_alias.state != ResourceState.ACTIVE:
         raise PolicyDenied("model_alias_not_found_or_inactive")
 
-    if not await subject_can_use_model(
+    # Team grants first: the joined team ids are needed again for team-quota
+    # resolution, so resolving them once here serves both the authorization
+    # decision and the quota lookup (the legacy-entitlement OR arm only runs
+    # when the subject holds no team grant for the model).
+    team_ids = await subject_model_team_ids(
+        session, subject_id=auth.subject.id, model_alias_id=model_alias.id
+    )
+    if not team_ids and not await _has_active_entitlement(
         session, auth=auth, model_alias_id=model_alias.id
     ):
         raise PolicyDenied("model_not_entitled")
@@ -104,18 +116,41 @@ async def resolve_route_context(
         model_alias=model_alias,
         upstreams=upstreams,
     )
-    ctx = RouteContext(model_alias=model_alias, upstream=upstream)
+    ctx = RouteContext(
+        model_alias=model_alias,
+        upstream=upstream,
+        authorized_team_ids=tuple(team_ids),
+    )
     return ctx
 
 
-async def subject_can_use_model(
+async def subject_model_team_ids(
+    session: AsyncSession, *, subject_id, model_alias_id
+) -> list:
+    """ACTIVE teams that grant ``model_alias_id`` to ``subject_id``.
+
+    Team ⋈ TeamMembership ⋈ ModelTeamGrant with every state ACTIVE. This join
+    used to run twice per request — once inside the authorization check and
+    again inside team-quota resolution; both now share this single call.
+    """
+    team_result = await session.execute(
+        select(col(ModelTeamGrant.team_id))
+        .join(Team, col(Team.id) == col(ModelTeamGrant.team_id))
+        .join(TeamMembership, col(TeamMembership.team_id) == col(Team.id))
+        .where(
+            col(ModelTeamGrant.model_alias_id) == model_alias_id,
+            col(ModelTeamGrant.state) == ResourceState.ACTIVE,
+            col(Team.state) == ResourceState.ACTIVE,
+            col(TeamMembership.state) == ResourceState.ACTIVE,
+            col(TeamMembership.subject_id) == subject_id,
+        )
+    )
+    return list(dict.fromkeys(team_result.scalars().all()))
+
+
+async def _has_active_entitlement(
     session: AsyncSession, *, auth: AuthContext, model_alias_id
 ) -> bool:
-    # Access is re-evaluated on every request with no cache, so revoking a team
-    # membership or disabling an entitlement takes effect immediately rather
-    # than after a TTL window. The query is a couple of indexed point lookups,
-    # cheap next to the upstream model call; correctness of access revocation
-    # outweighs the small saving a short-lived cache would provide.
     entitlement_result = await session.execute(
         select(col(ModelEntitlement.id)).where(
             col(ModelEntitlement.model_alias_id) == model_alias_id,
@@ -127,22 +162,25 @@ async def subject_can_use_model(
             ),
         )
     )
-    if entitlement_result.scalars().first():
-        return True
+    return entitlement_result.scalars().first() is not None
 
-    team_result = await session.execute(
-        select(col(ModelTeamGrant.id))
-        .join(Team, col(Team.id) == col(ModelTeamGrant.team_id))
-        .join(TeamMembership, col(TeamMembership.team_id) == col(Team.id))
-        .where(
-            col(ModelTeamGrant.model_alias_id) == model_alias_id,
-            col(ModelTeamGrant.state) == ResourceState.ACTIVE,
-            col(Team.state) == ResourceState.ACTIVE,
-            col(TeamMembership.state) == ResourceState.ACTIVE,
-            col(TeamMembership.subject_id) == auth.subject.id,
-        )
+
+async def subject_can_use_model(
+    session: AsyncSession, *, auth: AuthContext, model_alias_id
+) -> bool:
+    # Access is re-evaluated on every request with no cache, so revoking a team
+    # membership or disabling an entitlement takes effect immediately rather
+    # than after a TTL window. The queries are a couple of indexed point
+    # lookups, cheap next to the upstream model call; correctness of access
+    # revocation outweighs the small saving a short-lived cache would provide.
+    team_ids = await subject_model_team_ids(
+        session, subject_id=auth.subject.id, model_alias_id=model_alias_id
     )
-    return team_result.scalars().first() is not None
+    if team_ids:
+        return True
+    return await _has_active_entitlement(
+        session, auth=auth, model_alias_id=model_alias_id
+    )
 
 
 async def list_accessible_model_aliases(

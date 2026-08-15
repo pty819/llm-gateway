@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { maskSecrets, parseJsonObject, validateCidrList, validateHttpUrl, validatePort } from './index';
+import { maskSecrets, parseJsonObject, validateCidrList, validateHttpUrl } from './index';
 
 describe('validators', () => {
 	it('accepts valid CIDR lists', () => {
@@ -10,11 +10,9 @@ describe('validators', () => {
 		expect(validateCidrList('not-a-cidr').ok).toBe(false);
 	});
 
-	it('validates operational URLs and ports', () => {
+	it('validates operational URLs', () => {
 		expect(validateHttpUrl('https://example.com/v1').ok).toBe(true);
 		expect(validateHttpUrl('ftp://example.com').ok).toBe(false);
-		expect(validatePort(18001).ok).toBe(true);
-		expect(validatePort(70000).ok).toBe(false);
 	});
 
 	it('parses only JSON objects', () => {

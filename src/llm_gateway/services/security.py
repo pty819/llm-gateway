@@ -110,13 +110,8 @@ async def authenticate_gateway_key(
     if cached is not None:
         if cached is _CACHE_MISS:
             return None
-        key_id, subject_id, project_id = cached
-        context = await _load_auth_context(
-            session,
-            key_id=key_id,
-            subject_id=subject_id,
-            project_id=project_id,
-        )
+        key_id = cached
+        context = await _load_auth_context(session, key_id=key_id)
         if context is None:
             auth_cache.set(cache_key, _CACHE_MISS)
         return context
@@ -133,20 +128,12 @@ async def authenticate_gateway_key(
             continue
         if not verify_gateway_key(raw_key, candidate.key_hash):
             continue
-        subject = await session.get(Subject, candidate.subject_id)
-        project = await session.get(Project, candidate.project_id)
-        if not subject or not project:
+        context = await _load_auth_context(session, key_id=candidate.id)
+        if context is None:
             auth_cache.set(cache_key, _CACHE_MISS)
             return None
-        if (
-            subject.state != ResourceState.ACTIVE
-            or project.state != ResourceState.ACTIVE
-        ):
-            auth_cache.set(cache_key, _CACHE_MISS)
-            return None
-        ctx = AuthContext(key=candidate, subject=subject, project=project)
-        auth_cache.set(cache_key, (candidate.id, subject.id, project.id))
-        return ctx
+        auth_cache.set(cache_key, candidate.id)
+        return context
     auth_cache.set(cache_key, _CACHE_MISS)
     return None
 
@@ -155,18 +142,28 @@ async def _load_auth_context(
     session: AsyncSession,
     *,
     key_id: UUID,
-    subject_id: UUID,
-    project_id: UUID,
 ) -> AuthContext | None:
-    key = await session.get(GatewayKey, key_id)
-    subject = await session.get(Subject, subject_id)
-    project = await session.get(Project, project_id)
+    """Load GatewayKey + its Subject + Project in ONE joined round trip.
+
+    Both the cache-hit and cache-miss paths used to issue three separate
+    session.get calls — with a fresh session per request the identity map
+    never short-circuited them, so the 30s auth cache saved only the prefix
+    SELECT while still paying 3 queries per hit.
+    """
+    result = await session.execute(
+        select(GatewayKey, Subject, Project)
+        .join(Subject, col(Subject.id) == col(GatewayKey.subject_id))
+        .join(Project, col(Project.id) == col(GatewayKey.project_id))
+        .where(col(GatewayKey.id) == key_id)
+    )
+    row = result.first()
+    if row is None:
+        return None
+    key, subject, project = row
     now = utcnow()
-    if not key or key.state != ResourceState.ACTIVE:
+    if key.state != ResourceState.ACTIVE:
         return None
     if key.expires_at and key.expires_at <= now:
-        return None
-    if not subject or not project:
         return None
     if subject.state != ResourceState.ACTIVE or project.state != ResourceState.ACTIVE:
         return None
@@ -313,10 +310,9 @@ async def ensure_model_team_grant(
 
 
 # The bootstrap sweep (teams, admin, per-model grants, litellm registration)
-# costs O(all model aliases) statements and only needs to run once per worker.
-# ensure_builtin_identity is called from admin_dep on EVERY session-
-# authenticated admin request, so after a successful sweep the fast path below
-# keeps the per-request cost to one indexed point lookup.
+# costs O(all model aliases) statements and runs exactly once per worker, from
+# the app lifespan at startup (main.py). It must NOT be called from per-request
+# paths — that was the 16s-per-admin-request wedge bug.
 _builtin_identity_swept = False
 
 

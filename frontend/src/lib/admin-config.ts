@@ -2,12 +2,10 @@ import {
 	Activity,
 	BookOpen,
 	Database,
-	Gauge,
 	KeyRound,
 	Network,
 	Package,
 	Plug,
-	Route,
 	Shield,
 	Trophy,
 	UserPlus,
@@ -89,21 +87,8 @@ export function subjectTypeLabel(type: string): string {
 	return type === 'service' ? '服务账号' : '用户';
 }
 
-export function scopeLabel(scope: string): string {
-	if (scope === 'subject') return '用户';
-	if (scope === 'project') return '项目';
-	if (scope === 'key') return '密钥';
-	return scope;
-}
-
 export function subjectDisplay(subject: Pick<Subject, 'name' | 'login_username'>): string {
 	return subject.login_username ? `${subject.name} / ${subject.login_username}` : subject.name;
-}
-
-export function matchNeedle(query: string, values: Array<string | null | undefined>): boolean {
-	const needle = query.trim().toLowerCase();
-	if (!needle) return true;
-	return values.some((value) => (value ?? '').toLowerCase().includes(needle));
 }
 
 export function pageRows<T>(rows: T[], page: number, size: number): T[] {
@@ -172,14 +157,6 @@ export function projectLabel(
 	ctx: LabelContext
 ): string {
 	return (id ? ctx.projects[id] : undefined) ?? short(id);
-}
-
-export function keyLabel(
-	id: string | null | undefined,
-	ctx: LabelContext
-): string {
-	const key = id ? ctx.keys[id] : undefined;
-	return key ? `${key.name} (${key.key_prefix})` : short(id);
 }
 
 export function modelLabel(

@@ -22,7 +22,6 @@
 		HealthCheckConfig,
 		Inventory,
 		IPPolicyMode,
-		KeyOption,
 		LoginResponse,
 		ManagedRankingRow,
 		ModelOption,
@@ -50,16 +49,13 @@
 	} from '$lib/api/types';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import JsonViewer from '$lib/components/JsonViewer.svelte';
-	import CommandBlock from '$lib/components/CommandBlock.svelte';
 	import SecretOnceDialog from '$lib/components/SecretOnceDialog.svelte';
-	import PageTitle from '$lib/components/PageTitle.svelte';
 	import Pagination from '$lib/components/Pagination.svelte';
 	import AuditTable from '$lib/components/AuditTable.svelte';
 	import UsageTable from '$lib/components/UsageTable.svelte';
 	import AnalyticsBucketTable from '$lib/components/AnalyticsBucketTable.svelte';
 	import AnalyticsDrilldownTable from '$lib/components/AnalyticsDrilldownTable.svelte';
 	import UpstreamTable from '$lib/components/UpstreamTable.svelte';
-	import CopyValue from '$lib/components/CopyValue.svelte';
 	import AuthScreen from '$lib/components/AuthScreen.svelte';
 	import OwnedDashboard from '$lib/components/OwnedDashboard.svelte';
 	import SkillMarketSection from '$lib/components/SkillMarketSection.svelte';
@@ -84,7 +80,6 @@
 	import { parseCidrList, parseJsonObject, validateCidrList, validateHttpUrl } from '$lib/validators';
 	import {
 		emptyNameCache,
-		mergeEntitlementRows,
 		mergeKeyRefs,
 		mergeModelRefs,
 		mergeModelRows,
@@ -93,7 +88,6 @@
 		mergeProjectMembershipRows,
 		mergeProjects,
 		mergeQuotaRows,
-		mergeRatePolicyRows,
 		mergeSubjectRows,
 		mergeTeamMembershipRows,
 		mergeTeamRows,
@@ -103,7 +97,6 @@
 	} from '$lib/name-cache';
 	import {
 		UPSTREAM_FORMAT_LABEL,
-		UPSTREAM_FORMAT_SHORT_LABEL,
 		composeLitellmModel,
 		deriveUpstreamFormat,
 		type UpstreamFormat
@@ -120,7 +113,6 @@
 		metricsKindLabel,
 		bytesLabel,
 		subjectTypeLabel,
-		scopeLabel,
 		subjectDisplay,
 		pageRows,
 		toDateTimeLocal,
@@ -133,7 +125,6 @@
 		subjectLabel as subjectLabelConfig,
 		membershipSubjectLabel as membershipSubjectLabelConfig,
 		projectLabel as projectLabelConfig,
-		keyLabel as keyLabelConfig,
 		modelLabel as modelLabelConfig,
 		teamLabel as teamLabelConfig,
 		type LabelContext
@@ -151,7 +142,6 @@
 	let rememberSession = $state(true);
 	let connected = $state(false);
 	let loading = $state(false);
-	let pageError = $state('');
 	let plaintextKey = $state('');
 	let ready = $state<ReadyStatus | null>(null);
 	let diagnostics = $state<Diagnostics | null>(null);
@@ -196,12 +186,8 @@
 	let auditDetail = $state<AuditEvent | null>(null);
 	let subjectSearch = $state('');
 	let subjectPasswordSearch = $state('');
-	let projectOwnerSearch = $state('');
-	let projectMemberSearch = $state('');
 	let keySubjectSearch = $state('');
 	let teamSubjectSearch = $state('');
-	let entitlementSubjectSearch = $state('');
-	let rateSubjectSearch = $state('');
 	let usageSubjectSearch = $state('');
 	let subjectPage = $state(1);
 	let projectPage = $state(1);
@@ -230,14 +216,8 @@
 	let upstreamPage = $state(1);
 	let teamSearch = $state('');
 	let teamPage = $state(1);
-	let membershipProjectFilter = $state('');
-	let membershipPage = $state(1);
-	let entitlementModelFilter = $state('');
-	let entitlementPage = $state(1);
 	let grantTeamFilter = $state('');
 	let grantPage = $state(1);
-	let rateScopeFilter = $state('');
-	let ratePage = $state(1);
 	// 名称缓存:各列表当前页随行名称 + /options 轻量端点,替代全量 inventory 查找
 	let nameCache = $state<NameCache>(emptyNameCache());
 	// 可搜索下拉的服务端选项(按查询词缓存)
@@ -245,7 +225,6 @@
 	let projectOptions = $state<ProjectOption[]>([]);
 	let modelOptions = $state<ModelOption[]>([]);
 	let teamOptions = $state<TeamOption[]>([]);
-	let keyOptions = $state<KeyOption[]>([]);
 	// realtime 锁定视图用的活动上游清单(轻量 options 端点)
 	let upstreamOptions = $state<UpstreamOptionRow[]>([]);
 	// 权限组抽屉 / 项目详情抽屉的按需成员数据
@@ -257,12 +236,8 @@
 
 	// ---- 新交互状态:抽屉 / 确认弹层 / 详情(设计稿 P2/P3) ----
 	let subjectDrawerOpen = $state(false);
-	let projectDrawerOpen = $state(false);
-	let projectMemberDrawerOpen = $state(false);
 	let keyDrawerOpen = $state(false);
 	let teamDrawerOpen = $state(false);
-	let entitlementDrawerOpen = $state(false);
-	let rateDrawerOpen = $state(false);
 	let modelDrawerOpen = $state(false);
 	let upstreamDrawerOpen = $state(false);
 	let teamDrawerTab = $state<'members' | 'grants' | 'quota'>('members');
@@ -282,8 +257,6 @@
 	let managedProjectMemberForm = $state({ resource_id: '', subject_id: '', role: 'member' });
 	let managedTeamMemberForm = $state({ resource_id: '', subject_id: '', role: 'member' });
 	let subjectPasswordForm = $state({ subject_id: '', new_password: '' });
-	let projectForm = $state({ name: '', owner_subject_id: '', notes: '' });
-	let membershipForm = $state({ project_id: '', subject_id: '', role: 'member' });
 	let teamForm = $state({ name: '', notes: '' });
 	let teamMembershipForm = $state({ team_id: '', subject_id: '', role: 'member' });
 	let modelTeamGrantForm = $state({ model_alias_id: '', team_id: '' });
@@ -311,14 +284,7 @@
 		health_path: '/models',
 		extra_headers: '{}'
 	});
-	let entitlementForm = $state({ model_alias_id: '', scope: 'project', scope_id: '' });
-	let rateForm = $state({
-		scope: 'key',
-		scope_id: '',
-		requests_per_minute: '',
-		concurrency_limit: ''
-	});
-	const api = $derived(new AdminApiClient('', sessionToken));
+	const api = $derived(new AdminApiClient(sessionToken));
 	const isAdmin = $derived(Boolean(profile?.subject.is_admin));
 	const mustProvideRealName = $derived(Boolean(profile?.subject.requires_real_name));
 	const managedProjects = $derived(profile?.managed?.projects ?? []);
@@ -514,7 +480,6 @@
 	}
 
 	function fail(message: string) {
-		pageError = message;
 		toastError(message);
 	}
 
@@ -544,7 +509,7 @@
 			connected = true;
 			if (!fromStorage) persistSessionToken(sessionToken, rememberSession);
 			if (profile.subject.is_admin) {
-				const authedApi = new AdminApiClient('', sessionToken);
+				const authedApi = new AdminApiClient(sessionToken);
 				diagnostics = await authedApi.get<Diagnostics>('/admin/diagnostics');
 				await refreshAll();
 				startRealtimeStream();
@@ -602,7 +567,6 @@
 		connected = false;
 		plaintextKey = '';
 		copiedItem = '';
-		pageError = '';
 		clearStoredSessionToken();
 		inventory = emptyInventory();
 	}
@@ -684,6 +648,14 @@
 		healthCheckToggling = false;
 	}
 
+	function lastCycleAgeSeconds(): number | null {
+		const at = healthCheckConfig?.last_cycle?.at;
+		if (!at) return null;
+		const parsed = Date.parse(at);
+		if (Number.isNaN(parsed)) return null;
+		return Math.max(0, Math.round((Date.now() - parsed) / 1000));
+	}
+
 	// ---- 服务端分页取数:每个列表只拉当前页,搜索/筛选下推为查询参数 ----
 
 	function listOffset(page: number): number {
@@ -717,16 +689,6 @@
 		inventory = { ...inventory, projects: page.items, projectsTotal: page.total };
 	}
 
-	async function fetchMemberships() {
-		const page = await api.get<PaginatedResponse<ProjectMembership>>('/admin/project-memberships', {
-			project_id: membershipProjectFilter || undefined,
-			limit: listPageSize,
-			offset: listOffset(membershipPage)
-		});
-		nameCache = mergeProjectMembershipRows(nameCache, page.items);
-		inventory = { ...inventory, memberships: page.items, membershipsTotal: page.total };
-	}
-
 	async function fetchKeys() {
 		const page = await api.get<PaginatedResponse<GatewayKey>>('/admin/gateway-keys', {
 			q: keyListSubjectSearch.trim() || undefined,
@@ -757,16 +719,6 @@
 		});
 		nameCache = mergeUpstreamRows(nameCache, page.items);
 		inventory = { ...inventory, upstreams: page.items, upstreamsTotal: page.total };
-	}
-
-	async function fetchEntitlements() {
-		const page = await api.get<PaginatedResponse<Inventory['entitlements'][number]>>('/admin/model-entitlements', {
-			model_alias_id: entitlementModelFilter || undefined,
-			limit: listPageSize,
-			offset: listOffset(entitlementPage)
-		});
-		nameCache = mergeEntitlementRows(nameCache, page.items);
-		inventory = { ...inventory, entitlements: page.items, entitlementsTotal: page.total };
 	}
 
 	async function fetchModelTeamGrants() {
@@ -809,16 +761,6 @@
 		});
 		nameCache = mergeTeamMembershipRows(nameCache, page.items);
 		inventory = { ...inventory, teamMemberships: page.items, teamMembershipsTotal: page.total };
-	}
-
-	async function fetchRatePolicies() {
-		const page = await api.get<PaginatedResponse<Inventory['ratePolicies'][number]>>('/admin/rate-policies', {
-			scope: rateScopeFilter || undefined,
-			limit: listPageSize,
-			offset: listOffset(ratePage)
-		});
-		nameCache = mergeRatePolicyRows(nameCache, page.items);
-		inventory = { ...inventory, ratePolicies: page.items, ratePoliciesTotal: page.total };
 	}
 
 	async function fetchAudit() {
@@ -868,11 +810,6 @@
 				nameCache = mergeTeamRows(nameCache, teamOptions);
 			})().catch(() => undefined)
 		]);
-	}
-
-	async function fetchKeyOptions() {
-		keyOptions = await api.get<KeyOption[]>('/admin/gateway-keys/options', { limit: 50 });
-		nameCache = mergeKeyRefs(nameCache, keyOptions);
 	}
 
 	async function refreshAll() {
@@ -1045,31 +982,6 @@
 		);
 	}
 
-	async function createProject() {
-		await run(async () => {
-			await api.post('/admin/projects', clean({ ...projectForm }));
-			projectForm = { name: '', owner_subject_id: '', notes: '' };
-			projectDrawerOpen = false;
-			await fetchProjects();
-		}, '项目已创建');
-	}
-
-	async function patchProject(id: string, patch: Record<string, unknown>) {
-		await run(async () => {
-			await api.patch(`/admin/projects/${id}`, clean(patch));
-			await fetchProjects();
-		}, '项目已更新');
-	}
-
-	async function createMembership() {
-		await run(async () => {
-			await api.post('/admin/project-memberships', clean({ ...membershipForm }));
-			membershipForm = { project_id: '', subject_id: '', role: 'member' };
-			projectMemberDrawerOpen = false;
-			await Promise.all([fetchMemberships(), refreshDetailMembers()]);
-		}, '成员已添加');
-	}
-
 	async function issueKey() {
 		await run(async () => {
 			const response = await api.post<GatewayKeyCreateResponse>('/admin/gateway-keys', clean({ ...keyForm }));
@@ -1115,7 +1027,6 @@
 			return;
 		}
 		loading = true;
-		pageError = '';
 		try {
 			profile = await api.patch<AuthProfile>('/auth/profile', {
 				full_name: realNameForm.full_name.trim()
@@ -1318,30 +1229,6 @@
 		}
 	}
 
-	async function createEntitlement() {
-		await run(async () => {
-			await api.post(
-				'/admin/model-entitlements',
-				clean({
-					model_alias_id: entitlementForm.model_alias_id,
-					subject_id: entitlementForm.scope === 'subject' ? entitlementForm.scope_id : '',
-					project_id: entitlementForm.scope === 'project' ? entitlementForm.scope_id : '',
-					gateway_key_id: entitlementForm.scope === 'key' ? entitlementForm.scope_id : ''
-				})
-			);
-			entitlementForm = { model_alias_id: '', scope: 'project', scope_id: '' };
-			entitlementDrawerOpen = false;
-			await fetchEntitlements();
-		}, '授权已创建');
-	}
-
-	async function setEntitlementState(id: string, state: ResourceState) {
-		await run(async () => {
-			await api.patch(`/admin/model-entitlements/${id}/state`, { state });
-			await fetchEntitlements();
-		});
-	}
-
 	async function createTeam() {
 		await run(async () => {
 			await api.post('/admin/teams', clean({ ...teamForm }));
@@ -1452,30 +1339,6 @@
 		teamQuotaForm.evening = quota?.evening_tokens == null ? '' : String(quota.evening_tokens);
 		detail = { kind: 'team', id: team.id };
 		void refreshTeamDrawerData().catch(() => undefined);
-	}
-
-	async function createRatePolicy() {
-		await run(async () => {
-			await api.post(
-				'/admin/rate-policies',
-				clean({
-					scope: rateForm.scope,
-					scope_id: rateForm.scope_id,
-					requests_per_minute: rateForm.requests_per_minute === '' ? null : Number(rateForm.requests_per_minute),
-					concurrency_limit: rateForm.concurrency_limit === '' ? null : Number(rateForm.concurrency_limit)
-				})
-			);
-			rateForm = { scope: 'key', scope_id: '', requests_per_minute: '', concurrency_limit: '' };
-			rateDrawerOpen = false;
-			await fetchRatePolicies();
-		}, '限流策略已创建');
-	}
-
-	async function setRateState(id: string, state: ResourceState) {
-		await run(async () => {
-			await api.patch(`/admin/rate-policies/${id}`, { state });
-			await fetchRatePolicies();
-		});
 	}
 
 	async function refreshOwnUsage() {
@@ -1628,13 +1491,11 @@
 
 	async function run(fn: () => Promise<void>, success = '') {
 		loading = true;
-		pageError = '';
 		try {
 			await fn();
 			if (success) toastSuccess(success);
 		} catch (error) {
-			pageError = errorMessage(error);
-			toastError(pageError);
+			toastError(errorMessage(error));
 		} finally {
 			loading = false;
 		}
@@ -1647,14 +1508,10 @@
 			subjectRateOverrides: {},
 			projects: [],
 			projectsTotal: 0,
-			memberships: [],
-			membershipsTotal: 0,
 			keys: [],
 			keysTotal: 0,
 			models: [],
 			modelsTotal: 0,
-			entitlements: [],
-			entitlementsTotal: 0,
 			teams: [],
 			teamsTotal: 0,
 			teamMemberships: [],
@@ -1664,8 +1521,6 @@
 			teamTokenQuotas: [],
 			upstreams: [],
 			upstreamsTotal: 0,
-			ratePolicies: [],
-			ratePoliciesTotal: 0,
 			usage: [],
 			usageTotals: null,
 			ranking: [],
@@ -1686,22 +1541,11 @@
 	function projectLabel(id: string | null | undefined): string {
 		return projectLabelConfig(id, labelCtx);
 	}
-	function keyLabel(id: string | null | undefined): string {
-		return keyLabelConfig(id, labelCtx);
-	}
 	function modelLabel(id: string | null | undefined): string {
 		return modelLabelConfig(id, labelCtx);
 	}
 	function teamLabel(id: string | null | undefined): string {
 		return teamLabelConfig(id, labelCtx);
-	}
-
-	function scopeOptions(scope: string, subjectQuery = '') {
-		if (scope === 'subject') {
-			return subjectOptions(subjectQuery).map((item) => ({ id: item.id, label: subjectDisplay(item) }));
-		}
-		if (scope === 'project') return projectOptions.map((item) => ({ id: item.id, label: item.name }));
-		return keyOptions.map((item) => ({ id: item.id, label: `${item.name} (${item.key_prefix})` }));
 	}
 
 	/** 可搜索用户下拉:选项来自 /admin/subjects/options,按查询词缓存(服务端分页改造)。 */
@@ -1726,7 +1570,6 @@
 		bind:loginForm
 		bind:registerForm
 		bind:rememberSession
-		{pageError}
 		{loading}
 		onLogin={loginAccount}
 		onRegister={registerAccount}
@@ -2460,6 +2303,18 @@
 								<span class="muted">配置加载中…</span>
 							{/if}
 						</div>
+						{#if healthCheckConfig?.enabled}
+							{#if healthCheckConfig.last_cycle && lastCycleAgeSeconds() !== null}
+								{@const age = lastCycleAgeSeconds() ?? 0}
+								<p class="muted">
+									最近探测：{age < 60 ? `${age} 秒前` : `${Math.floor(age / 60)} 分钟前`} ·
+									{healthCheckConfig.last_cycle.unhealthy}/{healthCheckConfig.last_cycle.total} 端点异常{healthCheckConfig.last_cycle.suppressed ? ' · 本轮被熔断跳过（疑似巡检自身故障）' : ''}
+									{#if age > 15}<span style="color: var(--danger);">心跳过期 — sidecar 可能已停止运行</span>{/if}
+								</p>
+							{:else}
+								<p class="muted" style="color: var(--danger);">Sidecar 未上报心跳 — 巡检进程可能没有运行，端点故障将不会被自动排除。启动方式：<code>python -m llm_gateway.health_sidecar</code>（scripts/start_local.py 会自动拉起）。</p>
+							{/if}
+						{/if}
 					</section>
 					<UpstreamTable rows={inventory.upstreams} healthResults={healthResults} modelLabel={modelLabel} onCheck={checkUpstream} onState={setUpstreamState} onPatch={patchUpstream} onDelete={deleteUpstream} onError={fail} />
 				{/if}
@@ -2480,32 +2335,6 @@
 		<button type="button" onclick={createSubject} disabled={loading}>创建用户</button>
 	{/snippet}
 </Drawer>
-
-	<Drawer open={projectDrawerOpen} title="创建项目" subtitle="用量归因和项目成员关系" onClose={() => (projectDrawerOpen = false)}>
-		<div class="drawer-form">
-			<label>名称<input bind:value={projectForm.name} /></label>
-			<label>搜索负责人<input bind:value={projectOwnerSearch} placeholder="输入姓名或工号" oninput={() => queueSubjectOptions(projectOwnerSearch)} /></label>
-			<label>负责人<select bind:value={projectForm.owner_subject_id}><option value="">无</option>{#each subjectOptions(projectOwnerSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label>
-			<label>备注<input bind:value={projectForm.notes} /></label>
-		</div>
-		{#snippet footer()}
-			<button class="secondary" type="button" onclick={() => (projectDrawerOpen = false)}>取消</button>
-			<button type="button" onclick={createProject} disabled={loading}>创建项目</button>
-		{/snippet}
-	</Drawer>
-
-	<Drawer open={projectMemberDrawerOpen} title="添加项目成员" onClose={() => (projectMemberDrawerOpen = false)}>
-		<div class="drawer-form">
-			<label>项目<select bind:value={membershipForm.project_id}><option value="">项目</option>{#each projectOptions as project}<option value={project.id}>{project.name}</option>{/each}</select></label>
-			<label>搜索用户<input bind:value={projectMemberSearch} placeholder="输入姓名或工号" oninput={() => queueSubjectOptions(projectMemberSearch)} /></label>
-			<label>用户<select bind:value={membershipForm.subject_id}><option value="">用户</option>{#each subjectOptions(projectMemberSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label>
-			<label>角色<select bind:value={membershipForm.role}>{#each managedRoles as role}<option value={role.value}>{role.label}</option>{/each}</select></label>
-		</div>
-		{#snippet footer()}
-			<button class="secondary" type="button" onclick={() => (projectMemberDrawerOpen = false)}>取消</button>
-			<button type="button" onclick={createMembership} disabled={loading}>添加成员</button>
-		{/snippet}
-	</Drawer>
 
 	<Drawer open={keyDrawerOpen} title="签发密钥" subtitle="明文只在签发时展示一次" onClose={() => (keyDrawerOpen = false)}>
 		<div class="drawer-form">
@@ -2547,37 +2376,6 @@
 		<button type="button" onclick={createTeam} disabled={loading}>创建权限组</button>
 	{/snippet}
 </Drawer>
-
-	<Drawer open={entitlementDrawerOpen} title="创建授权" subtitle="旧式授权：项目/用户/密钥级别" onClose={() => (entitlementDrawerOpen = false)}>
-		<div class="drawer-form">
-			<label>模型<select bind:value={entitlementForm.model_alias_id}><option value="">模型</option>{#each modelOptions as model}<option value={model.id}>{model.alias}</option>{/each}</select></label>
-			<label>范围<select bind:value={entitlementForm.scope} onchange={() => { entitlementForm.scope_id = ''; if (entitlementForm.scope === 'key') void fetchKeyOptions().catch(() => undefined); }}><option value="project">项目</option><option value="subject">用户</option><option value="key">密钥</option></select></label>
-			{#if entitlementForm.scope === 'subject'}
-				<label>搜索用户<input bind:value={entitlementSubjectSearch} placeholder="输入姓名或工号" oninput={() => queueSubjectOptions(entitlementSubjectSearch)} /></label>
-			{/if}
-			<label>授权对象<select bind:value={entitlementForm.scope_id}><option value="">对象</option>{#each scopeOptions(entitlementForm.scope, entitlementSubjectSearch) as option}<option value={option.id}>{option.label}</option>{/each}</select></label>
-		</div>
-		{#snippet footer()}
-			<button class="secondary" type="button" onclick={() => (entitlementDrawerOpen = false)}>取消</button>
-			<button type="button" onclick={createEntitlement} disabled={loading}>授权访问</button>
-		{/snippet}
-	</Drawer>
-
-	<Drawer open={rateDrawerOpen} title="创建限流策略" subtitle="生效限制取各层最小启用策略" onClose={() => (rateDrawerOpen = false)}>
-		<div class="drawer-form">
-			<label>范围<select bind:value={rateForm.scope} onchange={() => { rateForm.scope_id = ''; if (rateForm.scope === 'key') void fetchKeyOptions().catch(() => undefined); }}><option value="key">密钥</option><option value="subject">用户</option><option value="project">项目</option></select></label>
-			{#if rateForm.scope === 'subject'}
-				<label>搜索用户<input bind:value={rateSubjectSearch} placeholder="输入姓名或工号" oninput={() => queueSubjectOptions(rateSubjectSearch)} /></label>
-			{/if}
-			<label>对象<select bind:value={rateForm.scope_id}><option value="">对象</option>{#each scopeOptions(rateForm.scope, rateSubjectSearch) as option}<option value={option.id}>{option.label}</option>{/each}</select></label>
-			<label>每分钟请求数<input type="number" min="0" bind:value={rateForm.requests_per_minute} placeholder="留空继承" /></label>
-			<label>并发限制<input type="number" min="0" bind:value={rateForm.concurrency_limit} placeholder="留空继承" /></label>
-		</div>
-		{#snippet footer()}
-			<button class="secondary" type="button" onclick={() => (rateDrawerOpen = false)}>取消</button>
-			<button type="button" onclick={createRatePolicy} disabled={loading}>创建策略</button>
-		{/snippet}
-	</Drawer>
 
 <Drawer open={modelDrawerOpen} title="创建模型别名" subtitle="下游名称、LiteLLM 映射、能力标记与 IP 策略" wide onClose={() => (modelDrawerOpen = false)}>
 	<div class="drawer-form">

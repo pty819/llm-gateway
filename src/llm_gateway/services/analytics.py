@@ -100,8 +100,12 @@ def normalize_naive_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
-def _apply_filters(stmt, *, start, end, model, subject_id, project_id):
-    """条件应用 where：None 值跳过对应过滤条件。"""
+def _apply_filters(stmt, *, start, end, model, subject_id, project_id,
+                   subject_ids=None, project_ids=None):
+    """条件应用 where：None 值跳过对应过滤条件。
+
+    subject_ids/project_ids 是列表作用域（个人/项目/团队看板），与单个
+    subject_id/project_id 点查共存。"""
     start = normalize_naive_utc(start)
     end = normalize_naive_utc(end)
     if start is not None:
@@ -114,6 +118,10 @@ def _apply_filters(stmt, *, start, end, model, subject_id, project_id):
         stmt = stmt.where(col(RequestFact.subject_id) == subject_id)
     if project_id is not None:
         stmt = stmt.where(col(RequestFact.project_id) == project_id)
+    if subject_ids is not None:
+        stmt = stmt.where(col(RequestFact.subject_id).in_(subject_ids))
+    if project_ids is not None:
+        stmt = stmt.where(col(RequestFact.project_id).in_(project_ids))
     return stmt
 
 
@@ -162,6 +170,72 @@ async def usage_totals(session, *, start=None, end=None, model=None,
     row = (await session.execute(stmt)).one()
     d = _row_to_dict(row)
     return None if d["request_count"] == 0 else d
+
+
+async def scoped_usage_summary(session, *, start=None, end=None,
+                               subject_ids=None, project_ids=None) -> dict:
+    """6-key 聚合（个人 / 管理者看板用）。空 id 列表直接返回零值。
+
+    这是 auth 路由用量汇总的唯一实现——此前 api/auth.py 里有一份与
+    usage_totals 表达式逐字段镜像的私有拷贝，双实现已经漂移过一次。
+    """
+    empty = {
+        "request_count": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "success_count": 0,
+        "failure_count": 0,
+    }
+    if subject_ids is not None and not subject_ids:
+        return dict(empty)
+    if project_ids is not None and not project_ids:
+        return dict(empty)
+    await _apply_statement_timeout(session)
+    stmt = _apply_filters(
+        select(*_core_metric_columns()).select_from(RequestFact),
+        start=start, end=end, model=None, subject_id=None, project_id=None,
+        subject_ids=subject_ids, project_ids=project_ids,
+    )
+    row = _row_to_dict((await session.execute(stmt)).one())
+    return {key: int(row.get(key) or 0) for key in empty}
+
+
+async def scoped_usage_ranking(session, *, start=None, end=None,
+                               subject_ids=None, project_ids=None,
+                               model=None, limit=20) -> list[dict]:
+    """按 subject 分组排名，作用域由显式传入的 id 列表决定（项目/团队）。
+
+    subject_id 统一转 str，subject_id IS NULL 的行固定排除（与
+    usage_ranking 一致）。空 id 列表短路返回 []。
+    """
+    if subject_ids is not None and not subject_ids:
+        return []
+    if project_ids is not None and not project_ids:
+        return []
+    await _apply_statement_timeout(session)
+    stmt = _apply_filters(
+        select(
+            col(RequestFact.subject_id).label("subject_id"),
+            col(Subject.login_username).label("login_username"),
+            func.coalesce(col(Subject.name), "无用户").label("subject_name"),
+            *_core_metric_columns(),
+        ).select_from(RequestFact)
+        .outerjoin(Subject, RequestFact.subject_id == Subject.id),
+        start=start, end=end, model=model, subject_id=None, project_id=None,
+        subject_ids=subject_ids, project_ids=project_ids,
+    )
+    stmt = stmt.where(col(RequestFact.subject_id).isnot(None)).group_by(
+        col(RequestFact.subject_id), col(Subject.login_username), col(Subject.name)
+    ).order_by(desc(text("total_tokens")), desc(text("request_count"))).limit(int(limit))
+    rows = (await session.execute(stmt)).all()
+    items = [_row_to_dict(row) for row in rows]
+    for item in items:
+        item["subject_id"] = str(item["subject_id"])
+        for key in ("request_count", "prompt_tokens", "completion_tokens",
+                    "total_tokens", "success_count", "failure_count"):
+            item[key] = int(item.get(key) or 0)
+    return items
 
 
 async def usage_summary(session, *, start=None, end=None, model=None,

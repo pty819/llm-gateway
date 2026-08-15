@@ -994,7 +994,10 @@ async def test_openai_chat_completion_records_realtime_runtime_metrics(
 ):
     from llm_gateway.core.config import get_settings
     from llm_gateway.services.rate_limit import redis_client
-    from llm_gateway.services.runtime_metrics import ACTIVE_KEY, runtime_snapshot
+    from llm_gateway.services.runtime_metrics import (
+        active_upstream_key,
+        runtime_snapshot,
+    )
 
     async def no_metric_targets(redis=None):
         return []
@@ -1026,7 +1029,7 @@ async def test_openai_chat_completion_records_realtime_runtime_metrics(
             usage={"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
         )
 
-    await redis_client.delete(ACTIVE_KEY)
+    await redis_client.delete(active_upstream_key(str(gateway_fixture.upstream_id)))
     monkeypatch.setattr(
         "llm_gateway.api.proxy.upstream_request_once", fake_upstream_request_once
     )
@@ -1235,24 +1238,6 @@ async def test_admin_updates_router_command_rate_policy_and_upstream_health(
     )
     assert alias_patch.status_code == 200, alias_patch.text
     assert alias_patch.json()["notes"] == "updated by integration test"
-
-    router_config = await client.post(
-        "/admin/router-command-configs",
-        headers=headers,
-        json={
-            "model_alias_id": str(gateway_fixture.model_alias_id),
-            "name": "pytest-router",
-            "worker_urls": ["http://127.0.0.1:9001", "http://127.0.0.1:9002"],
-            "policy": "consistent_hash",
-            "port": 19001,
-            "extra_args": {"request_timeout": 30},
-        },
-    )
-    assert router_config.status_code == 200, router_config.text
-    command = router_config.json()["command"]
-    assert "vllm-router" in command
-    assert "--worker-urls" in command
-    assert "http://127.0.0.1:9001" in command
 
     rate_policy = await client.post(
         "/admin/rate-policies",

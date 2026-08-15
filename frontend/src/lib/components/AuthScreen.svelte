@@ -8,7 +8,6 @@
 		loginForm = $bindable(),
 		registerForm = $bindable(),
 		rememberSession = $bindable(),
-		pageError,
 		loading,
 		onLogin,
 		onRegister,
@@ -18,7 +17,6 @@
 		loginForm: { username: string; password: string };
 		registerForm: { username: string; full_name: string; password: string };
 		rememberSession: boolean;
-		pageError: string;
 		loading: boolean;
 		onLogin: (fromStorage?: boolean) => void | Promise<void>;
 		onRegister: () => void | Promise<void>;

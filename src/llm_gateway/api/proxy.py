@@ -20,6 +20,7 @@ from llm_gateway.core.config import Settings
 from llm_gateway.db.session import AsyncSessionLocal
 from llm_gateway.db.models import EndpointFamily, RequestOutcome, utcnow
 from llm_gateway.services.litellm_client import (
+    to_plain,
     upstream_request_once,
     upstream_request_stream,
 )
@@ -58,14 +59,6 @@ from llm_gateway.services.upstream_routing import touch_sticky_route
 router = APIRouter()
 
 
-def _plain(value: Any) -> Any:
-    if hasattr(value, "model_dump"):
-        return value.model_dump(exclude_none=True)
-    if isinstance(value, dict):
-        return value
-    return value
-
-
 def _requested_model(body: dict[str, Any]) -> str:
     model = body.get("model")
     if not isinstance(model, str) or not model:
@@ -102,11 +95,14 @@ async def _prepare(
         )
         # Team token quota: admission snapshot taken once here (deterministic
         # charging — the pools that authorized the request are the pools it
-        # draws from), check-any semantics inside.
+        # draws from), check-any semantics inside. authorized_team_ids comes
+        # from the route resolution above so the membership/grant join is not
+        # re-run for the quota lookup.
         quota = await resolve_team_quota(
             session,
             subject_id=auth.subject.id,
             model_alias_id=route.model_alias.id,
+            team_ids=list(route.authorized_team_ids),
         )
         if quota is not None:
             await check_team_quota(redis, quota)
@@ -285,7 +281,7 @@ async def _proxy_endpoint(
             await charge_team_quota(
                 redis, quota, token_total_from_usage(result.usage)
             )
-        return JSONResponse(jsonable_encoder(_plain(result.response)))
+        return JSONResponse(jsonable_encoder(to_plain(result.response)))
     except RateLimitExceeded as exc:
         await _raise_rate_limited_after_route(
             request_id=request_id,

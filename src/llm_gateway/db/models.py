@@ -215,24 +215,6 @@ class UpstreamTarget(TimestampMixin, table=True):
     extra_headers: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSONB))
 
 
-class RouterPolicy(StrEnum):
-    CONSISTENT_HASH = "consistent_hash"
-    CACHE_AWARE = "cache_aware"
-
-
-class RouterCommandConfig(TimestampMixin, table=True):
-    __tablename__ = "router_command_configs"
-
-    id: UUID = Field(default_factory=uuid4, primary_key=True)
-    model_alias_id: UUID = Field(foreign_key="model_aliases.id", index=True)
-    name: str
-    worker_urls: list[str] = Field(default_factory=list, sa_column=Column(JSONB))
-    policy: RouterPolicy = Field(default=RouterPolicy.CONSISTENT_HASH)
-    host: str = "0.0.0.0"
-    port: int
-    extra_args: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSONB))
-
-
 class RatePolicy(TimestampMixin, table=True):
     __tablename__ = "rate_policies"
 

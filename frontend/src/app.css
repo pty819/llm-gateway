@@ -79,16 +79,6 @@
 	--dur-fast: 120ms;
 	--dur-move: 180ms;
 
-	/* 旧类名兼容映射(保留原变量名,指向新令牌) */
-	--surface-subtle: var(--surface-sunk);
-	--text-muted: var(--ink-500);
-	--text-soft: var(--ink-500);
-	--success: var(--ok);
-	--success-bg: var(--ok-soft);
-	--danger-bg: var(--danger-soft);
-	--warn-bg: var(--warn-soft);
-	--accent-bg: var(--accent-soft);
-
 	font-family: var(--font-ui);
 	background: var(--canvas);
 	color: var(--ink-900);

@@ -14,13 +14,23 @@ from redis.asyncio import Redis
 from llm_gateway.db.models import ModelAlias, UpstreamTarget
 
 
-ACTIVE_KEY = "llm_gateway:runtime:active_connections"
+# Active in-flight connections are tracked in ONE ZSET PER UPSTREAM
+# (`active:{upstream_id}`), scored by wall-clock open time. The per-upstream
+# layout lets the routing path count a candidate's connections with a pipelined
+# ZCARD per key instead of downloading and JSON-parsing every in-flight request
+# gateway-wide (the old single global ZSET made per-request cost O(fleet), i.e.
+# O(N²) under load).
+ACTIVE_UPSTREAM_KEY_PREFIX = "llm_gateway:runtime:active:"
+# Legacy single-ZSET key from before the per-upstream split. No longer written;
+# deleted best-effort at startup so leftover members don't linger forever.
+ACTIVE_LEGACY_KEY = "llm_gateway:runtime:active_connections"
 DEFAULT_WINDOW_SECONDS = 10
-# Stale threshold for the runtime active-connection ZSET: any member older than
-# this is pruned on every snapshot. Must exceed the longest possible single
-# upstream call (upstream_timeout_seconds defaults to 6000s = 100min) so a
-# genuinely in-flight long-running request is never pruned mid-stream. A leaked
-# member from a crashed/cancelled connection is recovered within this window.
+# Stale threshold for the runtime active-connection ZSETs: any member older than
+# this is pruned on snapshot and on connection open. Must exceed the longest
+# possible single upstream call (upstream_timeout_seconds defaults to 6000s =
+# 100min) so a genuinely in-flight long-running request is never pruned
+# mid-stream. A leaked member from a crashed/cancelled connection is recovered
+# within this window.
 ACTIVE_STALE_SECONDS = 60 * 60 * 3  # 3 hours
 VLLM_METRICS_CACHE_PREFIX = "llm_gateway:runtime:vllm_metrics"
 VLLM_METRICS_LOCK_PREFIX = "llm_gateway:runtime:vllm_metrics_lock"
@@ -70,6 +80,10 @@ def active_member(request_id: str, info: RuntimeRouteInfo) -> str:
     )
 
 
+def active_upstream_key(upstream_id: str) -> str:
+    return f"{ACTIVE_UPSTREAM_KEY_PREFIX}{upstream_id}"
+
+
 async def mark_connection_open(
     redis: Redis,
     *,
@@ -78,12 +92,34 @@ async def mark_connection_open(
     now: float | None = None,
 ) -> str:
     member = active_member(request_id, info)
-    await redis.zadd(ACTIVE_KEY, {member: now if now is not None else time.time()})
+    score = now if now is not None else time.time()
+    key = active_upstream_key(info.upstream_id)
+    # Prune stale members of this upstream's own ZSET in the same round trip as
+    # the ZADD — leaked members from crashed workers must not inflate the
+    # connection count that load-based routing reads.
+    pipe = redis.pipeline(transaction=False)
+    pipe.zremrangebyscore(key, "-inf", score - ACTIVE_STALE_SECONDS)
+    pipe.zadd(key, {member: score})
+    await pipe.execute()
     return member
 
 
 async def mark_connection_closed(redis: Redis, member: str) -> None:
-    await redis.zrem(ACTIVE_KEY, member)
+    upstream_id = _upstream_id_of_member(member)
+    if upstream_id is None:
+        return
+    await redis.zrem(active_upstream_key(upstream_id), member)
+
+
+def _upstream_id_of_member(member: str) -> str | None:
+    try:
+        parsed = json.loads(member)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    upstream_id = parsed.get("upstream_id")
+    return upstream_id if isinstance(upstream_id, str) else None
 
 
 @asynccontextmanager
@@ -120,16 +156,21 @@ async def runtime_snapshot(
 ) -> dict[str, Any]:
     now = now if now is not None else time.time()
     del window_seconds
-    await redis.zremrangebyscore(ACTIVE_KEY, "-inf", now - ACTIVE_STALE_SECONDS)
 
     upstreams: dict[str, dict[str, Any]] = {}
-    active_members = await redis.zrange(ACTIVE_KEY, 0, -1)
-    for item in active_members:
-        parsed = _decode_active_member(item)
-        if not parsed:
-            continue
-        row = _upstream_row(upstreams, parsed)
-        row["active_connections"] += 1
+    total_active = 0
+    # Enumerate the per-upstream active-connection ZSETs by key pattern so the
+    # dashboard counts in-flight requests even for upstreams that no longer
+    # appear in vllm_targets (mid-stream disable, health-marked, etc.).
+    async for key in redis.scan_iter(match=f"{ACTIVE_UPSTREAM_KEY_PREFIX}*"):
+        await redis.zremrangebyscore(key, "-inf", now - ACTIVE_STALE_SECONDS)
+        for item in await redis.zrange(key, 0, -1):
+            parsed = _decode_active_member(item)
+            if not parsed:
+                continue
+            row = _upstream_row(upstreams, parsed)
+            row["active_connections"] += 1
+            total_active += 1
 
     targets = vllm_targets or []
     vllm_rows = await _collect_vllm_metrics(
@@ -166,7 +207,7 @@ async def runtime_snapshot(
         "metrics_cache_seconds": VLLM_METRICS_CACHE_SECONDS,
         "total_tokens_per_second": vllm_summary["tokens_per_second"],
         "total_recent_tokens": None,
-        "active_connections": len(active_members),
+        "active_connections": total_active,
         "vllm": vllm_summary,
         "upstreams": rows,
     }

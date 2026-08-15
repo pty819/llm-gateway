@@ -28,13 +28,6 @@ export function validateHttpUrl(value: string, label = 'URL'): ValidationResult 
 	}
 }
 
-export function validatePort(port: number): ValidationResult {
-	if (!Number.isInteger(port) || port < 1 || port > 65535) {
-		return { ok: false, message: '端口必须是 1 到 65535 之间的整数' };
-	}
-	return { ok: true };
-}
-
 export function parseJsonObject(value: string, label = 'JSON'): Record<string, unknown> {
 	if (!value.trim()) return {};
 	const parsed = JSON.parse(value) as unknown;

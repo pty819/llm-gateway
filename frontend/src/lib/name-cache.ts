@@ -1,13 +1,10 @@
 import type {
-	KeyOption,
 	ModelAlias,
-	ModelEntitlement,
 	ModelOption,
 	ModelTeamGrant,
 	Project,
 	ProjectMembership,
 	ProjectOption,
-	RatePolicy,
 	SubjectOption,
 	Team,
 	TeamMembership,
@@ -119,15 +116,6 @@ export function mergeProjectMembershipRows(cache: NameCache, rows: ProjectMember
 	return next;
 }
 
-export function mergeKeyRows(cache: NameCache, rows: KeyOption[]): NameCache {
-	let keys = cache.keys;
-	for (const row of rows) {
-		if (!row.id) continue;
-		keys = { ...keys, [row.id]: { name: row.name, key_prefix: row.key_prefix } };
-	}
-	return { ...cache, keys };
-}
-
 export function mergeKeyRefs(
 	cache: NameCache,
 	rows: Array<{
@@ -203,32 +191,6 @@ export function mergeModelTeamGrantRows(cache: NameCache, rows: ModelTeamGrant[]
 	return next;
 }
 
-export function mergeEntitlementRows(cache: NameCache, rows: ModelEntitlement[]): NameCache {
-	let next = mergeModelRefs(cache, rows);
-	next = mergeSubjectRefs(next, rows);
-	next = mergeProjectRefs(next, rows);
-	let keys = next.keys;
-	for (const row of rows) {
-		if (!row.gateway_key_id || !row.key_name) continue;
-		keys = { ...keys, [row.gateway_key_id]: { name: row.key_name, key_prefix: shortId(row.gateway_key_id) } };
-	}
-	return { ...next, keys };
-}
-
-export function mergeRatePolicyRows(cache: NameCache, rows: RatePolicy[]): NameCache {
-	const subjectRefs: Array<{ subject_id?: string | null; subject_name?: string | null }> = [];
-	const projectRefs: Array<{ project_id?: string | null; project_name?: string | null }> = [];
-	const keyRefs: KeyOption[] = [];
-	for (const row of rows) {
-		if (row.scope === 'subject') subjectRefs.push({ subject_id: row.scope_id, subject_name: row.scope_name });
-		else if (row.scope === 'project') projectRefs.push({ project_id: row.scope_id, project_name: row.scope_name });
-		else if (row.scope === 'key' && row.scope_name) keyRefs.push({ id: row.scope_id, name: row.scope_name, key_prefix: shortId(row.scope_id) });
-	}
-	let next = mergeSubjectRefs(cache, subjectRefs);
-	next = mergeProjectRefs(next, projectRefs);
-	return mergeKeyRows(next, keyRefs);
-}
-
 export function mergeUpstreamRows(
 	cache: NameCache,
 	rows: Array<{ model_alias_id?: string | null; model_alias?: string | null }>
@@ -247,8 +209,4 @@ export function mergeUsageRows(cache: NameCache, rows: UsageSummaryRow[]): NameC
 	let next = mergeSubjectRefs(cache, rows);
 	next = mergeProjectRefs(next, rows);
 	return next;
-}
-
-function shortId(id: string): string {
-	return id.length > 12 ? `${id.slice(0, 8)}…` : id;
 }

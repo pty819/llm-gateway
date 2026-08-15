@@ -14,11 +14,9 @@ import type {
 type QueryValue = string | number | boolean | null | undefined;
 
 export class AdminApiClient {
-	adminToken = '';
 	sessionToken = '';
 
-	constructor(adminToken = '', sessionToken = '') {
-		this.adminToken = adminToken;
+	constructor(sessionToken = '') {
 		this.sessionToken = sessionToken;
 	}
 
@@ -196,10 +194,6 @@ export class AdminApiClient {
 		);
 	}
 
-	async getHealthCheckConfig(): Promise<HealthCheckConfig> {
-		return this.get('/admin/health-check');
-	}
-
 	async setHealthCheckConfig(enabled: boolean): Promise<HealthCheckConfig> {
 		return this.patch('/admin/health-check', { enabled });
 	}
@@ -216,7 +210,6 @@ export class AdminApiClient {
 		const response = await fetch(path, {
 			method,
 			headers: {
-				...(this.adminToken ? { 'x-admin-token': this.adminToken } : {}),
 				...(this.sessionToken ? { 'x-session-token': this.sessionToken } : {}),
 				...(body === undefined || isFormData ? {} : { 'content-type': 'application/json' })
 			},
@@ -238,7 +231,6 @@ export class AdminApiClient {
 		const response = await fetch(path, {
 			method: 'GET',
 			headers: {
-				...(this.adminToken ? { 'x-admin-token': this.adminToken } : {}),
 				...(this.sessionToken ? { 'x-session-token': this.sessionToken } : {})
 			},
 			signal: AbortSignal.timeout(AdminApiClient.BLOB_TIMEOUT_MS)

@@ -138,33 +138,52 @@ async def resolve_team_quota(
     subject_id: UUID,
     model_alias_id: UUID,
     now: datetime | None = None,
+    team_ids: list | None = None,
 ) -> TeamQuotaContext | None:
     """Snapshot the quota pools that apply to this request, or None when the
     feature does not constrain it (subject in no quota'd team granting the
-    model). Returns plain data only — no ORM objects escape the session."""
+    model). Returns plain data only — no ORM objects escape the session.
+
+    ``team_ids``: when the caller already resolved the subject's ACTIVE
+    model-granting teams (policy.resolve_route_context does, for the
+    authorization decision), pass them here to skip re-running the
+    Team⋈TeamMembership⋈ModelTeamGrant join — quota lookup reduces to one
+    indexed IN over ``team_token_quotas``. ``None`` runs the join here.
+    """
     window, window_date, window_end = current_window(now)
     limit_column = _LIMIT_COLUMN_BY_WINDOW[window]
-    result = await session.execute(
-        select(col(TeamTokenQuota.team_id), col(limit_column))
-        .join(Team, col(Team.id) == col(TeamTokenQuota.team_id))
-        .join(
-            TeamMembership,
-            (col(TeamMembership.team_id) == col(Team.id))
-            & (col(TeamMembership.subject_id) == subject_id),
+    if team_ids is not None:
+        if not team_ids:
+            return None
+        result = await session.execute(
+            select(col(TeamTokenQuota.team_id), col(limit_column)).where(
+                col(TeamTokenQuota.team_id).in_(team_ids),
+                col(TeamTokenQuota.state) == ResourceState.ACTIVE,
+                col(limit_column).is_not(None),
+            )
         )
-        .join(
-            ModelTeamGrant,
-            (col(ModelTeamGrant.team_id) == col(Team.id))
-            & (col(ModelTeamGrant.model_alias_id) == model_alias_id),
+    else:
+        result = await session.execute(
+            select(col(TeamTokenQuota.team_id), col(limit_column))
+            .join(Team, col(Team.id) == col(TeamTokenQuota.team_id))
+            .join(
+                TeamMembership,
+                (col(TeamMembership.team_id) == col(Team.id))
+                & (col(TeamMembership.subject_id) == subject_id),
+            )
+            .join(
+                ModelTeamGrant,
+                (col(ModelTeamGrant.team_id) == col(Team.id))
+                & (col(ModelTeamGrant.model_alias_id) == model_alias_id),
+            )
+            .where(
+                col(Team.state) == ResourceState.ACTIVE,
+                col(TeamMembership.state) == ResourceState.ACTIVE,
+                col(ModelTeamGrant.state) == ResourceState.ACTIVE,
+                col(TeamTokenQuota.state) == ResourceState.ACTIVE,
+                col(limit_column).is_not(None),
+            )
         )
-        .where(
-            col(Team.state) == ResourceState.ACTIVE,
-            col(TeamMembership.state) == ResourceState.ACTIVE,
-            col(ModelTeamGrant.state) == ResourceState.ACTIVE,
-            col(TeamTokenQuota.state) == ResourceState.ACTIVE,
-            col(limit_column).is_not(None),
-        )
-    )
     pools = [(UUID(str(team_id)), int(limit)) for team_id, limit in result.all()]
     if not pools:
         return None

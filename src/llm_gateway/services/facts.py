@@ -132,13 +132,14 @@ async def record_request_fact(
     outcome: RequestOutcome,
     usage: dict[str, Any] | None,
     first_token_at: datetime | None = None,
-    retry_count: int = 0,
-    fallback_count: int = 0,
-    fallback_tokens: int | None = None,
-    performance_detail: dict[str, Any] | None = None,
     error_class: str | None = None,
     error_detail: str | None = None,
 ) -> RequestFact:
+    # retry/fallback telemetry columns exist in the schema but have no
+    # producer today (the native router does not surface retry counts), so
+    # they are intentionally not written here; analytics sums them as 0.
+    # usage_source IS written: tests assert it and it distinguishes
+    # "no usage reported" from "usage missing/zero".
     usage_source = UsageSource.LITELLM if usage else UsageSource.MISSING
     latency_ms = _duration_ms(started_at, ended_at)
     time_to_first_token_ms = (
@@ -164,14 +165,10 @@ async def record_request_fact(
         latency_ms=latency_ms,
         time_to_first_token_ms=time_to_first_token_ms,
         stream_duration_ms=latency_ms if streaming else None,
-        retry_count=retry_count,
-        fallback_count=fallback_count,
-        fallback_tokens=fallback_tokens,
         queue_ms=performance_int_from_usage(usage, "queue_ms"),
         prefill_ms=performance_int_from_usage(usage, "prefill_ms"),
         decode_ms=performance_int_from_usage(usage, "decode_ms"),
         kv_cache_usage=performance_float_from_usage(usage, "kv_cache_usage"),
-        performance_detail=performance_detail or {},
         error_class=error_class,
         error_detail=error_detail[:1000] if error_detail else None,
     )

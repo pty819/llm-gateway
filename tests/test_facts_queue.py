@@ -3,6 +3,14 @@ from contextlib import asynccontextmanager
 import llm_gateway.services.facts_queue as facts_queue
 
 
+class _DummySavepoint:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return False
+
+
 class _DummySession:
     async def __aenter__(self):
         return self
@@ -12,6 +20,9 @@ class _DummySession:
 
     async def commit(self):
         return None
+
+    def begin_nested(self):
+        return _DummySavepoint()
 
 
 async def test_drain_isolates_a_failing_fact_and_keeps_the_rest(monkeypatch):

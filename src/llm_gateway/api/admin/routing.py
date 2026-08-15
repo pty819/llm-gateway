@@ -3,29 +3,26 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from redis.asyncio import Redis
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from llm_gateway.api.admin._common import (
-    StatePatch,
     _audit_update,
     _count_rows,
     _detach_upstream_usage,
     _get_or_404,
     _validate_homogeneous_upstream_payload,
 )
-from llm_gateway.api.deps import session_dep
+from llm_gateway.api.deps import redis_dep, session_dep
 from llm_gateway.db.models import (
     IPPolicyMode,
     ModelAlias,
     ModelEntitlement,
     ModelTeamGrant,
     ResourceState,
-    RouterCommandConfig,
-    RouterPolicy,
     UpstreamTarget,
-    utcnow,
 )
 from llm_gateway.services.resource_payloads import (
     apply_model_patch,
@@ -34,8 +31,8 @@ from llm_gateway.services.resource_payloads import (
 )
 from llm_gateway.services.facts import record_audit_event
 from llm_gateway.services.litellm_client import check_upstream_health
-from llm_gateway.services.router_command import render_router_command
 from llm_gateway.services.security import ensure_model_team_grant, get_or_create_team
+from llm_gateway.services.upstream_health import filter_unhealthy
 
 
 router = APIRouter()
@@ -87,25 +84,6 @@ class UpstreamTargetUpdate(BaseModel):
     health_path: str | None = None
     extra_headers: dict[str, str] | None = None
     state: ResourceState | None = None
-
-
-class RouterCommandConfigCreate(BaseModel):
-    model_alias_id: UUID
-    name: str
-    worker_urls: list[str]
-    policy: RouterPolicy = RouterPolicy.CONSISTENT_HASH
-    host: str = "0.0.0.0"
-    port: int
-    extra_args: dict[str, Any] = Field(default_factory=dict)
-
-
-class RouterCommandConfigUpdate(BaseModel):
-    name: str | None = None
-    worker_urls: list[str] | None = None
-    policy: RouterPolicy | None = None
-    host: str | None = None
-    port: int | None = None
-    extra_args: dict[str, Any] | None = None
 
 
 @router.post("/model-aliases")
@@ -271,11 +249,6 @@ async def delete_model_alias(
         )
     )
     await session.execute(
-        delete(RouterCommandConfig).where(
-            col(RouterCommandConfig.model_alias_id) == model_alias.id
-        )
-    )
-    await session.execute(
         delete(UpstreamTarget).where(
             col(UpstreamTarget.model_alias_id) == model_alias.id
         )
@@ -317,6 +290,7 @@ async def list_upstreams(
     limit: int | None = Query(default=None, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(session_dep),
+    redis: Redis = Depends(redis_dep),
 ):
     filters = []
     if q and q.strip():
@@ -341,10 +315,15 @@ async def list_upstreams(
     if filters:
         stmt = stmt.where(*filters)
     rows = (await session.execute(stmt)).all()
+    # Runtime liveness from the sidecar's Redis markers — `state` alone never
+    # reflected it, so dead endpoints always showed "active" in the UI even
+    # while being routed around.
+    unhealthy_ids = await filter_unhealthy(redis, [upstream.id for upstream, _ in rows])
     items = []
     for upstream, alias in rows:
         item = redact_upstream(upstream)
         item["model_alias"] = alias
+        item["runtime_healthy"] = str(upstream.id) not in unhealthy_ids
         items.append(item)
     return paginated(items, total, limit, offset)
 
@@ -430,56 +409,3 @@ async def delete_upstream(
     await session.delete(upstream)
     await session.commit()
     return {"ok": True, "detached_usage_facts": detached_usage_count}
-
-
-@router.post("/router-command-configs")
-async def create_router_command_config(
-    payload: RouterCommandConfigCreate, session: AsyncSession = Depends(session_dep)
-):
-    await _get_or_404(session, ModelAlias, payload.model_alias_id)
-    config = RouterCommandConfig(**payload.model_dump())
-    session.add(config)
-    await session.flush()
-    await record_audit_event(
-        session,
-        action="router_command_config.create",
-        resource_type="router_command_config",
-        resource_id=config.id,
-        outcome="success",
-        detail={"policy": config.policy.value, "port": config.port},
-    )
-    await session.commit()
-    await session.refresh(config)
-    return {"config": config, "command": render_router_command(config)}
-
-
-@router.get("/router-command-configs")
-async def list_router_command_configs(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(
-        select(RouterCommandConfig).order_by(col(RouterCommandConfig.created_at).desc())
-    )
-    configs = result.scalars().all()
-    return [
-        {"config": config, "command": render_router_command(config)}
-        for config in configs
-    ]
-
-
-@router.patch("/router-command-configs/{config_id}")
-async def update_router_command_config(
-    config_id: UUID,
-    payload: RouterCommandConfigUpdate,
-    session: AsyncSession = Depends(session_dep),
-):
-    config = await _get_or_404(session, RouterCommandConfig, config_id)
-    apply_model_patch(config, payload)
-    await _audit_update(
-        session,
-        "router_command_config.update",
-        "router_command_config",
-        config.id,
-        payload,
-    )
-    await session.commit()
-    await session.refresh(config)
-    return {"config": config, "command": render_router_command(config)}

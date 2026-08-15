@@ -11,9 +11,9 @@ from redis.asyncio import Redis
 
 from llm_gateway.db.models import ModelAlias, UpstreamTarget
 from llm_gateway.services.runtime_metrics import (
-    ACTIVE_KEY,
     ACTIVE_STALE_SECONDS,
     VLLM_METRICS_CACHE_PREFIX,
+    active_upstream_key,
 )
 
 
@@ -45,7 +45,6 @@ async def select_upstream_for_key(
         raise ValueError("upstream_not_configured")
 
     now = now if now is not None else time.time()
-    sticky_ttl = max(int(model_alias.sticky_ttl_seconds or 1200), 1)
     upstream_by_id = {str(upstream.id): upstream for upstream in upstreams}
 
     if redis is None:
@@ -64,14 +63,11 @@ async def select_upstream_for_key(
             loads=loads,
             tie_break_key=f"{key_id}:{model_alias.id}",
         )
-    await touch_sticky_route(
-        redis,
-        key_id=key_id,
-        model_alias_id=model_alias.id,
-        upstream_id=selected.id,
-        ttl_seconds=sticky_ttl,
-        now=now,
-    )
+    # The sticky route is NOT written here: the proxy's completion-time
+    # touch_sticky_route is the single writer, so a request that is rate-limited
+    # or otherwise never reaches the upstream does not create or refresh
+    # stickiness. (This used to be a duplicate write of the identical payload
+    # ~0ms after selection — one wasted Redis round trip per request.)
     return selected, [
         UpstreamLoad(
             upstream_id=load.upstream_id,
@@ -152,18 +148,24 @@ async def _read_sticky_upstream_id(
 async def _active_connection_counts(
     redis: Redis, *, upstream_ids: list[str], now: float
 ) -> dict[str, int]:
-    await redis.zremrangebyscore(ACTIVE_KEY, "-inf", now - ACTIVE_STALE_SECONDS)
-    wanted = set(upstream_ids)
-    counts = {upstream_id: 0 for upstream_id in upstream_ids}
-    for item in await redis.zrange(ACTIVE_KEY, 0, -1):
-        try:
-            payload = json.loads(_decode_value(item))
-        except TypeError, ValueError:
-            continue
-        upstream_id = payload.get("upstream_id")
-        if upstream_id in wanted:
-            counts[upstream_id] += 1
-    return counts
+    """Connection counts per candidate upstream via pipelined ZCARD.
+
+    Each upstream owns its own ZSET (see runtime_metrics.active_upstream_key),
+    so counting is O(candidates) commands in ONE round trip — the previous
+    single global ZSET forced every request to download and JSON-parse every
+    in-flight request gateway-wide (O(N²) under load). Stale members are
+    pruned in the same pipeline so leaked entries cannot inflate counts.
+    """
+    pipe = redis.pipeline(transaction=False)
+    for upstream_id in upstream_ids:
+        key = active_upstream_key(upstream_id)
+        pipe.zremrangebyscore(key, "-inf", now - ACTIVE_STALE_SECONDS)
+        pipe.zcard(key)
+    results = await pipe.execute()
+    return {
+        upstream_id: int(results[index * 2 + 1] or 0)
+        for index, upstream_id in enumerate(upstream_ids)
+    }
 
 
 def _kv_cache_usage(raw_metrics: Any) -> float | None:

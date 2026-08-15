@@ -36,9 +36,6 @@ class Settings(BaseSettings):
     default_concurrency_limit: int = Field(
         default=8, alias="LLM_GATEWAY_DEFAULT_CONCURRENCY"
     )
-    request_fact_timeout_seconds: int = Field(
-        default=30, alias="LLM_GATEWAY_FACT_TIMEOUT_SECONDS"
-    )
     # Timezone (IANA name) in which team token-quota windows are evaluated:
     # morning [08:00,13:00), afternoon [13:00,18:00), evening [18:00, next
     # 08:00). Invalid names fall back to UTC with a logged warning.
@@ -60,11 +57,6 @@ class Settings(BaseSettings):
     db_max_overflow: int = Field(default=40, alias="LLM_GATEWAY_DB_MAX_OVERFLOW")
     db_pool_recycle_seconds: int = Field(
         default=1800, alias="LLM_GATEWAY_DB_POOL_RECYCLE_SECONDS"
-    )
-    # Optional separate (read-only replica) DSN for admin analytics queries; falls
-    # back to the main database_url when unset.
-    analytics_database_url: str | None = Field(
-        default=None, alias="LLM_GATEWAY_ANALYTICS_DATABASE_URL"
     )
     # statement_timeout applied to analytics queries so a runaway aggregate
     # cannot monopolize the analytics connection.
@@ -104,6 +96,15 @@ class Settings(BaseSettings):
     )
     health_check_enabled: bool = Field(
         default=True, alias="LLM_GATEWAY_HEALTH_CHECK_ENABLED"
+    )
+    # When True the main gateway process runs the health-check loop in-process,
+    # as a fallback for deployments that cannot run the sidecar process. Default
+    # False: the sidecar's process isolation is exactly what stops a
+    # main-process event-loop freeze from producing fleet-wide false-positive
+    # markers, so prefer the sidecar and only set this when spawning a second
+    # process is impossible.
+    health_check_autostart: bool = Field(
+        default=False, alias="LLM_GATEWAY_HEALTH_CHECK_AUTOSTART"
     )
     # TTL on the Redis UNHEALTHY marker. A failed probe refreshes it; a passing
     # probe deletes it; if the sidecar dies the marker expires on its own so the

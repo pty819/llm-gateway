@@ -1,16 +1,6 @@
 export type SubjectType = 'user' | 'service';
 export type ResourceState = 'active' | 'disabled';
 export type IPPolicyMode = 'all_pass' | 'allowlist';
-export type EndpointFamily = 'openai_chat' | 'openai_responses' | 'anthropic_messages';
-export type RequestOutcome =
-	| 'success'
-	| 'auth_failure'
-	| 'policy_denial'
-	| 'rate_limited'
-	| 'adapter_failure'
-	| 'upstream_failure'
-	| 'client_cancelled';
-
 export type Timestamped = {
 	created_at: string;
 	updated_at: string;
@@ -93,20 +83,6 @@ export type ModelAlias = Timestamped & {
 	notes: string | null;
 };
 
-export type ModelEntitlement = Timestamped & {
-	id: string;
-	subject_id: string | null;
-	project_id: string | null;
-	gateway_key_id: string | null;
-	model_alias_id: string;
-	state: ResourceState;
-	model_alias?: string | null;
-	subject_name?: string | null;
-	subject_login_username?: string | null;
-	project_name?: string | null;
-	key_name?: string | null;
-};
-
 export type Team = Timestamped & {
 	id: string;
 	name: string;
@@ -169,6 +145,8 @@ export type UpstreamTarget = Timestamped & {
 	state: ResourceState;
 	extra_headers: Record<string, string>;
 	model_alias?: string | null;
+	/** sidecar 运行时存活状态(Redis UNHEALTHY 标记的反查);缺省表示该字段不可用。 */
+	runtime_healthy?: boolean;
 };
 
 export type UpstreamHealth = {
@@ -245,16 +223,6 @@ export type VllmRouterMetricsSummary = {
 	cache_hits_total?: number | null;
 	cache_misses_total?: number | null;
 	cache_hit_ratio?: number | null;
-};
-
-export type RatePolicy = Timestamped & {
-	id: string;
-	scope: 'key' | 'subject' | 'project' | string;
-	scope_id: string;
-	requests_per_minute: number | null;
-	concurrency_limit: number | null;
-	state: ResourceState;
-	scope_name?: string | null;
 };
 
 export type UsageSummaryRow = {
@@ -369,6 +337,14 @@ export type Diagnostics = {
 export type HealthCheckConfig = {
 	enabled: boolean;
 	source: 'redis_override' | 'env_default';
+	/** sidecar 最近一轮探测的心跳;at 为 ISO 时间戳。null = sidecar 从未上报。 */
+	last_cycle: {
+		at: string;
+		total: number;
+		unhealthy: number;
+		marked: number;
+		suppressed: boolean;
+	} | null;
 };
 
 export type AuthProfile = {
@@ -414,14 +390,10 @@ export type Inventory = {
 	subjectRateOverrides: SubjectRateOverrideMap;
 	projects: Project[];
 	projectsTotal: number;
-	memberships: ProjectMembership[];
-	membershipsTotal: number;
 	keys: GatewayKey[];
 	keysTotal: number;
 	models: ModelAlias[];
 	modelsTotal: number;
-	entitlements: ModelEntitlement[];
-	entitlementsTotal: number;
 	teams: Team[];
 	teamsTotal: number;
 	teamMemberships: TeamMembership[];
@@ -431,8 +403,6 @@ export type Inventory = {
 	teamTokenQuotas: TeamTokenQuotaRow[];
 	upstreams: UpstreamTarget[];
 	upstreamsTotal: number;
-	ratePolicies: RatePolicy[];
-	ratePoliciesTotal: number;
 	usage: UsageSummaryRow[];
 	usageTotals: UsageTotalsRow | null;
 	ranking: UsageRankingRow[];
@@ -447,7 +417,6 @@ export type SubjectOption = { id: string; name: string; login_username: string |
 export type ProjectOption = { id: string; name: string };
 export type ModelOption = { id: string; alias: string };
 export type TeamOption = { id: string; name: string };
-export type KeyOption = { id: string; name: string; key_prefix: string };
 export type UpstreamOptionRow = {
 	id: string;
 	name: string;

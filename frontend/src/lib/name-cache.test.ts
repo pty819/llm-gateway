@@ -1,12 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
 	emptyNameCache,
-	mergeEntitlementRows,
 	mergeKeyRefs,
 	mergeModelRefs,
 	mergeOwnerRefs,
 	mergeProjectMembershipRows,
-	mergeRatePolicyRows,
 	mergeSubjectRefs,
 	mergeTeamMembershipRows,
 	mergeUsageRows
@@ -86,33 +84,6 @@ describe('name cache merges', () => {
 		]);
 		expect(cache.teams['t1']).toBe('dev');
 		expect(cache.subjects['s1']?.name).toBe('孙七');
-	});
-
-	it('merges entitlement rows including key names', () => {
-		const cache = mergeEntitlementRows(emptyNameCache(), [
-			{
-				model_alias_id: 'm1',
-				model_alias: 'dev-model',
-				gateway_key_id: 'k1',
-				key_name: 'the key',
-				project_id: 'p1',
-				project_name: 'proj'
-			} as never
-		]);
-		expect(cache.models['m1']).toBe('dev-model');
-		expect(cache.keys['k1']?.name).toBe('the key');
-		expect(cache.projects['p1']).toBe('proj');
-	});
-
-	it('routes rate policy scope names into the right map', () => {
-		const cache = mergeRatePolicyRows(emptyNameCache(), [
-			{ scope: 'subject', scope_id: 's1', scope_name: '周八' },
-			{ scope: 'project', scope_id: 'p1', scope_name: 'proj' },
-			{ scope: 'key', scope_id: 'k1', scope_name: 'k' }
-		] as never);
-		expect(cache.subjects['s1']?.name).toBe('周八');
-		expect(cache.projects['p1']).toBe('proj');
-		expect(cache.keys['k1']).toBeDefined();
 	});
 
 	it('merges usage rows with embedded names', () => {

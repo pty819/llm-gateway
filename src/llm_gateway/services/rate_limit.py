@@ -84,64 +84,77 @@ async def resolve_effective_rate_policy(
     from llm_gateway.services import subject_rate_override
     from llm_gateway.services.cache import policy_cache
 
-    # Per-subject Redis override: absolute highest priority. If a dimension is
-    # set here, it short-circuits the entire min() resolution for that
-    # dimension — the admin's explicit per-user limit wins over every other
-    # source (env defaults, key/project/subject RatePolicies). Read live from
-    # Redis every request (single GET, sub-millisecond) so an admin's edit
-    # takes effect immediately with no cache lag. Degrades open: Redis down →
-    # fall through to the normal PG-based path.
-    override = await subject_rate_override.get_override(redis, subject_id)
-
-    # The PG-based resolution result is still cached per (key, subject, project)
-    # for 30s. But when a Redis override is present we bypass that cache: the
-    # override is the live source of truth and must not be masked by a stale
-    # cached PG result. When no override exists, the cache is safe to use.
+    # The PG-based resolution result is cached per (key, subject, project) for
+    # 30s — ALWAYS, even when a Redis override exists. The PG base does not
+    # depend on the override, so there is no reason to re-run three scope
+    # queries on every request for overridden subjects (the old behavior).
+    # The live override is applied on top AFTER cache retrieval, so an admin's
+    # override edit still takes effect immediately with no cache lag.
     cache_key = f"rate:{key_id}:{subject_id}:{project_id}"
+    base = policy_cache.get(cache_key)
+    if base is None:
+        base = await _resolve_pg_rate_base(
+            session, key_id=key_id, subject_id=subject_id, project_id=project_id,
+            defaults=defaults,
+        )
+        policy_cache.set(cache_key, base)
+
+    # Per-subject Redis override: absolute highest priority, read live from
+    # Redis every request (single GET, sub-millisecond). If a dimension is set
+    # here, it short-circuits the min() resolution for that dimension — the
+    # admin's explicit per-user limit wins over every other source. Degrades
+    # open: Redis down → fall through to the PG-based result.
+    override = await subject_rate_override.get_override(redis, subject_id)
     if override is None:
-        cached = policy_cache.get(cache_key)
-        if cached is not None:
-            return cached
+        return base
+    return EffectiveRatePolicy(
+        requests_per_minute=(
+            override.rpm
+            if override.rpm is not None
+            else base.requests_per_minute
+        ),
+        concurrency_limit=(
+            override.concurrency
+            if override.concurrency is not None
+            else base.concurrency_limit
+        ),
+    )
+
+
+async def _resolve_pg_rate_base(
+    session: AsyncSession,
+    *,
+    key_id: UUID,
+    subject_id: UUID,
+    project_id: UUID,
+    defaults: Settings,
+) -> EffectiveRatePolicy:
+    """Effective policy from env defaults + ACTIVE RatePolicies, one query.
+
+    Used to be three sequential per-scope SELECTs; the tuple IN form fetches
+    all three scopes in a single round trip. min() resolution is unchanged:
+    every ACTIVE policy tightens the limit for its set dimensions.
+    """
+    from sqlalchemy import tuple_
 
     requests_per_minute = defaults.default_request_limit_per_minute
     concurrency_limit = defaults.default_concurrency_limit
-    for scope, scope_id in (
-        ("key", key_id),
-        ("subject", subject_id),
-        ("project", project_id),
-    ):
-        result = await session.execute(
-            select(RatePolicy).where(
-                col(RatePolicy.scope) == scope,
-                col(RatePolicy.scope_id) == scope_id,
-                col(RatePolicy.state) == ResourceState.ACTIVE,
-            )
+    result = await session.execute(
+        select(RatePolicy).where(
+            tuple_(col(RatePolicy.scope), col(RatePolicy.scope_id)).in_(
+                [("key", key_id), ("subject", subject_id), ("project", project_id)]
+            ),
+            col(RatePolicy.state) == ResourceState.ACTIVE,
         )
-        for policy in result.scalars().all():
-            if policy.requests_per_minute is not None:
-                requests_per_minute = min(
-                    requests_per_minute, policy.requests_per_minute
-                )
-            if policy.concurrency_limit is not None:
-                concurrency_limit = min(concurrency_limit, policy.concurrency_limit)
-
-    # Apply the Redis override last so it wins absolutely for the dimensions it
-    # covers. A None dimension leaves the PG-computed value in place.
-    if override is not None:
-        if override.concurrency is not None:
-            concurrency_limit = override.concurrency
-        if override.rpm is not None:
-            requests_per_minute = override.rpm
-
-    effective = EffectiveRatePolicy(
+    )
+    for policy in result.scalars().all():
+        if policy.requests_per_minute is not None:
+            requests_per_minute = min(requests_per_minute, policy.requests_per_minute)
+        if policy.concurrency_limit is not None:
+            concurrency_limit = min(concurrency_limit, policy.concurrency_limit)
+    return EffectiveRatePolicy(
         requests_per_minute=requests_per_minute, concurrency_limit=concurrency_limit
     )
-    # Only cache the PG-only result. A result that incorporates a live Redis
-    # override must not be cached, or an admin edit would be masked for up to
-    # the cache TTL.
-    if override is None:
-        policy_cache.set(cache_key, effective)
-    return effective
 
 
 async def check_request_rate(

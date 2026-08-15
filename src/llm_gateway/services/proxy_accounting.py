@@ -1,6 +1,8 @@
 from datetime import datetime
 from typing import Any
 
+from fastapi import status as http_status
+
 from llm_gateway.db.models import EndpointFamily, RequestOutcome, utcnow
 from llm_gateway.services.facts_queue import enqueue_fact
 from llm_gateway.services.security import AuthContext
@@ -12,9 +14,7 @@ def requested_model_alias(body: dict[str, Any]) -> str | None:
 
 
 def outcome_for_http_status(status_code: int) -> RequestOutcome:
-    from fastapi import status
-
-    if status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+    if status_code == http_status.HTTP_429_TOO_MANY_REQUESTS:
         return RequestOutcome.RATE_LIMITED
     return RequestOutcome.POLICY_DENIAL
 
