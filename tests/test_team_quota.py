@@ -1,4 +1,5 @@
-"""Team token quota: window math, check-any/charge-all semantics, hot-path integration."""
+"""Team token quota: window math, per-member budgets, check-any/charge-all,
+hot-path integration."""
 
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from llm_gateway.services.team_quota import (
     TeamQuotaContext,
     charge_team_quota,
     check_team_quota,
+    counter_key,
     current_window,
     resolve_team_quota,
     token_total_from_usage,
@@ -75,8 +77,13 @@ class BrokenRedis:
         return None
 
 
-def _ctx(pools: list[tuple[UUID, int]], window: str = "morning") -> TeamQuotaContext:
+def _ctx(
+    pools: list[tuple[UUID, int]],
+    window: str = "morning",
+    subject_id: UUID | None = None,
+) -> TeamQuotaContext:
     return TeamQuotaContext(
+        subject_id=subject_id or UUID(int=99),
         window=window,
         window_date=date(2026, 8, 15),
         window_end=datetime(2026, 8, 15, 13, 0, tzinfo=SHANGHAI),
@@ -160,6 +167,44 @@ async def test_charge_noop_for_zero_tokens():
     redis = FakeRedis()
     await charge_team_quota(redis, _ctx([(UUID(int=1), 100)]), 0)
     assert redis.values == {}
+
+
+async def test_same_team_members_have_independent_budgets():
+    """组上限对每个成员分别生效:同一组的两个人各自有自己的池。"""
+    team = UUID(int=1)
+    alice = UUID(int=11)
+    bob = UUID(int=12)
+    redis = FakeRedis()
+    alice_ctx = _ctx([(team, 100)], subject_id=alice)
+    bob_ctx = _ctx([(team, 100)], subject_id=bob)
+
+    # Alice 用满 100,还能超出一点(check-before-charge)。
+    await charge_team_quota(redis, alice_ctx, 100)
+    with pytest.raises(RateLimitExceeded, match="team_token_quota_exceeded"):
+        await check_team_quota(redis, alice_ctx)
+
+    # Bob 的预算完全不受 Alice 影响。
+    await check_team_quota(redis, bob_ctx)  # no raise
+    await charge_team_quota(redis, bob_ctx, 60)
+    await check_team_quota(redis, bob_ctx)  # still has 40
+
+    assert redis.values[counter_key(team, alice, "morning", date(2026, 8, 15))] == 100
+    assert redis.values[counter_key(team, bob, "morning", date(2026, 8, 15))] == 60
+
+
+async def test_multi_team_member_enjoys_largest_budget():
+    """A=400、B=500:同属两组的人合计可用到 500(取更大池,charge-all)。"""
+    team_a, team_b = UUID(int=1), UUID(int=2)
+    member = UUID(int=99)
+    redis = FakeRedis()
+    ctx = _ctx([(team_a, 400), (team_b, 500)], subject_id=member)
+
+    await charge_team_quota(redis, ctx, 420)  # A 已耗尽,B 还剩 80
+    await check_team_quota(redis, ctx)  # no raise: B 仍有余量
+
+    await charge_team_quota(redis, ctx, 80)  # 合计 500,两池全耗尽
+    with pytest.raises(RateLimitExceeded, match="team_token_quota_exceeded"):
+        await check_team_quota(redis, ctx)
 
 
 async def test_charge_swallows_redis_errors():
@@ -439,7 +484,7 @@ async def test_multi_team_charges_every_pool(
 
         window, window_date, _end = current_window()
         for team_id in (team_a, team_b):
-            key = f"llm_gateway:quota:tokens:{team_id}:{window}:{window_date:%Y%m%d}"
+            key = counter_key(team_id, gateway_fixture.subject_id, window, window_date)
             used = await redis_client.get(key)
             assert used is not None and int(used) == 60, (team_id, used)
     finally:
@@ -476,9 +521,10 @@ async def test_admin_token_quota_roundtrip(client):
     assert body["morning_tokens"] == 1000
     assert body["evening_tokens"] == 5000
     # Every window has a limit, so the current window must report one no
-    # matter when the suite runs.
+    # matter when the suite runs. Usage is per-member now — there is no
+    # team-level "used" number.
     assert body["current_window_limit"] is not None
-    assert body["current_window_used"] == 0
+    assert body["current_window_used"] is None
 
     listing = await client.get("/admin/team-token-quotas", headers=headers)
     assert listing.status_code == 200

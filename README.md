@@ -282,7 +282,9 @@ Both paths are OR'd together: a user can use a model if they have a direct entit
 
 ## Team Token Quotas (分时段「coding plan」)
 
-权限组可配置分时段的 token 消耗上限,类似团队共享的 coding plan。在管理台 **权限组** 页的「分时段 Token 配额」面板配置,每团队每窗口一个上限,留空 = 该时段不限量。
+权限组可配置分时段的 token 消耗上限。在管理台 **权限组** 页的「分时段 Token 配额」面板配置,每团队每窗口一个上限,留空 = 该时段不限量。
+
+**上限对组内每个成员分别生效**:设早/午/晚 = 50M,意味着组内每个成员各自有 50M 预算,成员之间不共享、不互相挤占。
 
 ### 时间窗(按 `LLM_GATEWAY_QUOTA_TIMEZONE` 时区,默认 `Asia/Shanghai`)
 
@@ -297,13 +299,14 @@ Both paths are OR'd together: a user can use a model if they have a direct entit
 ### 生效规则
 
 - 候选组 = 用户 ACTIVE 成员 + 组 ACTIVE + 对该模型有 ACTIVE 授权 + 本窗口配置了上限的权限组。
-- **准入 check-any**:任一候选组本窗口尚有余量即放行;全部耗尽返回 `429 team_token_quota_exceeded`(并落一条 RATE_LIMITED 请求事实)。
-- **记账 charge-all**:请求实际消耗的 token 从每个候选组的窗口池中扣减。多权限组用户享有各组预算的并集,每组总支出仍被各自上限封顶。
+- 计数按「成员 × 组 × 窗口」各自独立:每个成员在每个候选组里都有自己的计数器。
+- **准入 check-any**:该成员任一候选组本窗口尚有余量即放行;全部耗尽返回 `429 team_token_quota_exceeded`(并落一条 RATE_LIMITED 请求事实)。
+- **记账 charge-all**:请求实际消耗的 token 从该成员在每个候选组的计数器中扣减。同属 A(400)/B(500) 两组的成员因此享有**更大**的预算——合计可用到 500。
 - 未配置配额的组不参与限制;未走团队授权(entitlement 直通)但身处配额组的用户同样受限。
 - 准入是先检后扣:并发在途请求可能造成有界超扣(最多超出同时在途请求的 token 量),这是准入式配额的标准权衡。
 - Redis 故障时按 `LLM_GATEWAY_RATE_LIMIT_FAIL_CLOSED` 处理(与限流一致);扣减本身 best-effort,失败不阻断响应,request_facts 仍是最终对账依据。
 
-Admin API:`GET /admin/team-token-quotas`(含各团队当前窗口用量)、`GET|PUT /admin/teams/{id}/token-quota`。
+Admin API:`GET /admin/team-token-quotas`(各团队各窗上限)、`GET|PUT /admin/teams/{id}/token-quota`、`GET /admin/teams/{id}/token-quota/member-usage`(当前窗口按成员已用量)。
 
 ## Rate Limits
 

@@ -243,42 +243,91 @@ async def update_team(
     return team
 
 
-async def _attach_usage(
-    redis: Redis,
-    rows: list[TeamTokenQuota],
-    team_names: dict[UUID, str | None] | None = None,
-) -> list[dict]:
-    """Serialize quota rows with best-effort current-window usage."""
-    from llm_gateway.services.team_quota import counter_key, current_window
+def _quota_row_payload(
+    row: TeamTokenQuota, team_name: str | None = None
+) -> dict:
+    """Serialize a quota row. Limits apply per member (each member gets their
+    own budget), so there is no team-level "used" number anymore — per-member
+    usage is served by the member-usage endpoint for the teams drawer."""
+    from llm_gateway.services.team_quota import current_window
 
-    window, window_date, _end = current_window()
+    window, _window_date, _end = current_window()
     limit_by_window = {
         "morning": "morning_tokens",
         "afternoon": "afternoon_tokens",
         "evening": "evening_tokens",
     }
-    out: list[dict] = []
-    for row in rows:
-        item = {
-            "team_id": str(row.team_id),
-            "team_name": (team_names or {}).get(row.team_id),
-            "morning_tokens": row.morning_tokens,
-            "afternoon_tokens": row.afternoon_tokens,
-            "evening_tokens": row.evening_tokens,
-            "state": row.state.value,
-            "current_window": window,
-            "current_window_limit": getattr(row, limit_by_window[window]),
-            "current_window_used": None,
+    return {
+        "team_id": str(row.team_id),
+        "team_name": team_name,
+        "morning_tokens": row.morning_tokens,
+        "afternoon_tokens": row.afternoon_tokens,
+        "evening_tokens": row.evening_tokens,
+        "state": row.state.value,
+        "current_window": window,
+        "current_window_limit": getattr(row, limit_by_window[window]),
+        "current_window_used": None,
+    }
+
+
+@router.get("/teams/{team_id}/token-quota/member-usage")
+async def get_team_token_quota_member_usage(
+    team_id: UUID,
+    subject_ids: str = Query(max_length=20_000),
+    session: AsyncSession = Depends(session_dep),
+    redis: Redis = Depends(redis_dep),
+):
+    """Current-window per-member usage for the teams drawer. Limits are
+    per-member budgets, so the drawer shows each member's own used/limit
+    instead of a team aggregate (which would require scanning every member
+    counter)."""
+    from llm_gateway.services.team_quota import counter_key, current_window
+
+    await _get_or_404(session, Team, team_id)
+    ids = [item.strip() for item in subject_ids.split(",") if item.strip()]
+    if not ids or len(ids) > 500:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="subject_ids: 1-500 个逗号分隔 UUID",
+        )
+    try:
+        parsed = [UUID(item) for item in ids]
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid_subject_id"
+        ) from exc
+
+    result = await session.execute(
+        select(TeamTokenQuota).where(col(TeamTokenQuota.team_id) == team_id)
+    )
+    quota = result.scalar_one_or_none()
+    if quota is None or quota.state != ResourceState.ACTIVE:
+        return {"team_id": str(team_id), "window": None, "limit": None, "members": []}
+
+    window, window_date, _end = current_window()
+    limit_by_window = {
+        "morning": quota.morning_tokens,
+        "afternoon": quota.afternoon_tokens,
+        "evening": quota.evening_tokens,
+    }
+    limit = limit_by_window[window]
+    if limit is None:
+        return {"team_id": str(team_id), "window": window, "limit": None, "members": []}
+
+    try:
+        used_values = await redis.mget(
+            [counter_key(team_id, subject_id, window, window_date) for subject_id in parsed]
+        )
+    except RedisError:
+        used_values = [None] * len(parsed)
+    members = [
+        {
+            "subject_id": str(subject_id),
+            "used": int(used) if used is not None else 0,
         }
-        if item["current_window_limit"] is not None:
-            try:
-                key = counter_key(row.team_id, window, window_date)
-                used = await redis.get(key)
-                item["current_window_used"] = int(used) if used is not None else 0
-            except RedisError:
-                pass  # usage display degrades open; the quota itself is unaffected
-        out.append(item)
-    return out
+        for subject_id, used in zip(parsed, used_values, strict=True)
+    ]
+    return {"team_id": str(team_id), "window": window, "limit": limit, "members": members}
 
 
 @router.get("/team-token-quotas")
@@ -288,7 +337,6 @@ async def list_team_token_quotas(
     limit: int | None = Query(default=None, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(session_dep),
-    redis: Redis = Depends(redis_dep),
 ):
     base = select(TeamTokenQuota, Team.name).outerjoin(
         Team, col(TeamTokenQuota.team_id) == col(Team.id)
@@ -318,7 +366,7 @@ async def list_team_token_quotas(
     ).all()
     quotas = [quota for quota, _name in rows]
     names = {quota.team_id: name for quota, name in rows}
-    items = await _attach_usage(redis, quotas, names)
+    items = [_quota_row_payload(quota, names.get(quota.team_id)) for quota in quotas]
     return paginated(items, total, limit, offset)
 
 
@@ -326,7 +374,6 @@ async def list_team_token_quotas(
 async def get_team_token_quota(
     team_id: UUID,
     session: AsyncSession = Depends(session_dep),
-    redis: Redis = Depends(redis_dep),
 ):
     await _get_or_404(session, Team, team_id)
     result = await session.execute(
@@ -336,6 +383,7 @@ async def get_team_token_quota(
     if row is None:
         return {
             "team_id": str(team_id),
+            "team_name": None,
             "morning_tokens": None,
             "afternoon_tokens": None,
             "evening_tokens": None,
@@ -344,8 +392,7 @@ async def get_team_token_quota(
             "current_window_limit": None,
             "current_window_used": None,
         }
-    rows = await _attach_usage(redis, [row])
-    return rows[0]
+    return _quota_row_payload(row)
 
 
 @router.put("/teams/{team_id}/token-quota")

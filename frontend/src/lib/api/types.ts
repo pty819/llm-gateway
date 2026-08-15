@@ -147,6 +147,15 @@ export type TeamTokenQuotaRow = {
 	current_window_used: number | null;
 };
 
+/** 权限组抽屉「Token 配额」页签:当前窗口每个成员各自的已用/上限。
+ * 上限对每个成员分别生效,所以用量按成员返回,而非组汇总。 */
+export type TeamMemberQuotaUsage = {
+	team_id: string;
+	window: 'morning' | 'afternoon' | 'evening' | null;
+	limit: number | null;
+	members: Array<{ subject_id: string; used: number }>;
+};
+
 export type UpstreamTarget = Timestamped & {
 	id: string;
 	model_alias_id: string;

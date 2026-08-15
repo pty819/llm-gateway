@@ -1,20 +1,23 @@
-"""Per-team, time-windowed token quotas ("coding plan" style).
+"""Per-team, per-member, time-windowed token quotas ("coding plan" style).
 
 Semantics (see README「权限组分时段 Token 配额」):
 
+- A team's configured limit applies to EACH MEMBER INDIVIDUALLY: setting
+  早/午/晚 = 50M means every member of the team gets their own 50M budget
+  per window. Members do not share a pool.
 - Windows, evaluated in ``Settings.quota_timezone``:
   morning [08:00, 13:00), afternoon [13:00, 18:00), evening [18:00, next
   08:00). The evening window belongs to the date it starts on, so its counter
   key stays stable when the clock crosses midnight.
-- A team's candidate set for a request = teams where the subject has an
+- A member's candidate set for a request = teams where the subject has an
   ACTIVE membership, the team is ACTIVE, the team holds an ACTIVE
   ModelTeamGrant for the requested model, and the team has an ACTIVE quota
   row with a non-NULL limit for the current window.
 - Admission is check-any: the request passes while ANY candidate pool still
   has remaining budget. Charging is charge-all: the request's actual tokens
-  are deducted from EVERY candidate pool. A user in multiple quota'd teams
-  therefore enjoys the union of their budgets, and each team's total spend
-  is still capped by its own limit.
+  are deducted from the member's counter in EVERY candidate team. A member
+  of quota'd teams A (400) and B (500) therefore enjoys the larger budget:
+  they can spend up to 500 in total across the window.
 - Counters are check-before-charge, so concurrent in-flight requests can
   overshoot a limit by up to the tokens of the overlapping requests. That is
   the standard trade-off for admission-time quota and is accepted here.
@@ -72,8 +75,12 @@ _LIMIT_COLUMN_BY_WINDOW = {
 
 @dataclass(frozen=True)
 class TeamQuotaContext:
-    """Admission-time snapshot of the pools a request may draw from."""
+    """Admission-time snapshot of the pools a request may draw from.
 
+    ``subject_id`` scopes every counter: the same team's limit is tracked
+    separately for each member (per-member budgets, not a shared pool)."""
+
+    subject_id: UUID
     window: str
     window_date: date
     window_end: datetime  # aware, quota timezone
@@ -162,19 +169,25 @@ async def resolve_team_quota(
     if not pools:
         return None
     return TeamQuotaContext(
-        window=window, window_date=window_date, window_end=window_end, pools=pools
+        subject_id=subject_id,
+        window=window,
+        window_date=window_date,
+        window_end=window_end,
+        pools=pools,
     )
 
 
-def counter_key(team_id: UUID, window: str, window_date: date) -> str:
-    """Redis counter key for one team's window pool. Shared by the data plane
-    (check/charge) and the admin usage display so the format can never drift
-    between them."""
-    return f"{_QUOTA_KEY_PREFIX}:{team_id}:{window}:{window_date:%Y%m%d}"
+def counter_key(team_id: UUID, subject_id: UUID, window: str, window_date: date) -> str:
+    """Redis counter key for one member's budget in one team's window. Shared
+    by the data plane (check/charge) and the admin usage display so the format
+    can never drift between them."""
+    return (
+        f"{_QUOTA_KEY_PREFIX}:{team_id}:{subject_id}:{window}:{window_date:%Y%m%d}"
+    )
 
 
 def _counter_key(quota: TeamQuotaContext, team_id: UUID) -> str:
-    return counter_key(team_id, quota.window, quota.window_date)
+    return counter_key(team_id, quota.subject_id, quota.window, quota.window_date)
 
 
 async def check_team_quota(redis: Redis, quota: TeamQuotaContext) -> None:

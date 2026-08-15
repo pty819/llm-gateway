@@ -42,6 +42,7 @@
 		SubjectType,
 		Team,
 		TeamMembership,
+		TeamMemberQuotaUsage,
 		TeamOption,
 		TeamTokenQuotaRow,
 		UpstreamHealth,
@@ -250,6 +251,7 @@
 	// 权限组抽屉 / 项目详情抽屉的按需成员数据
 	let teamDrawerMembers = $state<TeamMembership[]>([]);
 	let teamDrawerGrants = $state<Inventory['modelTeamGrants']>([]);
+	let teamDrawerQuotaUsage = $state<TeamMemberQuotaUsage | null>(null);
 	let detailMembers = $state<ProjectMembership[]>([]);
 	let subjectOptionsTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1404,7 +1406,7 @@
 		return inventory.teamTokenQuotas.find((row) => row.team_id === teamId);
 	}
 
-	/** 权限组抽屉打开时按 team_id 拉成员/授权(全局列表分页后不再覆盖全部团队)。 */
+	/** 权限组抽屉打开时按 team_id 拉成员/授权/成员配额用量(全局列表分页后不再覆盖全部团队)。 */
 	async function refreshTeamDrawerData() {
 		const teamId = teamMembershipForm.team_id;
 		if (!teamId || detail?.kind !== 'team') return;
@@ -1416,6 +1418,17 @@
 		nameCache = mergeModelTeamGrantRows(nameCache, grants.items);
 		teamDrawerMembers = members.items;
 		teamDrawerGrants = grants.items;
+		// 配额:上限对每个成员分别生效,当前窗口的成员已用量按成员拉取
+		if (members.items.length) {
+			const usage = await api
+				.get<TeamMemberQuotaUsage>('/admin/teams/' + teamId + '/token-quota/member-usage', {
+					subject_ids: members.items.map((m) => m.subject_id).join(',')
+				})
+				.catch(() => null);
+			teamDrawerQuotaUsage = usage;
+		} else {
+			teamDrawerQuotaUsage = null;
+		}
 	}
 
 	/** 项目详情抽屉打开时按 project_id 拉成员。 */
@@ -2810,13 +2823,36 @@
 				</table>
 			</div>
 		{:else}
-			<p class="muted">时间窗：上午 8:00–13:00 · 下午 13:00–18:00 · 晚上 18:00–次日 8:00。留空 = 该时段不限量；多权限组叠加时任一有余量即放行，消耗计入所有配额组。</p>
+			<p class="muted">时间窗：上午 8:00–13:00 · 下午 13:00–18:00 · 晚上 18:00–次日 8:00。留空 = 该时段不限量。上限对组内<b>每个成员</b>分别生效：例如设 50M，则每个成员各自可用 50M；同属 A(400)/B(500) 两组的成员合计可用到 500。</p>
 			<div class="drawer-form">
 				<label>上午 token 上限<input type="number" min="0" bind:value={teamQuotaForm.morning} placeholder="留空不限" /></label>
 				<label>下午 token 上限<input type="number" min="0" bind:value={teamQuotaForm.afternoon} placeholder="留空不限" /></label>
 				<label>晚上 token 上限<input type="number" min="0" bind:value={teamQuotaForm.evening} placeholder="留空不限" /></label>
 			</div>
 			<QuotaChips row={teamQuotaRow(detailTeam.id)} />
+			{#if teamDrawerQuotaUsage && teamDrawerQuotaUsage.limit !== null}
+				<div class="quota-usage-block">
+					<h3>当前窗口成员用量 <span class="muted" style="font-size:12px;">（上限 {fmtNumber(teamDrawerQuotaUsage.limit)} 每人）</span></h3>
+					<div class="table-wrap">
+						<table>
+							<thead><tr><th>成员</th><th>已用 / 上限</th><th style="width:40%">进度</th></tr></thead>
+							<tbody>
+								{#each teamDrawerMembers as member}
+									{@const usage = teamDrawerQuotaUsage.members.find((m) => m.subject_id === member.subject_id)}
+									{@const used = usage?.used ?? 0}
+									{@const pct = Math.min(100, (used / teamDrawerQuotaUsage.limit) * 100)}
+									{@const tone = used >= teamDrawerQuotaUsage.limit ? 'danger' : used >= teamDrawerQuotaUsage.limit * 0.8 ? 'warn' : ''}
+									<tr>
+										<td>{membershipSubjectLabel(member)}</td>
+										<td class="mono">{fmtNumber(used)} / {fmtNumber(teamDrawerQuotaUsage.limit)}</td>
+										<td><div class="bar-track {tone}"><span style={`width: ${pct}%;`}></span></div></td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				</div>
+			{/if}
 			{#snippet footer()}
 				<button class="secondary" type="button" onclick={() => (detail = null)}>关闭</button>
 				<button type="button" onclick={saveTeamQuota} disabled={loading}>保存配额</button>
