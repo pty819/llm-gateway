@@ -892,7 +892,6 @@
 				fetchKeys(),
 				fetchModels(),
 				fetchUpstreams(),
-				fetchEntitlements(),
 				fetchModelTeamGrants(),
 				fetchTeams(),
 				fetchTeamMemberships(),
@@ -2345,45 +2344,7 @@
 								size={listPageSize}
 								onPage={(page) => { grantPage = page; void run(fetchModelTeamGrants); }}
 							/>
-						</section>
-				{:else if active === 'entitlements'}
-					<div class="toolbar">
-						<select
-							aria-label="按模型筛选授权"
-							value={entitlementModelFilter}
-							onchange={() => { entitlementPage = 1; void run(fetchEntitlements); }}
-						>
-							<option value="">全部模型</option>
-							{#each modelOptions as model}<option value={model.id}>{model.alias}</option>{/each}
-						</select>
-						<button type="button" onclick={() => { entitlementDrawerOpen = true; void fetchKeyOptions().catch(() => undefined); }}><Plus size={15} />创建授权</button>
-					</div>
-					<section class="panel flush">
-						<div class="table-wrap">
-							<table>
-								<thead><tr><th>模型</th><th>范围</th><th>状态</th></tr></thead>
-								<tbody>
-									{#each inventory.entitlements as entitlement}
-										<tr>
-											<td>{entitlement.model_alias ?? modelLabel(entitlement.model_alias_id)}</td>
-											<td>{entitlement.project_name ?? (entitlement.project_id ? projectLabel(entitlement.project_id) : entitlement.subject_name ?? (entitlement.subject_id ? subjectLabel(entitlement.subject_id) : entitlement.key_name ?? keyLabel(entitlement.gateway_key_id)))}</td>
-											<td><Switch checked={entitlement.state === 'active'} label="切换授权状态" onToggle={() => void setEntitlementState(entitlement.id, entitlement.state === 'active' ? 'disabled' : 'active')} /></td>
-										</tr>
-									{:else}
-										<tr><td colspan="3"><EmptyState title="暂无旧式授权" hint="权限组授权是首选；旧授权用于项目/用户/密钥级别的例外。" actionLabel="创建授权" onAction={() => (entitlementDrawerOpen = true)} /></td></tr>
-									{/each}
-								</tbody>
-							</table>
-						</div>
-						<Pagination
-							total={inventory.entitlementsTotal}
-							page={entitlementPage}
-							size={listPageSize}
-							onPage={(page) => { entitlementPage = page; void run(fetchEntitlements); }}
-							sizes={[20, 50, 100]}
-							onSizeChange={(size) => { listPageSize = size; entitlementPage = 1; void run(fetchEntitlements); }}
-						/>
-					</section>
+</section>
 				{:else if active === 'rate'}
 					<div class="toolbar">
 						<select

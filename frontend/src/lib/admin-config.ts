@@ -42,7 +42,6 @@ export const sections: Section[] = [
 	{ id: 'teams', label: '权限组', group: '访问控制', icon: UserPlus },
 	{ id: 'skill-market', label: 'Skill 市场', group: '市场', icon: Package },
 	{ id: 'mcp-market', label: 'MCP 市场', group: '市场', icon: Plug },
-	{ id: 'entitlements', label: '旧授权', group: '治理', icon: Shield },
 	{ id: 'rate', label: '限流', group: '治理', icon: Gauge },
 	{ id: 'usage', label: '用量', group: '数据', icon: Activity },
 	{ id: 'ranking', label: '排行榜', group: '数据', icon: Trophy },
