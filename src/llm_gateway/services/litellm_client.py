@@ -18,6 +18,15 @@ class LiteLLMCallResult:
 
 ANTHROPIC_DROP_PARAMS = True
 OPENAI_CHAT_COMPLETIONS_RESPONSES_PREFIX = "openai/chat_completions/"
+# Model prefixes whose /v1/responses traffic is bridged through a
+# chat-completions-shaped backend instead of the upstream's native /responses.
+BRIDGED_RESPONSES_PREFIXES = (
+    OPENAI_CHAT_COMPLETIONS_RESPONSES_PREFIX,
+    # LiteLLM has no native Anthropic Responses config, so aresponses routes
+    # anthropic/* models through the same generic completion bridge against
+    # the upstream's /v1/messages.
+    "anthropic/",
+)
 
 
 def configure_litellm_routing() -> None:
@@ -94,6 +103,43 @@ def uses_openai_chat_completions_upstream(model_alias: ModelAlias) -> bool:
     )
 
 
+def uses_bridged_responses_upstream(model_alias: ModelAlias) -> bool:
+    """True when /v1/responses traffic is bridged through a chat-completions-
+    shaped backend instead of the upstream's native /responses endpoint.
+
+    Bridged calls must send drop_params=True: clients like Codex always send
+    ``reasoning: {"effort": ...}``, which the bridge maps to the completion
+    param ``reasoning_effort``. LiteLLM then rejects that param with
+    UnsupportedParamsError for model names absent from its registry (any
+    custom/enterprise model name) — a deterministic failure for every Codex
+    request. Dropping the param is the right call on bridged paths: the
+    OpenAI/Anthropic chat backends either ignore reasoning hints or map them
+    natively, and silently dropping beats failing the whole stream.
+    """
+    litellm_model = model_alias.litellm_model.lower()
+    return litellm_model.startswith(BRIDGED_RESPONSES_PREFIXES)
+
+
+def effective_chat_litellm_model(model_alias: ModelAlias) -> str:
+    """Normalize a bridge-prefixed litellm_model for the chat-shaped entry
+    points (/v1/chat/completions and /v1/messages).
+
+    ``openai/chat_completions/<m>`` is a directive only the Responses path
+    understands: litellm's aresponses() rewrites it to ``openai/<m>`` plus the
+    bridge flag. Every other litellm entry (acompletion, anthropic_messages)
+    splits the string at the first slash and would send the literal
+    ``chat_completions/<m>`` as the upstream model name, which no upstream
+    serves. Rewrite it here so a bridge-prefixed alias works on all three
+    gateway protocols — everything lands on the upstream's /chat/completions.
+    """
+    litellm_model = model_alias.litellm_model
+    if litellm_model.lower().startswith(OPENAI_CHAT_COMPLETIONS_RESPONSES_PREFIX):
+        remainder = litellm_model[len(OPENAI_CHAT_COMPLETIONS_RESPONSES_PREFIX) :]
+        if remainder:
+            return f"openai/{remainder}"
+    return litellm_model
+
+
 async def check_upstream_health(
     upstream: UpstreamTarget, timeout_seconds: float = 10.0
 ) -> dict[str, Any]:
@@ -126,7 +172,7 @@ async def completion_once(
     body: dict[str, Any],
 ) -> LiteLLMCallResult:
     payload = dict(body)
-    payload["model"] = model_alias.litellm_model
+    payload["model"] = effective_chat_litellm_model(model_alias)
     response = await acompletion(
         api_base=upstream.base_url,
         api_key=_api_key(upstream),
@@ -164,7 +210,7 @@ async def completion_stream(
     body: dict[str, Any],
 ) -> AsyncGenerator[tuple[str, dict[str, Any] | None], None]:
     payload = dict(body)
-    payload["model"] = model_alias.litellm_model
+    payload["model"] = effective_chat_litellm_model(model_alias)
     payload["stream"] = True
     if "stream_options" not in payload:
         payload["stream_options"] = {"include_usage": True}
@@ -215,7 +261,7 @@ async def anthropic_messages_once(
     body: dict[str, Any],
 ) -> LiteLLMCallResult:
     payload = dict(body)
-    payload["model"] = model_alias.litellm_model
+    payload["model"] = effective_chat_litellm_model(model_alias)
     payload["drop_params"] = ANTHROPIC_DROP_PARAMS
     response = await anthropic_messages(
         api_base=upstream.base_url,
@@ -232,7 +278,7 @@ async def anthropic_messages_stream(
     body: dict[str, Any],
 ) -> AsyncGenerator[tuple[str, dict[str, Any] | None], None]:
     payload = dict(body)
-    payload["model"] = model_alias.litellm_model
+    payload["model"] = effective_chat_litellm_model(model_alias)
     payload["stream"] = True
     payload["drop_params"] = ANTHROPIC_DROP_PARAMS
     stream = await anthropic_messages(
@@ -265,6 +311,8 @@ async def responses_once(
     payload["model"] = model_alias.litellm_model
     if uses_openai_chat_completions_upstream(model_alias):
         payload["use_chat_completions_api"] = True
+    if uses_bridged_responses_upstream(model_alias):
+        payload["drop_params"] = True
     response = await aresponses(
         api_base=upstream.base_url,
         api_key=_api_key(upstream),
@@ -285,6 +333,8 @@ async def responses_stream(
     payload["stream"] = True
     if uses_openai_chat_completions_upstream(model_alias):
         payload["use_chat_completions_api"] = True
+    if uses_bridged_responses_upstream(model_alias):
+        payload["drop_params"] = True
     stream = await aresponses(
         api_base=upstream.base_url,
         api_key=_api_key(upstream),
