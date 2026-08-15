@@ -1,7 +1,9 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
@@ -12,7 +14,7 @@ from llm_gateway.api.admin._common import (
     _count_rows,
     _get_or_404,
 )
-from llm_gateway.api.deps import session_dep
+from llm_gateway.api.deps import redis_dep, session_dep
 from llm_gateway.db.models import (
     GatewayKey,
     ModelAlias,
@@ -22,12 +24,14 @@ from llm_gateway.db.models import (
     Subject,
     Team,
     TeamMembership,
+    TeamTokenQuota,
     ModelTeamGrant,
     utcnow,
 )
 from llm_gateway.services.resource_payloads import apply_model_patch, paginated
 from llm_gateway.services.facts import record_audit_event
 from llm_gateway.services.security import ensure_model_team_grant, ensure_team_membership
+from llm_gateway.services.team_quota import current_window
 
 
 router = APIRouter()
@@ -60,6 +64,15 @@ class TeamMembershipCreate(BaseModel):
 class ModelTeamGrantCreate(BaseModel):
     model_alias_id: UUID
     team_id: UUID
+
+
+class TeamTokenQuotaPayload(BaseModel):
+    """Full-replace quota config; NULL = unlimited for that window."""
+
+    morning_tokens: int | None = Field(default=None, ge=0, le=10_000_000_000)
+    afternoon_tokens: int | None = Field(default=None, ge=0, le=10_000_000_000)
+    evening_tokens: int | None = Field(default=None, ge=0, le=10_000_000_000)
+    state: ResourceState | None = None
 
 
 @router.post("/model-entitlements")
@@ -144,6 +157,118 @@ async def update_team(
     await session.commit()
     await session.refresh(team)
     return team
+
+
+async def _attach_usage(
+    redis: Redis, rows: list[TeamTokenQuota]
+) -> list[dict]:
+    """Serialize quota rows with best-effort current-window usage."""
+    from llm_gateway.services.team_quota import counter_key, current_window
+
+    window, window_date, _end = current_window()
+    limit_by_window = {
+        "morning": "morning_tokens",
+        "afternoon": "afternoon_tokens",
+        "evening": "evening_tokens",
+    }
+    out: list[dict] = []
+    for row in rows:
+        item = {
+            "team_id": str(row.team_id),
+            "morning_tokens": row.morning_tokens,
+            "afternoon_tokens": row.afternoon_tokens,
+            "evening_tokens": row.evening_tokens,
+            "state": row.state.value,
+            "current_window": window,
+            "current_window_limit": getattr(row, limit_by_window[window]),
+            "current_window_used": None,
+        }
+        if item["current_window_limit"] is not None:
+            try:
+                key = counter_key(row.team_id, window, window_date)
+                used = await redis.get(key)
+                item["current_window_used"] = int(used) if used is not None else 0
+            except RedisError:
+                pass  # usage display degrades open; the quota itself is unaffected
+        out.append(item)
+    return out
+
+
+@router.get("/team-token-quotas")
+async def list_team_token_quotas(
+    session: AsyncSession = Depends(session_dep),
+    redis: Redis = Depends(redis_dep),
+):
+    result = await session.execute(
+        select(TeamTokenQuota).order_by(col(TeamTokenQuota.created_at).desc())
+    )
+    return await _attach_usage(redis, list(result.scalars().all()))
+
+
+@router.get("/teams/{team_id}/token-quota")
+async def get_team_token_quota(
+    team_id: UUID,
+    session: AsyncSession = Depends(session_dep),
+    redis: Redis = Depends(redis_dep),
+):
+    await _get_or_404(session, Team, team_id)
+    result = await session.execute(
+        select(TeamTokenQuota).where(col(TeamTokenQuota.team_id) == team_id)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        return {
+            "team_id": str(team_id),
+            "morning_tokens": None,
+            "afternoon_tokens": None,
+            "evening_tokens": None,
+            "state": "ACTIVE",
+            "current_window": None,
+            "current_window_limit": None,
+            "current_window_used": None,
+        }
+    rows = await _attach_usage(redis, [row])
+    return rows[0]
+
+
+@router.put("/teams/{team_id}/token-quota")
+async def set_team_token_quota(
+    team_id: UUID,
+    payload: TeamTokenQuotaPayload,
+    session: AsyncSession = Depends(session_dep),
+):
+    await _get_or_404(session, Team, team_id)
+    result = await session.execute(
+        select(TeamTokenQuota).where(col(TeamTokenQuota.team_id) == team_id)
+    )
+    quota = result.scalar_one_or_none()
+    if quota is None:
+        quota = TeamTokenQuota(team_id=team_id)
+        session.add(quota)
+    quota.morning_tokens = payload.morning_tokens
+    quota.afternoon_tokens = payload.afternoon_tokens
+    quota.evening_tokens = payload.evening_tokens
+    if payload.state is not None:
+        quota.state = payload.state
+    quota.updated_at = utcnow()
+    await session.flush()
+    await record_audit_event(
+        session,
+        action="team.token_quota.set",
+        resource_type="team_token_quota",
+        resource_id=quota.id,
+        outcome="success",
+        detail={
+            "team_id": str(team_id),
+            "morning_tokens": payload.morning_tokens,
+            "afternoon_tokens": payload.afternoon_tokens,
+            "evening_tokens": payload.evening_tokens,
+            "state": payload.state.value if payload.state else None,
+        },
+    )
+    await session.commit()
+    await session.refresh(quota)
+    return quota
 
 
 @router.post("/team-memberships")

@@ -170,6 +170,25 @@ class ModelTeamGrant(TimestampMixin, table=True):
     state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
 
 
+class TeamTokenQuota(TimestampMixin, table=True):
+    """Per-team token budget per time-of-day window ("coding plan").
+
+    One row per team; NULL limit = unlimited for that window, DISABLED
+    state = the whole row is ignored (all windows unlimited). Windows are
+    morning [08:00,13:00), afternoon [13:00,18:00), evening [18:00, next
+    08:00), evaluated in the configured quota timezone.
+    """
+
+    __tablename__ = "team_token_quotas"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    team_id: UUID = Field(foreign_key="teams.id", index=True, unique=True)
+    morning_tokens: int | None = None
+    afternoon_tokens: int | None = None
+    evening_tokens: int | None = None
+    state: ResourceState = Field(default=ResourceState.ACTIVE, index=True)
+
+
 class UserSession(TimestampMixin, table=True):
     __tablename__ = "user_sessions"
 

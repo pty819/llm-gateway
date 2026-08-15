@@ -45,6 +45,13 @@ from llm_gateway.services.proxy_accounting import (
 from llm_gateway.services.runtime_metrics import tracked_runtime_connection
 from llm_gateway.services.security import AuthContext, authenticate_gateway_key
 from llm_gateway.services.streaming import HEARTBEAT_FRAME, iter_with_heartbeat
+from llm_gateway.services.team_quota import (
+    TeamQuotaContext,
+    charge_team_quota,
+    check_team_quota,
+    resolve_team_quota,
+    token_total_from_usage,
+)
 from llm_gateway.services.upstream_routing import touch_sticky_route
 
 
@@ -93,12 +100,22 @@ async def _prepare(
             requested_model=_requested_model(body),
             client_ip=client_ip,
         )
+        # Team token quota: admission snapshot taken once here (deterministic
+        # charging — the pools that authorized the request are the pools it
+        # draws from), check-any semantics inside.
+        quota = await resolve_team_quota(
+            session,
+            subject_id=auth.subject.id,
+            model_alias_id=route.model_alias.id,
+        )
+        if quota is not None:
+            await check_team_quota(redis, quota)
         await check_request_rate(
             redis,
             key_id=auth.key.id,
             limit=rate_policy.requests_per_minute,
         )
-        return route, rate_policy
+        return route, rate_policy, quota
     except PolicyDenied as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail=exc.reason
@@ -140,7 +157,7 @@ async def _resolve_proxy_context(
             raise
 
         try:
-            route, rate_policy = await _prepare(
+            route, rate_policy, quota = await _prepare(
                 session=session,
                 redis=redis,
                 settings=settings,
@@ -167,7 +184,7 @@ async def _resolve_proxy_context(
 
         _detach_proxy_context(session, auth, route)
         await session.rollback()
-        return auth, route, rate_policy
+        return auth, route, rate_policy, quota
 
 
 def _detach_proxy_context(session: AsyncSession, auth: AuthContext, route) -> None:
@@ -199,7 +216,7 @@ async def _proxy_endpoint(
     streaming = bool(body.get("stream"))
     started_at = utcnow()
     request_id = request.headers.get("x-request-id") or str(uuid4())
-    auth, route, rate_policy = await _resolve_proxy_context(
+    auth, route, rate_policy, quota = await _resolve_proxy_context(
         request=request,
         redis=redis,
         settings=settings,
@@ -228,6 +245,7 @@ async def _proxy_endpoint(
                 auth=auth,
                 route=route,
                 concurrency_key=concurrency_key,
+                quota=quota,
                 body=body,
                 started_at=started_at,
                 request_id=request_id,
@@ -262,6 +280,11 @@ async def _proxy_endpoint(
             usage=result.usage,
             endpoint=nonstream_endpoint,
         )
+        if quota is not None:
+            # Charge every admission-authorized pool; best-effort inside.
+            await charge_team_quota(
+                redis, quota, token_total_from_usage(result.usage)
+            )
         return JSONResponse(jsonable_encoder(_plain(result.response)))
     except RateLimitExceeded as exc:
         await _raise_rate_limited_after_route(
@@ -302,6 +325,7 @@ async def _stream_endpoint(
     auth: AuthContext,
     route,
     concurrency_key: str,
+    quota: TeamQuotaContext | None,
     body: dict[str, Any],
     started_at: datetime,
     request_id: str,
@@ -367,6 +391,16 @@ async def _stream_endpoint(
                     endpoint=stream_endpoint,
                 )
             )
+        if quota is not None and usage is not None and outcome in (
+            RequestOutcome.SUCCESS,
+            # A client disconnect still consumed upstream tokens (the stream
+            # ran partway); charge whatever usage we observed.
+            RequestOutcome.CLIENT_CANCELLED,
+        ):
+            with suppress(Exception, asyncio.CancelledError):
+                await asyncio.shield(
+                    charge_team_quota(redis, quota, token_total_from_usage(usage))
+                )
 
 
 @router.post("/v1/chat/completions")

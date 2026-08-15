@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     request_fact_timeout_seconds: int = Field(
         default=30, alias="LLM_GATEWAY_FACT_TIMEOUT_SECONDS"
     )
+    # Timezone (IANA name) in which team token-quota windows are evaluated:
+    # morning [08:00,13:00), afternoon [13:00,18:00), evening [18:00, next
+    # 08:00). Invalid names fall back to UTC with a logged warning.
+    quota_timezone: str = Field(
+        default="Asia/Shanghai", alias="LLM_GATEWAY_QUOTA_TIMEZONE"
+    )
     # Seconds between SSE keepalive comment frames sent to the client while the
     # upstream is silent (e.g. during long reasoning). Keeps the gateway->client
     # leg alive across proxies/dev servers that drop idle streaming connections.
