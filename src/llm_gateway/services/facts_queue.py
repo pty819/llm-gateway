@@ -53,19 +53,31 @@ async def _drain() -> None:
     try:
         # Keep draining while facts keep arriving; new enqueues during the loop
         # are picked up on the next iteration rather than waiting for a fresh
-        # task. Each fact commits in its own session so a single failure (bad
-        # enum, type error, constraint violation) is isolated and logged.
+        # task. One session per drain with a per-fact SAVEPOINT: a bad fact
+        # rolls back only its own savepoint (same isolation as the old
+        # one-session-per-fact loop) while K facts cost one BEGIN/COMMIT pair
+        # instead of K — bursts (429 storms, auth-failure floods) stop paying
+        # 3K round trips on the shared pool.
         while _pending:
             batch = list(_pending)
             _pending.clear()
-            for fact_kwargs, endpoint in batch:
-                try:
-                    async with AsyncSessionLocal() as session:
-                        await record_request_fact(session, **fact_kwargs)
-                        await session.commit()
-                except Exception:
-                    logger.exception(
-                        "fact_write_error endpoint=%s", endpoint
-                    )
+            try:
+                async with AsyncSessionLocal() as session:
+                    for fact_kwargs, endpoint in batch:
+                        try:
+                            async with session.begin_nested():
+                                await record_request_fact(session, **fact_kwargs)
+                        except Exception:
+                            logger.exception(
+                                "fact_write_error endpoint=%s", endpoint
+                            )
+                    await session.commit()
+            except Exception:
+                # Batch-level failure (connection loss, commit failure): log
+                # once; facts already dequeued above are lost, same as the old
+                # per-fact loop's tail on a dead connection.
+                logger.exception(
+                    "fact_batch_write_failed count=%d", len(batch)
+                )
     finally:
         _draining = False

@@ -5,18 +5,14 @@ from uuid import UUID
 from fastapi import (
     APIRouter,
     Depends,
-    File,
-    Form,
     HTTPException,
     Query,
     Request,
-    UploadFile,
     status,
 )
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
-from sqlalchemy import case, desc, func, select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
@@ -27,24 +23,13 @@ from llm_gateway.api.deps import (
     settings_dep,
     user_session_dep,
 )
-from llm_gateway.api.registry import (
-    _get_visible_mcp_or_404,
-    _get_visible_skill_or_404,
-)
+from llm_gateway.services.analytics import scoped_usage_ranking, scoped_usage_summary
 from llm_gateway.core.config import Settings
 from llm_gateway.db.models import (
     GatewayKey,
-    MCP,
-    McpTeamGrant,
-    McpVersion,
     Project,
     ProjectMembership,
-    RequestFact,
-    RequestOutcome,
     ResourceState,
-    Skill,
-    SkillTeamGrant,
-    SkillVersion,
     Subject,
     Team,
     TeamMembership,
@@ -62,33 +47,7 @@ from llm_gateway.services.policy import (
     list_subject_team_memberships,
     list_subject_team_names,
 )
-from llm_gateway.services.registry import (
-    SLUG_PATTERN,
-    create_or_append_mcp_version,
-    create_or_append_skill_version,
-    ensure_mcp_team_grant,
-    ensure_skill_team_grant,
-    get_latest_active_mcp_version,
-    get_latest_active_version,
-    get_mcp_by_owner_slug,
-    get_mcp_version_row,
-    get_skill_by_owner_slug,
-    get_skill_version,
-    increment_skill_download_count,
-    is_mcp_liked_by,
-    is_skill_liked_by,
-    list_visible_mcps,
-    list_visible_skills,
-    toggle_mcp_like,
-    toggle_skill_like,
-)
-from llm_gateway.services.resource_payloads import (
-    mcp_detail,
-    mcp_summary,
-    redact_gateway_key,
-    skill_detail,
-    skill_summary,
-)
+from llm_gateway.services.resource_payloads import redact_gateway_key
 from llm_gateway.services.rate_limit import RateLimitExceeded, check_login_rate
 from llm_gateway.services.security import (
     DUMMY_PASSWORD_HASH,
@@ -288,7 +247,7 @@ async def own_usage_summary(
     if start is None and end is None:
         end = utcnow()
         start = end - timedelta(days=30)
-    row = await _usage_summary_from_postgres(
+    row = await scoped_usage_summary(
         session,
         start=start,
         end=end,
@@ -420,7 +379,7 @@ async def managed_usage_summary(
                     detail="not_project_manager",
                 )
             project_ids = [resource_id]
-        row = await _usage_summary_from_postgres(
+        row = await scoped_usage_summary(
             session,
             start=start,
             end=end,
@@ -436,7 +395,7 @@ async def managed_usage_summary(
                 )
             team_ids = [resource_id]
         subject_ids = await _team_subject_ids(session, team_ids)
-        row = await _usage_summary_from_postgres(
+        row = await scoped_usage_summary(
             session,
             start=start,
             end=end,
@@ -481,7 +440,7 @@ async def managed_usage_ranking(
     # TeamMembership.state == ACTIVE），与 managed_usage_summary 的 team 分支一致。
     if scope == "project":
         await _require_project_manager(session, context.subject.id, resource_id)
-        ranking = await _usage_ranking_from_postgres(
+        ranking = await scoped_usage_ranking(
             session,
             start=start,
             end=end,
@@ -492,7 +451,7 @@ async def managed_usage_ranking(
     elif scope == "team":
         await _require_team_manager(session, context.subject.id, resource_id)
         subject_ids = await _team_subject_ids(session, [resource_id])
-        ranking = await _usage_ranking_from_postgres(
+        ranking = await scoped_usage_ranking(
             session,
             start=start,
             end=end,
@@ -912,171 +871,6 @@ def _normalize_usage_window(
     return normalize_naive_utc(start), normalize_naive_utc(end)
 
 
-async def _usage_summary_from_postgres(
-    session: AsyncSession,
-    *,
-    start: datetime | None,
-    end: datetime | None,
-    project_ids: list[UUID] | None = None,
-    subject_ids: list[UUID] | None = None,
-) -> dict[str, int]:
-    if project_ids is not None and not project_ids:
-        return _empty_usage_summary()
-    if subject_ids is not None and not subject_ids:
-        return _empty_usage_summary()
-    start, end = _normalize_usage_window(start, end)
-
-    total_tokens_expr = func.coalesce(
-        RequestFact.total_tokens,
-        func.coalesce(RequestFact.prompt_tokens, 0)
-        + func.coalesce(RequestFact.completion_tokens, 0),
-        0,
-    )
-    stmt = select(
-        func.count(col(RequestFact.id)),
-        func.coalesce(func.sum(RequestFact.prompt_tokens), 0),
-        func.coalesce(func.sum(RequestFact.completion_tokens), 0),
-        func.coalesce(func.sum(total_tokens_expr), 0),
-        func.coalesce(
-            func.sum(
-                case((col(RequestFact.outcome) == RequestOutcome.SUCCESS, 1), else_=0)
-            ),
-            0,
-        ),
-        func.coalesce(
-            func.sum(
-                case((col(RequestFact.outcome) != RequestOutcome.SUCCESS, 1), else_=0)
-            ),
-            0,
-        ),
-    )
-    if start is not None:
-        stmt = stmt.where(col(RequestFact.started_at) >= start)
-    if end is not None:
-        stmt = stmt.where(col(RequestFact.started_at) < end)
-    if project_ids is not None:
-        stmt = stmt.where(col(RequestFact.project_id).in_(project_ids))
-    if subject_ids is not None:
-        stmt = stmt.where(col(RequestFact.subject_id).in_(subject_ids))
-
-    row = (await session.execute(stmt)).one()
-    return {
-        "request_count": int(row[0] or 0),
-        "prompt_tokens": int(row[1] or 0),
-        "completion_tokens": int(row[2] or 0),
-        "total_tokens": int(row[3] or 0),
-        "success_count": int(row[4] or 0),
-        "failure_count": int(row[5] or 0),
-    }
-
-
-def _empty_usage_summary() -> dict[str, int]:
-    return {
-        "request_count": 0,
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-        "success_count": 0,
-        "failure_count": 0,
-    }
-
-
-async def _usage_ranking_from_postgres(
-    session: AsyncSession,
-    *,
-    start: datetime,
-    end: datetime,
-    project_ids: list[UUID] | None = None,
-    subject_ids: list[UUID] | None = None,
-    model: str | None = None,
-    limit: int = 20,
-) -> list[dict[str, Any]]:
-    """Per-subject usage ranking, sorted by total_tokens desc.
-
-    Mirrors _usage_summary_from_postgres (same total_tokens coalesce expression,
-    same Postgres aggregation) but groups by subject and orders by usage. Used by
-    the manager-facing ranking endpoint; the manager permission check happens in
-    the route handler before this runs. subject_id IS NULL rows are excluded to
-    match the admin ranking behavior.
-
-    Scope is selected by passing exactly one of ``project_ids`` (filter on
-    RequestFact.project_id) or ``subject_ids`` (filter on
-    RequestFact.subject_id, used for team scope where membership is derived via
-    TeamMembership). Empty lists short-circuit to [] like the summary builder.
-    """
-    start, end = _normalize_usage_window(start, end)
-    if project_ids is not None and not project_ids:
-        return []
-    if subject_ids is not None and not subject_ids:
-        return []
-
-    total_tokens_expr = func.coalesce(
-        RequestFact.total_tokens,
-        func.coalesce(RequestFact.prompt_tokens, 0)
-        + func.coalesce(RequestFact.completion_tokens, 0),
-        0,
-    )
-    stmt = (
-        select(
-            Subject.id.label("subject_id"),
-            Subject.name.label("subject_name"),
-            Subject.login_username.label("login_username"),
-            func.count(col(RequestFact.id)).label("request_count"),
-            func.coalesce(func.sum(RequestFact.prompt_tokens), 0).label("prompt_tokens"),
-            func.coalesce(func.sum(RequestFact.completion_tokens), 0).label("completion_tokens"),
-            func.coalesce(func.sum(total_tokens_expr), 0).label("total_tokens"),
-            func.coalesce(
-                func.sum(
-                    case((col(RequestFact.outcome) == RequestOutcome.SUCCESS, 1), else_=0)
-                ),
-                0,
-            ).label("success_count"),
-            func.coalesce(
-                func.sum(
-                    case((col(RequestFact.outcome) != RequestOutcome.SUCCESS, 1), else_=0)
-                ),
-                0,
-            ).label("failure_count"),
-        )
-        .select_from(RequestFact)
-        .outerjoin(Subject, RequestFact.subject_id == Subject.id)
-        .where(col(RequestFact.subject_id).isnot(None))
-    )
-    if project_ids is not None:
-        stmt = stmt.where(col(RequestFact.project_id).in_(project_ids))
-    if subject_ids is not None:
-        stmt = stmt.where(col(RequestFact.subject_id).in_(subject_ids))
-    # Conditionally apply time bounds so a half-specified window (only start or
-    # only end) behaves like _usage_summary_from_postgres rather than silently
-    # returning [] because `started_at < NULL` is always false.
-    if start is not None:
-        stmt = stmt.where(col(RequestFact.started_at) >= start)
-    if end is not None:
-        stmt = stmt.where(col(RequestFact.started_at) < end)
-    if model is not None:
-        stmt = stmt.where(col(RequestFact.model_alias) == model)
-    stmt = stmt.group_by(
-        Subject.id, Subject.name, Subject.login_username
-    ).order_by(
-        desc(text("total_tokens")), desc(text("request_count"))
-    ).limit(limit)
-    rows = (await session.execute(stmt)).all()
-    return [
-        {
-            "subject_id": str(row.subject_id),
-            "subject_name": row.subject_name or "无用户",
-            "login_username": row.login_username,
-            "request_count": int(row.request_count),
-            "prompt_tokens": int(row.prompt_tokens),
-            "completion_tokens": int(row.completion_tokens),
-            "total_tokens": int(row.total_tokens),
-            "success_count": int(row.success_count),
-            "failure_count": int(row.failure_count),
-        }
-        for row in rows
-    ]
-
-
 async def _personal_project(session: AsyncSession, subject: Subject) -> Project:
     result = await session.execute(
         select(Project)
@@ -1117,571 +911,3 @@ def _requires_real_name(subject: Subject) -> bool:
     name = subject.name.strip()
     username = normalize_username(subject.login_username or "")
     return not name or (bool(username) and normalize_username(name) == username)
-
-
-# ---- marketplace: self-service skill registry ----
-
-class SkillGrantCreate(BaseModel):
-    team_id: UUID
-
-
-@router.post("/registry/skills")
-async def upload_skill(
-    slug: str = Form(...),
-    name: str = Form(...),
-    version: str = Form(...),
-    summary: str | None = Form(default=None),
-    description: str | None = Form(default=None),
-    notes: str | None = Form(default=None),
-    file: UploadFile = File(...),
-    ctx=Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
-    settings=Depends(settings_dep),
-):
-    import re
-
-    if not re.match(SLUG_PATTERN, slug):
-        raise HTTPException(status_code=422, detail="invalid_slug")
-    zip_bytes = await file.read()
-    if len(zip_bytes) > settings.marketplace_skill_max_bytes:
-        raise HTTPException(status_code=413, detail="skill_too_large")
-    if not zip_bytes:
-        raise HTTPException(status_code=400, detail="empty_upload")
-    skill = await create_or_append_skill_version(
-        session,
-        actor=ctx.subject,
-        slug=slug,
-        name=name,
-        version=version,
-        summary=summary,
-        description=description,
-        notes=notes,
-        zip_bytes=zip_bytes,
-    )
-    await session.commit()
-    await session.refresh(skill)
-    return {"skill": skill_summary(skill, owner_name=ctx.subject.name)}
-
-
-@router.get("/registry/skills")
-async def list_my_skills(
-    ctx=Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
-):
-    from sqlalchemy import select as _select
-    from sqlmodel import col as _col
-
-    stmt = (
-        _select(Skill)
-        .where(_col(Skill.owner_subject_id) == ctx.subject.id)
-        .order_by(_col(Skill.updated_at).desc())
-    )
-    items = list((await session.execute(stmt)).scalars().all())
-    return {
-        "items": [skill_summary(s, owner_name=ctx.subject.name) for s in items],
-        "total": len(items),
-    }
-
-
-# ---- marketplace: browse (visible-to-me discovery) ----
-
-@router.get("/registry/skills/browse")
-async def browse_skills(
-    q: str | None = Query(default=None),
-    owner: str | None = Query(default=None),
-    page: int = Query(default=1, ge=1),
-    size: int | None = Query(default=None),
-    sort: str = Query(default="downloads"),
-    ctx=Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
-    settings: Settings = Depends(settings_dep),
-):
-    page_size = size or settings.marketplace_list_default_size
-    page_size = min(page_size, settings.marketplace_list_max_size)
-    offset = (page - 1) * page_size
-    items, total = await list_visible_skills(
-        session,
-        subject_id=ctx.subject.id,
-        q=q,
-        owner=owner,
-        limit=page_size,
-        offset=offset,
-        sort=sort,
-    )
-    owner_ids = {s.owner_subject_id for s in items}
-    owner_names: dict[UUID, str] = {}
-    if owner_ids:
-        rows = await session.execute(
-            select(Subject.id, Subject.name).where(col(Subject.id).in_(owner_ids))
-        )
-        owner_names = {row[0]: row[1] for row in rows.all()}
-    return {
-        "items": [
-            skill_summary(s, owner_names.get(s.owner_subject_id)) for s in items
-        ],
-        "total": total,
-        "page": page,
-        "size": page_size,
-    }
-
-
-@router.get("/registry/skills/browse/{owner}/{slug}")
-async def browse_skill_detail(
-    owner: str,
-    slug: str,
-    ctx=Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
-):
-    skill = await _get_visible_skill_or_404(
-        session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
-    )
-    versions = list(
-        (
-            await session.execute(
-                select(SkillVersion)
-                .where(
-                    col(SkillVersion.skill_id) == skill.id,
-                    col(SkillVersion.state) == ResourceState.ACTIVE,
-                )
-                .order_by(col(SkillVersion.created_at).desc())
-            )
-        ).scalars().all()
-    )
-    grants = list(
-        (
-            await session.execute(
-                select(SkillTeamGrant).where(col(SkillTeamGrant.skill_id) == skill.id)
-            )
-        ).scalars().all()
-    )
-    owner_obj = await session.get(Subject, skill.owner_subject_id)
-    liked_by_me = await is_skill_liked_by(
-        session, subject_id=ctx.subject.id, skill_id=skill.id
-    )
-    return skill_detail(
-        skill, versions, grants,
-        owner_name=owner_obj.name if owner_obj else None,
-        readme=skill.readme, liked_by_me=liked_by_me,
-    )
-
-
-@router.get("/registry/skills/browse/{owner}/{slug}/download")
-async def browse_skill_download(
-    owner: str,
-    slug: str,
-    version: str = Query(default="latest"),
-    ctx=Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
-):
-    skill = await _get_visible_skill_or_404(
-        session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
-    )
-    if version == "latest":
-        sv = await get_latest_active_version(session, skill=skill)
-    else:
-        sv = await get_skill_version(session, skill_id=skill.id, version=version)
-    if sv is None:
-        raise HTTPException(status_code=404, detail="version_not_found")
-    await increment_skill_download_count(session, skill_id=skill.id)
-    await session.commit()
-    import io as _io
-
-    return StreamingResponse(
-        _io.BytesIO(sv.content_blob),
-        media_type="application/zip",
-        headers={
-            "Content-Disposition": f'attachment; filename="{slug}-{sv.version}.zip"',
-            "X-Content-SHA256": sv.content_sha256,
-            "ETag": f'"{sv.content_sha256}"',
-        },
-    )
-
-
-@router.post("/registry/skills/browse/{owner}/{slug}/like")
-async def browse_skill_like(
-    owner: str,
-    slug: str,
-    ctx=Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
-):
-    skill = await _get_visible_skill_or_404(
-        session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
-    )
-    skill = await toggle_skill_like(
-        session, subject_id=ctx.subject.id, skill_id=skill.id
-    )
-    await session.commit()
-    return {"liked_by_me": True, "like_count": skill.like_count}
-
-
-@router.delete("/registry/skills/browse/{owner}/{slug}/like")
-async def browse_skill_unlike(
-    owner: str,
-    slug: str,
-    ctx=Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
-):
-    skill = await _get_visible_skill_or_404(
-        session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
-    )
-    skill = await toggle_skill_like(
-        session, subject_id=ctx.subject.id, skill_id=skill.id
-    )
-    await session.commit()
-    return {"liked_by_me": False, "like_count": skill.like_count}
-
-
-async def _require_owned_skill(session, ctx, slug, include_disabled=False):
-    skill = await get_skill_by_owner_slug(
-        session, owner_id=ctx.subject.id, slug=slug, include_disabled=include_disabled
-    )
-    if skill is None or skill.owner_subject_id != ctx.subject.id:
-        raise HTTPException(status_code=404, detail="artifact_not_found")
-    return skill
-
-
-@router.get("/registry/skills/me/{slug}/grants")
-async def list_my_skill_grants(
-    slug: str,
-    ctx=Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
-):
-    skill = await _require_owned_skill(session, ctx, slug)
-    from sqlalchemy import select as _select
-    from sqlmodel import col as _col
-
-    rows = (
-        await session.execute(
-            _select(SkillTeamGrant).where(_col(SkillTeamGrant.skill_id) == skill.id)
-        )
-    ).scalars().all()
-    items = [
-        {
-            "id": str(g.id),
-            "skill_id": str(g.skill_id),
-            "team_id": str(g.team_id),
-            "state": g.state.value if hasattr(g.state, "value") else g.state,
-        }
-        for g in rows
-    ]
-    return {"items": items, "total": len(items)}
-
-
-@router.post("/registry/skills/me/{slug}/grants")
-async def create_my_skill_grant(
-    slug: str,
-    payload: SkillGrantCreate,
-    ctx=Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
-):
-    skill = await _require_owned_skill(session, ctx, slug)
-    team = await session.get(Team, payload.team_id)
-    if team is None:
-        raise HTTPException(status_code=404, detail="team_not_found")
-    grant = await ensure_skill_team_grant(
-        session, skill_id=skill.id, team_id=payload.team_id
-    )
-    await session.commit()
-    await session.refresh(grant)
-    return {
-        "grant": {
-            "id": str(grant.id),
-            "skill_id": str(grant.skill_id),
-            "team_id": str(grant.team_id),
-            "state": grant.state.value if hasattr(grant.state, "value") else grant.state,
-        }
-    }
-
-
-@router.patch("/registry/skills/me/{slug}/grants/{grant_id}/state")
-async def patch_my_skill_grant_state(
-    slug: str,
-    grant_id: UUID,
-    payload: dict,
-    ctx=Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
-):
-    skill = await _require_owned_skill(session, ctx, slug)
-    grant = await session.get(SkillTeamGrant, grant_id)
-    if grant is None or grant.skill_id != skill.id:
-        raise HTTPException(status_code=404, detail="grant_not_found")
-    new_state = payload.get("state")
-    if new_state not in ("active", "disabled"):
-        raise HTTPException(status_code=422, detail="invalid_state")
-    grant.state = ResourceState(new_state)
-    grant.updated_at = utcnow()
-    await session.commit()
-    await session.refresh(grant)
-    return {
-        "grant": {
-            "id": str(grant.id),
-            "skill_id": str(grant.skill_id),
-            "team_id": str(grant.team_id),
-            "state": grant.state.value if hasattr(grant.state, "value") else grant.state,
-        }
-    }
-
-
-# ---- marketplace: self-service MCP registry ----
-
-class McpGrantCreate(BaseModel):
-    team_id: UUID
-
-
-@router.post("/registry/mcps")
-async def publish_mcp(
-    payload: dict,
-    ctx=Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
-):
-    slug = payload.get("slug")
-    name = payload.get("name")
-    version = payload.get("version")
-    if not slug or not name or not version:
-        raise HTTPException(status_code=422, detail="missing_required_field")
-    import re
-
-    if not re.match(SLUG_PATTERN, slug):
-        raise HTTPException(status_code=422, detail="invalid_slug")
-    mcp = await create_or_append_mcp_version(
-        session,
-        actor=ctx.subject,
-        slug=slug,
-        name=name,
-        version=version,
-        summary=payload.get("summary"),
-        description=payload.get("description"),
-        notes=payload.get("notes"),
-        config=payload.get("config") or {},
-        readme=payload.get("readme"),
-    )
-    await session.commit()
-    await session.refresh(mcp)
-    return {"mcp": mcp_summary(mcp, owner_name=ctx.subject.name)}
-
-
-@router.get("/registry/mcps")
-async def list_my_mcps(
-    ctx=Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
-):
-    from sqlalchemy import select as _select
-    from sqlmodel import col as _col
-
-    stmt = (
-        _select(MCP)
-        .where(_col(MCP.owner_subject_id) == ctx.subject.id)
-        .order_by(_col(MCP.updated_at).desc())
-    )
-    items = list((await session.execute(stmt)).scalars().all())
-    return {
-        "items": [mcp_summary(m, owner_name=ctx.subject.name) for m in items],
-        "total": len(items),
-    }
-
-
-# ---- marketplace: browse (visible-to-me discovery) ----
-
-@router.get("/registry/mcps/browse")
-async def browse_mcps(
-    q: str | None = Query(default=None),
-    owner: str | None = Query(default=None),
-    page: int = Query(default=1, ge=1),
-    size: int | None = Query(default=None),
-    sort: str = Query(default="downloads"),
-    ctx=Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
-    settings: Settings = Depends(settings_dep),
-):
-    page_size = size or settings.marketplace_list_default_size
-    page_size = min(page_size, settings.marketplace_list_max_size)
-    offset = (page - 1) * page_size
-    items, total = await list_visible_mcps(
-        session,
-        subject_id=ctx.subject.id,
-        q=q,
-        owner=owner,
-        limit=page_size,
-        offset=offset,
-        sort=sort,
-    )
-    owner_ids = {m.owner_subject_id for m in items}
-    owner_names: dict[UUID, str] = {}
-    if owner_ids:
-        rows = await session.execute(
-            select(Subject.id, Subject.name).where(col(Subject.id).in_(owner_ids))
-        )
-        owner_names = {row[0]: row[1] for row in rows.all()}
-    return {
-        "items": [mcp_summary(m, owner_names.get(m.owner_subject_id)) for m in items],
-        "total": total,
-        "page": page,
-        "size": page_size,
-    }
-
-
-@router.get("/registry/mcps/browse/{owner}/{slug}")
-async def browse_mcp_detail(
-    owner: str,
-    slug: str,
-    ctx=Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
-):
-    mcp = await _get_visible_mcp_or_404(
-        session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
-    )
-    versions = list(
-        (
-            await session.execute(
-                select(McpVersion)
-                .where(
-                    col(McpVersion.mcp_id) == mcp.id,
-                    col(McpVersion.state) == ResourceState.ACTIVE,
-                )
-                .order_by(col(McpVersion.created_at).desc())
-            )
-        ).scalars().all()
-    )
-    grants = list(
-        (
-            await session.execute(
-                select(McpTeamGrant).where(col(McpTeamGrant.mcp_id) == mcp.id)
-            )
-        ).scalars().all()
-    )
-    latest = await get_latest_active_mcp_version(session, mcp=mcp)
-    owner_obj = await session.get(Subject, mcp.owner_subject_id)
-    reveal = mcp.owner_subject_id == ctx.subject.id
-    liked_by_me = await is_mcp_liked_by(
-        session, subject_id=ctx.subject.id, mcp_id=mcp.id
-    )
-    return mcp_detail(
-        mcp, versions, latest, grants,
-        owner_name=owner_obj.name if owner_obj else None,
-        reveal=reveal, liked_by_me=liked_by_me, readme=mcp.readme,
-    )
-
-
-@router.post("/registry/mcps/browse/{owner}/{slug}/like")
-async def browse_mcp_like(
-    owner: str,
-    slug: str,
-    ctx=Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
-):
-    mcp = await _get_visible_mcp_or_404(
-        session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
-    )
-    mcp = await toggle_mcp_like(
-        session, subject_id=ctx.subject.id, mcp_id=mcp.id
-    )
-    await session.commit()
-    return {"liked_by_me": True, "like_count": mcp.like_count}
-
-
-@router.delete("/registry/mcps/browse/{owner}/{slug}/like")
-async def browse_mcp_unlike(
-    owner: str,
-    slug: str,
-    ctx=Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
-):
-    mcp = await _get_visible_mcp_or_404(
-        session, owner_name=owner, slug=slug, subject_id=ctx.subject.id
-    )
-    mcp = await toggle_mcp_like(
-        session, subject_id=ctx.subject.id, mcp_id=mcp.id
-    )
-    await session.commit()
-    return {"liked_by_me": False, "like_count": mcp.like_count}
-
-
-async def _require_owned_mcp(session, ctx, slug, include_disabled=False):
-    mcp = await get_mcp_by_owner_slug(
-        session, owner_id=ctx.subject.id, slug=slug, include_disabled=include_disabled
-    )
-    if mcp is None or mcp.owner_subject_id != ctx.subject.id:
-        raise HTTPException(status_code=404, detail="artifact_not_found")
-    return mcp
-
-
-@router.get("/registry/mcps/me/{slug}/grants")
-async def list_my_mcp_grants(
-    slug: str,
-    ctx=Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
-):
-    mcp = await _require_owned_mcp(session, ctx, slug)
-    from sqlalchemy import select as _select
-    from sqlmodel import col as _col
-
-    rows = (
-        await session.execute(
-            _select(McpTeamGrant).where(_col(McpTeamGrant.mcp_id) == mcp.id)
-        )
-    ).scalars().all()
-    items = [
-        {
-            "id": str(g.id),
-            "mcp_id": str(g.mcp_id),
-            "team_id": str(g.team_id),
-            "state": g.state.value if hasattr(g.state, "value") else g.state,
-        }
-        for g in rows
-    ]
-    return {"items": items, "total": len(items)}
-
-
-@router.post("/registry/mcps/me/{slug}/grants")
-async def create_my_mcp_grant(
-    slug: str,
-    payload: McpGrantCreate,
-    ctx=Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
-):
-    mcp = await _require_owned_mcp(session, ctx, slug)
-    team = await session.get(Team, payload.team_id)
-    if team is None:
-        raise HTTPException(status_code=404, detail="team_not_found")
-    grant = await ensure_mcp_team_grant(
-        session, mcp_id=mcp.id, team_id=payload.team_id
-    )
-    await session.commit()
-    await session.refresh(grant)
-    return {
-        "grant": {
-            "id": str(grant.id),
-            "mcp_id": str(grant.mcp_id),
-            "team_id": str(grant.team_id),
-            "state": grant.state.value if hasattr(grant.state, "value") else grant.state,
-        }
-    }
-
-
-@router.patch("/registry/mcps/me/{slug}/grants/{grant_id}/state")
-async def patch_my_mcp_grant_state(
-    slug: str,
-    grant_id: UUID,
-    payload: dict,
-    ctx=Depends(user_session_dep),
-    session: AsyncSession = Depends(session_dep),
-):
-    mcp = await _require_owned_mcp(session, ctx, slug)
-    grant = await session.get(McpTeamGrant, grant_id)
-    if grant is None or grant.mcp_id != mcp.id:
-        raise HTTPException(status_code=404, detail="grant_not_found")
-    new_state = payload.get("state")
-    if new_state not in ("active", "disabled"):
-        raise HTTPException(status_code=422, detail="invalid_state")
-    grant.state = ResourceState(new_state)
-    grant.updated_at = utcnow()
-    await session.commit()
-    await session.refresh(grant)
-    return {
-        "grant": {
-            "id": str(grant.id),
-            "mcp_id": str(grant.mcp_id),
-            "team_id": str(grant.team_id),
-            "state": grant.state.value if hasattr(grant.state, "value") else grant.state,
-        }
-    }

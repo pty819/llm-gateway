@@ -19,32 +19,20 @@ from starlette.responses import JSONResponse
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.streamable_http_manager import TransportSecuritySettings
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import col
 
-from llm_gateway.api.registry import _get_visible_mcp_or_404, _get_visible_skill_or_404
-from llm_gateway.db.models import (
-    McpTeamGrant,
-    McpVersion,
-    ResourceState,
-    SkillTeamGrant,
-    SkillVersion,
-    Subject,
-)
 from llm_gateway.services.registry import (
-    get_latest_active_mcp_version,
+    assemble_mcp_detail,
+    assemble_skill_detail,
     get_latest_active_version,
     get_skill_version,
+    get_visible_mcp_or_404,
+    get_visible_skill_or_404,
     list_visible_mcps,
     list_visible_skills,
+    resolve_owner_names,
 )
-from llm_gateway.services.resource_payloads import (
-    mcp_detail,
-    mcp_summary,
-    skill_detail,
-    skill_summary,
-)
+from llm_gateway.services.resource_payloads import mcp_summary, skill_summary
 from llm_gateway.services.security import AuthContext, authenticate_gateway_key
 
 # Scope key under which the resolved AuthContext is stored by the auth middleware.
@@ -77,15 +65,11 @@ async def _get_session(ctx: Context) -> AsyncSession:
 async def _resolve_owner_names(
     session: AsyncSession, items: list[Any]
 ) -> dict[Any, str]:
-    """Map owner_subject_id -> Subject.name for the given items (like registry.py)."""
-    owner_ids = {getattr(i, "owner_subject_id") for i in items}
-    owner_names: dict[Any, str] = {}
-    if owner_ids:
-        rows = await session.execute(
-            select(Subject.id, Subject.name).where(col(Subject.id).in_(owner_ids))
-        )
-        owner_names = {row[0]: row[1] for row in rows.all()}
-    return owner_names
+    """Map owner_subject_id -> Subject.name for the given items (shared helper
+    in services/registry.py, also used by the HTTP list endpoints)."""
+    return await resolve_owner_names(
+        session, owner_ids={getattr(i, "owner_subject_id") for i in items}
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -149,36 +133,15 @@ async def get_skill(owner: str, slug: str, ctx: Context = None) -> dict[str, Any
     auth = await _get_auth(ctx)
     session = await _get_session(ctx)
     try:
-        skill = await _get_visible_skill_or_404(
+        skill = await get_visible_skill_or_404(
             session, owner_name=owner, slug=slug, subject_id=auth.subject.id
         )
-        versions = list(
-            (
-                await session.execute(
-                    select(SkillVersion)
-                    .where(
-                        col(SkillVersion.skill_id) == skill.id,
-                        col(SkillVersion.state) == ResourceState.ACTIVE,
-                    )
-                    .order_by(col(SkillVersion.created_at).desc())
-                )
-            ).scalars().all()
-        )
-        grants = list(
-            (
-                await session.execute(
-                    select(SkillTeamGrant).where(col(SkillTeamGrant.skill_id) == skill.id)
-                )
-            ).scalars().all()
-        )
-        owner_obj = await session.get(Subject, skill.owner_subject_id)
-        return skill_detail(
-            skill,
-            versions,
-            grants,
-            owner_name=owner_obj.name if owner_obj else None,
-            readme=skill.readme,
-            liked_by_me=False,
+        return await assemble_skill_detail(
+            session,
+            skill=skill,
+            viewer_subject_id=auth.subject.id,
+            include_readme=True,
+            include_likes=False,
         )
     finally:
         await session.close()
@@ -196,7 +159,7 @@ async def download_skill(
     auth = await _get_auth(ctx)
     session = await _get_session(ctx)
     try:
-        skill = await _get_visible_skill_or_404(
+        skill = await get_visible_skill_or_404(
             session, owner_name=owner, slug=slug, subject_id=auth.subject.id
         )
         if version == "latest":
@@ -261,40 +224,15 @@ async def get_mcp(owner: str, slug: str, ctx: Context = None) -> dict[str, Any]:
     auth = await _get_auth(ctx)
     session = await _get_session(ctx)
     try:
-        mcp_obj = await _get_visible_mcp_or_404(
+        mcp_obj = await get_visible_mcp_or_404(
             session, owner_name=owner, slug=slug, subject_id=auth.subject.id
         )
-        versions = list(
-            (
-                await session.execute(
-                    select(McpVersion)
-                    .where(
-                        col(McpVersion.mcp_id) == mcp_obj.id,
-                        col(McpVersion.state) == ResourceState.ACTIVE,
-                    )
-                    .order_by(col(McpVersion.created_at).desc())
-                )
-            ).scalars().all()
-        )
-        grants = list(
-            (
-                await session.execute(
-                    select(McpTeamGrant).where(col(McpTeamGrant.mcp_id) == mcp_obj.id)
-                )
-            ).scalars().all()
-        )
-        latest = await get_latest_active_mcp_version(session, mcp=mcp_obj)
-        owner_obj = await session.get(Subject, mcp_obj.owner_subject_id)
-        reveal = mcp_obj.owner_subject_id == auth.subject.id
-        return mcp_detail(
-            mcp_obj,
-            versions,
-            latest,
-            grants,
-            owner_name=owner_obj.name if owner_obj else None,
-            reveal=reveal,
-            readme=mcp_obj.readme,
-            liked_by_me=False,
+        return await assemble_mcp_detail(
+            session,
+            mcp=mcp_obj,
+            viewer_subject_id=auth.subject.id,
+            include_readme=True,
+            include_likes=False,
         )
     finally:
         await session.close()
@@ -314,23 +252,16 @@ async def _auth_middleware(scope, receive, send):
         await _mcp_app(scope, receive, send)
         return
 
+    from starlette.requests import Request
+
+    from llm_gateway.api.deps import raw_bearer_token
     from llm_gateway.db.session import AsyncSessionLocal
 
-    auth_header = ""
-    for key, value in scope.get("headers", []):
-        if key == b"authorization":
-            auth_header = value.decode("latin-1")
-            break
-        if key == b"x-api-key":
-            auth_header = value.decode("latin-1")
-            break
-
-    raw_key: str | None = None
-    if auth_header.lower().startswith("bearer "):
-        raw_key = auth_header[7:].strip()
-    elif auth_header:
-        raw_key = auth_header.strip()
-
+    # Header extraction goes through the same shared helper as every FastAPI
+    # route (Authorization: Bearer ... or x-api-key) — this used to be a
+    # hand-rolled third copy of the parsing with slightly different edge-case
+    # behavior for non-bearer Authorization values.
+    raw_key = raw_bearer_token(Request(scope))
     if not raw_key:
         resp = JSONResponse(
             status_code=401, content={"detail": "missing_gateway_key"}

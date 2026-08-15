@@ -41,7 +41,7 @@ async def test_usage_ranking_groups_by_subject_and_sorts_by_total_tokens():
 
     from llm_gateway.db.models import Project, Subject, SubjectType, utcnow
     from llm_gateway.db.session import AsyncSessionLocal
-    from llm_gateway.api.auth import _usage_ranking_from_postgres
+    from llm_gateway.services.analytics import scoped_usage_ranking
 
     async with AsyncSessionLocal() as session:
         project = Project(name=f"rank-test-{uuid4().hex}", owner_subject_id=None)
@@ -63,7 +63,7 @@ async def test_usage_ranking_groups_by_subject_and_sorts_by_total_tokens():
     now = utcnow()
     start = now - timedelta(days=1)
     async with AsyncSessionLocal() as session:
-        ranking = await _usage_ranking_from_postgres(
+        ranking = await scoped_usage_ranking(
             session, start=start, end=now + timedelta(hours=1), project_ids=[project_id], limit=20
         )
 
@@ -82,7 +82,7 @@ async def test_usage_ranking_filters_by_model():
 
     from llm_gateway.db.models import Project, Subject, SubjectType, utcnow
     from llm_gateway.db.session import AsyncSessionLocal
-    from llm_gateway.api.auth import _usage_ranking_from_postgres
+    from llm_gateway.services.analytics import scoped_usage_ranking
 
     async with AsyncSessionLocal() as session:
         project = Project(name=f"rank-model-{uuid4().hex}", owner_subject_id=None)
@@ -101,7 +101,7 @@ async def test_usage_ranking_filters_by_model():
     now = utcnow()
     start = now - timedelta(days=1)
     async with AsyncSessionLocal() as session:
-        ranking = await _usage_ranking_from_postgres(
+        ranking = await scoped_usage_ranking(
             session, start=start, end=now + timedelta(hours=1), project_ids=[project_id], model="model-a", limit=20
         )
 
@@ -115,12 +115,12 @@ async def test_usage_ranking_empty_project_returns_empty_list():
 
     from llm_gateway.db.models import utcnow
     from llm_gateway.db.session import AsyncSessionLocal
-    from llm_gateway.api.auth import _usage_ranking_from_postgres
+    from llm_gateway.services.analytics import scoped_usage_ranking
 
     now = utcnow()
     start = now - timedelta(days=1)
     async with AsyncSessionLocal() as session:
-        ranking = await _usage_ranking_from_postgres(
+        ranking = await scoped_usage_ranking(
             session, start=start, end=now + timedelta(hours=1), project_ids=[uuid4()], limit=20
         )
 

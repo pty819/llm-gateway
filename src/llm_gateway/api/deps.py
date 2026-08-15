@@ -14,7 +14,6 @@ from llm_gateway.services.security import (
     UserSessionContext,
     authenticate_gateway_key,
     authenticate_user_session,
-    ensure_builtin_identity,
 )
 
 
@@ -65,16 +64,29 @@ def _trusted_proxy_source(client_ip: str, trusted_cidrs: str) -> bool:
     return False
 
 
-def bearer_token(request: Request) -> str:
+def raw_bearer_token(request: Request) -> str | None:
+    """Gateway key from Authorization: Bearer ... or x-api-key, or None.
+
+    Shared by the FastAPI routes (bearer_token) and the MCP ASGI auth
+    middleware, which cannot raise HTTPException and needs the missing/invalid
+    distinction itself.
+    """
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
-        return auth[7:].strip()
+        return auth[7:].strip() or None
     anthropic_key = request.headers.get("x-api-key")
     if anthropic_key:
         return anthropic_key.strip()
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED, detail="missing_gateway_key"
-    )
+    return None
+
+
+def bearer_token(request: Request) -> str:
+    token = raw_bearer_token(request)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="missing_gateway_key"
+        )
+    return token
 
 
 async def auth_dep(
@@ -106,8 +118,6 @@ async def admin_dep(
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_admin_token"
             )
-        await ensure_builtin_identity(session, settings)
-        await session.commit()
         context = await authenticate_user_session(session, raw_token)
         if not context or not context.subject.is_admin:
             raise HTTPException(

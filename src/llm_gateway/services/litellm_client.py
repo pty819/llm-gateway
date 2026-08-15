@@ -140,14 +140,52 @@ def effective_chat_litellm_model(model_alias: ModelAlias) -> str:
     return litellm_model
 
 
-async def check_upstream_health(
-    upstream: UpstreamTarget, timeout_seconds: float = 10.0
-) -> dict[str, Any]:
+def resolve_upstream_call(
+    endpoint_family: EndpointFamily, model_alias: ModelAlias
+) -> tuple[str, dict[str, Any]]:
+    """The single place that turns (entrance, alias) into a litellm payload.
+
+    Returns the model string to send plus any extra litellm kwargs required by
+    this entrance×prefix combination. The bridge-prefix directive previously
+    had to be reasoned about across four helpers and six call sites; adding a
+    new bridge prefix now means updating the predicates above and this one
+    resolver, and every entrance picks up the change.
+
+    - Responses entrance: the directive goes through verbatim (litellm's
+      aresponses understands it) plus the bridge flags.
+    - Chat-shaped entrances: the directive is stripped to ``openai/<m>``;
+      no extra params.
+    """
+    if endpoint_family is EndpointFamily.OPENAI_RESPONSES:
+        extra: dict[str, Any] = {}
+        if uses_openai_chat_completions_upstream(model_alias):
+            extra["use_chat_completions_api"] = True
+        if uses_bridged_responses_upstream(model_alias):
+            extra["drop_params"] = True
+        return model_alias.litellm_model, extra
+    return effective_chat_litellm_model(model_alias), {}
+
+
+def probe_request_parts(upstream: UpstreamTarget) -> tuple[str, dict[str, str]]:
+    """URL + headers for a health probe GET against this upstream.
+
+    Single source of truth for probe request construction — the admin manual
+    Check (check_upstream_health) and the sidecar's background prober
+    (health_checker._probe_upstream) must hit the identical URL shape and
+    header injection; they differ only in verdict policy.
+    """
     url = upstream.base_url.rstrip("/") + "/" + upstream.health_path.lstrip("/")
     headers = dict(upstream.extra_headers or {})
     api_key = _api_key(upstream)
     if api_key:
         headers.setdefault("Authorization", f"Bearer {api_key}")
+    return url, headers
+
+
+async def check_upstream_health(
+    upstream: UpstreamTarget, timeout_seconds: float = 10.0
+) -> dict[str, Any]:
+    url, headers = probe_request_parts(upstream)
     async with httpx.AsyncClient(timeout=timeout_seconds) as client:
         response = await client.get(url, headers=headers)
     return {
@@ -157,7 +195,7 @@ async def check_upstream_health(
     }
 
 
-def _to_plain(value: Any) -> Any:
+def to_plain(value: Any) -> Any:
     if hasattr(value, "model_dump"):
         return value.model_dump(exclude_none=True)
     if isinstance(value, dict):
@@ -172,7 +210,10 @@ async def completion_once(
     body: dict[str, Any],
 ) -> LiteLLMCallResult:
     payload = dict(body)
-    payload["model"] = effective_chat_litellm_model(model_alias)
+    payload["model"], bridge_extra = resolve_upstream_call(
+        EndpointFamily.OPENAI_CHAT, model_alias
+    )
+    payload.update(bridge_extra)
     response = await acompletion(
         api_base=upstream.base_url,
         api_key=_api_key(upstream),
@@ -210,7 +251,10 @@ async def completion_stream(
     body: dict[str, Any],
 ) -> AsyncGenerator[tuple[str, dict[str, Any] | None], None]:
     payload = dict(body)
-    payload["model"] = effective_chat_litellm_model(model_alias)
+    payload["model"], bridge_extra = resolve_upstream_call(
+        EndpointFamily.OPENAI_CHAT, model_alias
+    )
+    payload.update(bridge_extra)
     payload["stream"] = True
     if "stream_options" not in payload:
         payload["stream_options"] = {"include_usage": True}
@@ -221,7 +265,7 @@ async def completion_stream(
     )
     async for chunk in stream:
         usage = _usage_from_response(chunk)
-        yield f"data: {_json_dumps(_to_plain(chunk))}\n\n", usage
+        yield f"data: {_json_dumps(to_plain(chunk))}\n\n", usage
         await asyncio.sleep(0)
     yield "data: [DONE]\n\n", None
 
@@ -261,7 +305,10 @@ async def anthropic_messages_once(
     body: dict[str, Any],
 ) -> LiteLLMCallResult:
     payload = dict(body)
-    payload["model"] = effective_chat_litellm_model(model_alias)
+    payload["model"], bridge_extra = resolve_upstream_call(
+        EndpointFamily.ANTHROPIC_MESSAGES, model_alias
+    )
+    payload.update(bridge_extra)
     payload["drop_params"] = ANTHROPIC_DROP_PARAMS
     response = await anthropic_messages(
         api_base=upstream.base_url,
@@ -278,7 +325,10 @@ async def anthropic_messages_stream(
     body: dict[str, Any],
 ) -> AsyncGenerator[tuple[str, dict[str, Any] | None], None]:
     payload = dict(body)
-    payload["model"] = effective_chat_litellm_model(model_alias)
+    payload["model"], bridge_extra = resolve_upstream_call(
+        EndpointFamily.ANTHROPIC_MESSAGES, model_alias
+    )
+    payload.update(bridge_extra)
     payload["stream"] = True
     payload["drop_params"] = ANTHROPIC_DROP_PARAMS
     stream = await anthropic_messages(
@@ -289,7 +339,7 @@ async def anthropic_messages_stream(
     async for chunk in stream:
         usage = _usage_from_response(chunk)
         yield (
-            f"event: content_block_delta\ndata: {_json_dumps(_to_plain(chunk))}\n\n",
+            f"event: content_block_delta\ndata: {_json_dumps(to_plain(chunk))}\n\n",
             usage,
         )
         await asyncio.sleep(0)
@@ -308,11 +358,10 @@ async def responses_once(
     body: dict[str, Any],
 ) -> LiteLLMCallResult:
     payload = dict(body)
-    payload["model"] = model_alias.litellm_model
-    if uses_openai_chat_completions_upstream(model_alias):
-        payload["use_chat_completions_api"] = True
-    if uses_bridged_responses_upstream(model_alias):
-        payload["drop_params"] = True
+    payload["model"], bridge_extra = resolve_upstream_call(
+        EndpointFamily.OPENAI_RESPONSES, model_alias
+    )
+    payload.update(bridge_extra)
     response = await aresponses(
         api_base=upstream.base_url,
         api_key=_api_key(upstream),
@@ -329,12 +378,11 @@ async def responses_stream(
     body: dict[str, Any],
 ) -> AsyncGenerator[tuple[str, dict[str, Any] | None], None]:
     payload = dict(body)
-    payload["model"] = model_alias.litellm_model
+    payload["model"], bridge_extra = resolve_upstream_call(
+        EndpointFamily.OPENAI_RESPONSES, model_alias
+    )
+    payload.update(bridge_extra)
     payload["stream"] = True
-    if uses_openai_chat_completions_upstream(model_alias):
-        payload["use_chat_completions_api"] = True
-    if uses_bridged_responses_upstream(model_alias):
-        payload["drop_params"] = True
     stream = await aresponses(
         api_base=upstream.base_url,
         api_key=_api_key(upstream),
@@ -342,7 +390,7 @@ async def responses_stream(
     )
     async for chunk in stream:
         usage = _usage_from_responses_api(chunk)
-        yield f"data: {_json_dumps(_to_plain(chunk))}\n\n", usage
+        yield f"data: {_json_dumps(to_plain(chunk))}\n\n", usage
         await asyncio.sleep(0)
     yield "data: [DONE]\n\n", None
 

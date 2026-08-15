@@ -28,6 +28,36 @@ def migrated_database() -> None:
     from scripts.init_db import main as init_db
 
     init_db()
+    _bootstrap_identity()
+
+
+def _bootstrap_identity() -> None:
+    """Mirror the app lifespan's startup sweep (admin identity + LiteLLM model
+    registration). ASITransport-based tests never run the lifespan, and admin
+    requests no longer trigger the sweep per-request, so without this the
+    suite's outcome would depend on which tests happened to run first.
+
+    Uses a dedicated engine disposed within the same asyncio.run — the global
+    AsyncSessionLocal pool must never see connections bound to this
+    short-lived loop.
+    """
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+    from llm_gateway.core.config import get_settings
+    from llm_gateway.services.security import ensure_builtin_identity
+
+    async def _run() -> None:
+        engine = create_async_engine(get_settings().database_url)
+        try:
+            async with AsyncSession(bind=engine) as session:
+                await ensure_builtin_identity(session, get_settings())
+                await session.commit()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
 
 
 @pytest_asyncio.fixture
@@ -98,6 +128,16 @@ async def gateway_fixture() -> GatewayFixture:
         )
         session.add(model_alias)
         await session.flush()
+        # Production registers new aliases with LiteLLM at admin-create time;
+        # the fixture creates rows directly, so register here too. This matters
+        # for bare (provider-less) litellm_model values like
+        # LLM_GATEWAY_LITELLM_MODEL=minimax-m2.7, which are only routable via
+        # the registry entry this call creates.
+        from llm_gateway.services.litellm_client import (
+            register_model_for_native_streaming,
+        )
+
+        register_model_for_native_streaming(model_alias)
 
         upstream = UpstreamTarget(
             model_alias_id=model_alias.id,

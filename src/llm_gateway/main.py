@@ -1,4 +1,4 @@
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import litellm
 from fastapi import FastAPI
@@ -45,16 +45,34 @@ def create_app() -> FastAPI:
         # relying on litellm's implicit default. litellm reads this module global
         # at call time, so setting it once at startup governs every proxy call.
         litellm.request_timeout = settings.upstream_timeout_seconds
+        # One-time cleanup: in-flight connections moved from the old single
+        # global ZSET to per-upstream keys; purge any leftover legacy members
+        # from before that switch so they can't linger forever (best-effort).
+        with suppress(Exception):
+            from llm_gateway.services.rate_limit import redis_client
+            from llm_gateway.services.runtime_metrics import ACTIVE_LEGACY_KEY
+
+            await redis_client.delete(ACTIVE_LEGACY_KEY)
         # Health checking runs in a separate sidecar process (python -m
-        # llm_gateway.health_sidecar), NOT here. A main-process event-loop
-        # freeze (LiteLLM sync paths) must not be able to take out the whole
-        # upstream fleet via false-positive probe timeouts. The sidecar has its
-        # own GIL and writes runtime liveness to Redis; this process only reads
-        # it on the routing path. See README "部署" for the sidecar invocation.
+        # llm_gateway.health_sidecar), NOT here — scripts/start_local.py spawns
+        # it automatically. A main-process event-loop freeze (LiteLLM sync
+        # paths) must not be able to take out the whole upstream fleet via
+        # false-positive probe timeouts; the sidecar has its own GIL and writes
+        # runtime liveness to Redis, this process only reads it on the routing
+        # path. LLM_GATEWAY_HEALTH_CHECK_AUTOSTART=true opts into running the
+        # loop in-process for deployments that cannot spawn the sidecar.
+        if settings.health_check_autostart:
+            from llm_gateway.services import health_checker
+
+            await health_checker.start()
         # Start the MCP server's session manager task group (the SDK app is
         # mounted as a sub-app; its own lifespan doesn't run under FastAPI).
         async with mcp_server.mcp_lifespan():
             yield
+        if settings.health_check_autostart:
+            from llm_gateway.services import health_checker
+
+            await health_checker.stop()
         # Flush any in-flight request facts before the process exits so a
         # restart/SIGTERM never silently drops accounting data.
         await drain_now()
@@ -62,6 +80,10 @@ def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
     app.include_router(health.router)
     app.include_router(auth.router)
+    # Self-service marketplace routes (session-cookie auth) live in
+    # api/registry.py next to their gateway-key twins; the router's "/auth"
+    # prefix keeps every route path unchanged.
+    app.include_router(registry.auth_registry_router)
     app.include_router(admin.router)
     app.include_router(realtime.router)
     app.include_router(proxy.router)

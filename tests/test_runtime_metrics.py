@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import fnmatch
+import inspect
 import time
 from typing import Any, cast
 from uuid import uuid4
@@ -7,11 +9,11 @@ from uuid import uuid4
 import pytest
 
 from llm_gateway.services.runtime_metrics import (
-    ACTIVE_KEY,
     RuntimeRouteInfo,
     VLLM_METRICS_CACHE_PREFIX,
     VLLM_METRICS_LOCK_PREFIX,
     VLLMMetricsTarget,
+    active_upstream_key,
     mark_connection_closed,
     mark_connection_open,
     metrics_url_from_base_url,
@@ -21,10 +23,41 @@ from llm_gateway.services.runtime_metrics import (
 from llm_gateway.services.upstream_routing import (
     select_upstream_for_key,
     sticky_route_key,
+    touch_sticky_route,
 )
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
+
+
+class _FakePipeline:
+    """Queues commands, executes them in order against the owning FakeRedis."""
+
+    def __init__(self, redis: "FakeRedis") -> None:
+        self._redis = redis
+        self._ops: list[tuple[str, tuple[Any, ...]]] = []
+
+    def _queue(self, op: str, *args: Any) -> "_FakePipeline":
+        self._ops.append((op, args))
+        return self
+
+    def zremrangebyscore(self, name, minimum, maximum):
+        return self._queue("zremrangebyscore", name, minimum, maximum)
+
+    def zadd(self, name, mapping):
+        return self._queue("zadd", name, mapping)
+
+    def zcard(self, name):
+        return self._queue("zcard", name)
+
+    async def execute(self) -> list[Any]:
+        results: list[Any] = []
+        for op, args in self._ops:
+            result = getattr(self._redis, op)(*args)
+            if inspect.isawaitable(result):
+                result = await result
+            results.append(result)
+        return results
 
 
 class FakeRedis:
@@ -33,6 +66,18 @@ class FakeRedis:
         self.streams: dict[str, list[tuple[str, dict[str, str]]]] = {}
         self.values: dict[str, str] = {}
         self.sequence = 0
+
+    def pipeline(self, transaction: bool = True) -> _FakePipeline:
+        del transaction
+        return _FakePipeline(self)
+
+    async def scan_iter(self, *, match: str | None = None):
+        for name in sorted(self.zsets):
+            if match is None or fnmatch.fnmatch(name, match):
+                yield name
+
+    async def zcard(self, name: str) -> int:
+        return len(self.zsets.get(name, {}))
 
     async def get(self, name: str) -> str | None:
         return self.values.get(name)
@@ -160,7 +205,7 @@ async def test_runtime_snapshot_prunes_stale_active_connections():
     snapshot = await runtime_snapshot(redis, window_seconds=10, now=11_000.0)
 
     assert snapshot["active_connections"] == 0
-    assert redis.zsets[ACTIVE_KEY] == {}
+    assert redis.zsets[active_upstream_key("up-stale")] == {}
 
 
 async def test_metrics_url_from_base_url_strips_openai_v1_path():
@@ -399,6 +444,18 @@ async def test_select_upstream_uses_load_score_then_sticky_route():
         str(upstream_a.id): 0.8,
         str(upstream_b.id): 0.2,
     }
+    # Selection itself does NOT write the sticky route — the proxy's
+    # completion-time touch_sticky_route is the single writer. Simulate that
+    # completion before testing stickiness.
+    assert sticky_route_key(key_id=key_id, model_alias_id=model.id) not in redis.values
+    await touch_sticky_route(
+        redis,
+        key_id=key_id,
+        model_alias_id=model.id,
+        upstream_id=upstream_b.id,
+        ttl_seconds=1200,
+        now=100.0,
+    )
     sticky_payload = redis.values[
         sticky_route_key(key_id=key_id, model_alias_id=model.id)
     ]
@@ -450,10 +507,11 @@ async def test_select_upstream_ignores_sticky_route_not_in_active_candidates():
     )
 
     assert selected.id == upstream.id
-    sticky_payload = redis.values[
-        sticky_route_key(key_id=key_id, model_alias_id=model.id)
-    ]
-    assert str(upstream.id) in sticky_payload
+    # Selection does not rewrite the sticky route (the completion-time touch is
+    # the single writer), so the stale payload is left untouched here.
+    assert redis.values[sticky_route_key(key_id=key_id, model_alias_id=model.id)] == (
+        f'{{"upstream_id":"{stale_upstream_id}","last_active_at":99}}'
+    )
 
 
 async def test_select_upstream_surfaces_redis_failures():
