@@ -457,3 +457,126 @@ async def test_usage_ranking_excludes_null_subject():
     # alice 在，NULL subject 不在
     assert any(r["subject_id"] == alice_id for r in rows)
     assert all(r["subject_id"] is not None for r in rows)
+
+
+def test_normalize_naive_utc_converts_aware_inputs():
+    """Offset-aware query params must land on naive UTC before comparison."""
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    from llm_gateway.services.analytics import normalize_naive_utc
+
+    shanghai = ZoneInfo("Asia/Shanghai")
+    aware = datetime(2026, 8, 15, 15, 0, tzinfo=shanghai)  # 07:00 UTC
+    assert normalize_naive_utc(aware) == datetime(2026, 8, 15, 7, 0)
+    utc_aware = datetime(2026, 8, 15, 7, 0, tzinfo=timezone.utc)
+    assert normalize_naive_utc(utc_aware) == datetime(2026, 8, 15, 7, 0)
+    naive = datetime(2026, 8, 15, 7, 0)
+    assert normalize_naive_utc(naive) is naive  # naive passes through (assumed UTC)
+    assert normalize_naive_utc(None) is None
+
+
+async def test_usage_totals_accepts_offset_aware_window():
+    """A browser-style +08:00 window must filter on the equivalent UTC range,
+    not the wall-clock numbers (which previously shifted queries by 8h).
+
+    The fact is pinned to a fixed UTC instant so the test is independent of
+    the host machine's timezone.
+    """
+    from datetime import datetime
+    from uuid import uuid4
+    from zoneinfo import ZoneInfo
+
+    from llm_gateway.db.models import (
+        EndpointFamily,
+        Project,
+        RequestOutcome,
+        Subject,
+        SubjectType,
+    )
+    from llm_gateway.db.session import AsyncSessionLocal
+    from llm_gateway.services.analytics import usage_totals
+    from llm_gateway.services.facts import record_request_fact
+
+    fact_utc = datetime(2026, 8, 15, 7, 0)  # naive UTC, stored as-is
+    model_name = f"tz-test-{uuid4().hex[:8]}"  # unique per run: keep the test idempotent
+    async with AsyncSessionLocal() as session:
+        project = Project(name=f"tz-test-{uuid4().hex}", owner_subject_id=None)
+        session.add(project)
+        await session.flush()
+        subject = Subject(name=f"TzUser-{uuid4().hex[:8]}", type=SubjectType.USER)
+        session.add(subject)
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        await record_request_fact(
+            session,
+            request_id=f"tz-{uuid4()}",
+            started_at=fact_utc,
+            ended_at=fact_utc,
+            endpoint_family=EndpointFamily.OPENAI_CHAT,
+            subject_id=subject.id,
+            subject_type="user",
+            project_id=project.id,
+            model_alias=model_name,
+            upstream_target_id=None,
+            streaming=False,
+            outcome=RequestOutcome.SUCCESS,
+            usage={"prompt_tokens": 10, "completion_tokens": 32, "total_tokens": 42},
+        )
+        await session.commit()
+
+    shanghai = ZoneInfo("Asia/Shanghai")
+    # Shanghai wall-clock 15:00 == UTC 07:00: window covers the fact.
+    aware_start = datetime(2026, 8, 15, 14, 0, tzinfo=shanghai)
+    aware_end = datetime(2026, 8, 15, 16, 0, tzinfo=shanghai)
+
+    async with AsyncSessionLocal() as session:
+        row = await usage_totals(
+            session, start=aware_start, end=aware_end, model=model_name
+        )
+    assert row is not None and row["request_count"] == 1
+
+    # The old buggy behavior treated the wall-clock numbers as UTC:
+    # [14:00, 16:00] UTC does NOT contain 07:00 UTC.
+    async with AsyncSessionLocal() as session:
+        shifted = await usage_totals(
+            session,
+            start=aware_start.replace(tzinfo=None),
+            end=aware_end.replace(tzinfo=None),
+            model=model_name,
+        )
+    assert shifted is None or shifted["request_count"] == 0
+
+
+async def test_admin_usage_endpoint_accepts_offset_aware_params(client):
+    """End-to-end through FastAPI query parsing: a +08:00 window must be
+    accepted (not 500 on naive/aware mixing) and behave like its UTC twin."""
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+
+    shanghai = ZoneInfo("Asia/Shanghai")
+    now_local = datetime.now(timezone.utc).astimezone(shanghai)
+    start = (now_local - timedelta(hours=2)).isoformat(timespec="seconds")
+    end = (now_local + timedelta(hours=1)).isoformat(timespec="seconds")
+
+    headers = {"x-admin-token": "dev-admin-token"}
+    aware_resp = await client.get(
+        "/admin/usage/totals", headers=headers, params={"start": start, "end": end}
+    )
+    assert aware_resp.status_code == 200, aware_resp.text
+
+    utc_twin_resp = await client.get(
+        "/admin/usage/totals",
+        headers=headers,
+        params={
+            "start": datetime.fromisoformat(start)
+            .astimezone(timezone.utc)
+            .isoformat(timespec="seconds"),
+            "end": datetime.fromisoformat(end)
+            .astimezone(timezone.utc)
+            .isoformat(timespec="seconds"),
+        },
+    )
+    assert utc_twin_resp.status_code == 200
+    assert aware_resp.json() == utc_twin_resp.json()

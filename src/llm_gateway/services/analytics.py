@@ -87,8 +87,23 @@ def _full_metric_columns() -> list:
     ]
 
 
+def normalize_naive_utc(value: datetime | None) -> datetime | None:
+    """Normalize a query-param datetime to naive UTC for comparisons against
+    RequestFact timestamps (stored naive UTC).
+
+    Offset-aware inputs (e.g. ``2026-08-15T15:30+08:00`` from a browser) are
+    converted to UTC and stripped; naive inputs are assumed to already be UTC,
+    preserving backward compatibility for existing API callers.
+    """
+    if value is None or value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def _apply_filters(stmt, *, start, end, model, subject_id, project_id):
     """条件应用 where：None 值跳过对应过滤条件。"""
+    start = normalize_naive_utc(start)
+    end = normalize_naive_utc(end)
     if start is not None:
         stmt = stmt.where(col(RequestFact.started_at) >= start)
     if end is not None:

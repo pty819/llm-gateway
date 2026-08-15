@@ -279,6 +279,7 @@ async def own_usage_summary(
     context: UserSessionContext = Depends(user_session_dep),
     session: AsyncSession = Depends(session_dep),
 ):
+    start, end = _normalize_usage_window(start, end)
     if start and end and (end - start).days > 90:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -400,6 +401,7 @@ async def managed_usage_summary(
     context: UserSessionContext = Depends(user_session_dep),
     session: AsyncSession = Depends(session_dep),
 ):
+    start, end = _normalize_usage_window(start, end)
     if start and end and (end - start).days > 90:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -899,6 +901,17 @@ async def _team_subject_ids(session: AsyncSession, team_ids: list[UUID]) -> list
     return list(result.scalars().all())
 
 
+def _normalize_usage_window(
+    start: datetime | None, end: datetime | None
+) -> tuple[datetime | None, datetime | None]:
+    """Browsers send offset-aware datetimes (datetime-local converted with the
+    browser's offset); RequestFact timestamps are naive UTC. Normalize before
+    comparing so a Shanghai "15:00" filters on 07:00 UTC, not 15:00 UTC."""
+    from llm_gateway.services.analytics import normalize_naive_utc
+
+    return normalize_naive_utc(start), normalize_naive_utc(end)
+
+
 async def _usage_summary_from_postgres(
     session: AsyncSession,
     *,
@@ -911,6 +924,7 @@ async def _usage_summary_from_postgres(
         return _empty_usage_summary()
     if subject_ids is not None and not subject_ids:
         return _empty_usage_summary()
+    start, end = _normalize_usage_window(start, end)
 
     total_tokens_expr = func.coalesce(
         RequestFact.total_tokens,
@@ -990,6 +1004,7 @@ async def _usage_ranking_from_postgres(
     RequestFact.subject_id, used for team scope where membership is derived via
     TeamMembership). Empty lists short-circuit to [] like the summary builder.
     """
+    start, end = _normalize_usage_window(start, end)
     if project_ids is not None and not project_ids:
         return []
     if subject_ids is not None and not subject_ids:
