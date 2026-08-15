@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Inventory } from '$lib/api/types';
-	import { msLabel, ratioLabel } from '$lib/admin-config';
+	import { msLabel, parseServerUtcIso, ratioLabel } from '$lib/admin-config';
 
 	let {
 		rows,
@@ -17,7 +17,7 @@
 		<tbody>
 			{#each rows as row}
 				<tr>
-					<td>{new Date(row.bucket_start).toLocaleString()}</td>
+					<td>{parseServerUtcIso(row.bucket_start).toLocaleString()}</td>
 					<td><div class="bar-track"><span style={`width: ${Math.max(4, Math.round((row.total_tokens / maxTokens) * 100))}%`}></span></div></td>
 					<td>{row.request_count}</td>
 					<td>{row.total_tokens}<br /><span class="muted">入 {row.prompt_tokens} / 出 {row.completion_tokens}</span></td>

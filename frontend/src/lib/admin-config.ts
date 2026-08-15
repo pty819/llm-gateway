@@ -209,6 +209,28 @@ export function toDateTimeLocal(date: Date): string {
 	return local.toISOString().slice(0, 16);
 }
 
+/**
+ * Convert a `datetime-local` input value (browser-local, no offset) into a
+ * UTC ISO string with explicit offset for API queries. The backend stores
+ * naive-UTC timestamps; sending an unmarked local time would shift the query
+ * window by the browser's UTC offset (8h in Shanghai).
+ */
+export function datetimeLocalToUtcIso(value: string): string {
+	if (!value) return '';
+	const parsed = new Date(value); // parses datetime-local as browser-local
+	return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString();
+}
+
+/**
+ * Parse a server timestamp for display. Server datetimes are naive UTC; a bare
+ * ISO string would be parsed as browser-local and render 8h off (Shanghai).
+ * Values that already carry an offset/Z pass through unchanged.
+ */
+export function parseServerUtcIso(value: string): Date {
+	if (/[zZ]$|[+\-]\d{2}:?\d{2}$/.test(value)) return new Date(value);
+	return new Date(`${value}Z`);
+}
+
 export function usageRangeForDays(days: number): { start: string; end: string } {
 	const end = new Date();
 	const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000);

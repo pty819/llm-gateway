@@ -280,6 +280,31 @@ Each entitlement row has an Enable/Disable toggle. Disabling immediately revokes
 
 Both paths are OR'd together: a user can use a model if they have a direct entitlement OR a team grant.
 
+## Team Token Quotas (分时段「coding plan」)
+
+权限组可配置分时段的 token 消耗上限,类似团队共享的 coding plan。在管理台 **权限组** 页的「分时段 Token 配额」面板配置,每团队每窗口一个上限,留空 = 该时段不限量。
+
+### 时间窗(按 `LLM_GATEWAY_QUOTA_TIMEZONE` 时区,默认 `Asia/Shanghai`)
+
+| 窗口 | 时间 |
+|------|------|
+| 上午 | 08:00 – 13:00 |
+| 下午 | 13:00 – 18:00 |
+| 晚上 | 18:00 – 次日 08:00(归属开始日的日期) |
+
+窗口每日重置;用量口径为 `total_tokens`(prompt + completion,含缓存命中,与 request_facts 一致)。
+
+### 生效规则
+
+- 候选组 = 用户 ACTIVE 成员 + 组 ACTIVE + 对该模型有 ACTIVE 授权 + 本窗口配置了上限的权限组。
+- **准入 check-any**:任一候选组本窗口尚有余量即放行;全部耗尽返回 `429 team_token_quota_exceeded`(并落一条 RATE_LIMITED 请求事实)。
+- **记账 charge-all**:请求实际消耗的 token 从每个候选组的窗口池中扣减。多权限组用户享有各组预算的并集,每组总支出仍被各自上限封顶。
+- 未配置配额的组不参与限制;未走团队授权(entitlement 直通)但身处配额组的用户同样受限。
+- 准入是先检后扣:并发在途请求可能造成有界超扣(最多超出同时在途请求的 token 量),这是准入式配额的标准权衡。
+- Redis 故障时按 `LLM_GATEWAY_RATE_LIMIT_FAIL_CLOSED` 处理(与限流一致);扣减本身 best-effort,失败不阻断响应,request_facts 仍是最终对账依据。
+
+Admin API:`GET /admin/team-token-quotas`(含各团队当前窗口用量)、`GET|PUT /admin/teams/{id}/token-quota`。
+
 ## Rate Limits
 
 Rate limits control how many requests per minute (RPM) and how many concurrent requests a caller can make. They are enforced via Redis counters.
@@ -371,6 +396,21 @@ Upstream model:     qwen3
 LiteLLM model:      openai/qwen3
 Sticky TTL seconds: 1200
 ```
+
+#### Upstream Protocol Modes (LiteLLM model prefix)
+
+The `LiteLLM model` field decides how the gateway's `/v1/responses` reaches each upstream. Pick per model — this is the whole point of the field:
+
+| `LiteLLM model`              | `/v1/responses` traffic goes to            | Use when                                                     |
+| ---------------------------- | ------------------------------------------- | ------------------------------------------------------------ |
+| `openai/<model>`             | upstream's native `/responses` (direct)    | Upstream has a good native Responses endpoint (vLLM, OpenAI) |
+| `openai/chat_completions/<model>` | upstream's `/chat/completions` (bridged) | Upstream's `/responses` is weak/absent but `/chat/completions` is solid |
+| `anthropic/<model>`          | upstream's `/v1/messages` (bridged)        | Upstream only speaks the Anthropic Messages protocol         |
+
+- In bridged modes LiteLLM converts Responses ↔ chat-completions in both directions, including streaming: downstream still receives a standard Responses SSE event stream (`response.created` … `response.completed`).
+- Bridged models automatically send `drop_params=True`, because clients like Codex always attach `reasoning.effort`, which would otherwise be rejected for custom model names.
+- For `anthropic/<model>` upstreams, set Base URL to the Anthropic-compatible root (e.g. `https://host/anthropic`); LiteLLM appends `/v1/messages`. For the other two modes Base URL ends in `/v1`.
+- A bridge-prefixed alias works on **all three** gateway entries: `/v1/responses` is bridged to `/chat/completions`, while `/v1/chat/completions` and `/v1/messages` also land on the upstream's `/chat/completions` (the gateway normalizes the model name — litellm would otherwise forward the literal `chat_completions/<m>` string upstream and fail). `anthropic/<model>` aliases likewise serve all three entries.
 
 ### Step 2 — Create Upstream Replicas (Upstreams page)
 

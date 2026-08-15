@@ -8,10 +8,10 @@ export const UPSTREAM_FORMAT_PREFIX: Record<UpstreamFormat, string> = {
 };
 
 export const UPSTREAM_FORMAT_LABEL: Record<UpstreamFormat, string> = {
-	openai: 'OpenAI 兼容 (chat/completions)',
-	openai_chat_completions: 'OpenAI Chat Completions (显式)',
-	anthropic: 'Anthropic 原生 (messages)',
-	hosted_vllm: 'vLLM 原生'
+	openai: 'OpenAI 兼容 — /v1/responses 直转原生 /responses',
+	openai_chat_completions: 'OpenAI Chat Completions — 三种入口全走 /chat/completions',
+	anthropic: 'Anthropic 原生 — /v1/responses 桥接 /v1/messages',
+	hosted_vllm: 'vLLM 原生 — /v1/responses 直转原生 /responses'
 };
 
 export const UPSTREAM_FORMAT_SHORT_LABEL: Record<UpstreamFormat, string> = {

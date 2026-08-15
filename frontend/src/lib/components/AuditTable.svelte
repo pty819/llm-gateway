@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { AuditEvent } from '$lib/api/types';
 	import StateBadge from '$lib/components/StateBadge.svelte';
-	import { short } from '$lib/admin-config';
+	import { parseServerUtcIso, short } from '$lib/admin-config';
 
 	let {
 		rows,
@@ -18,7 +18,7 @@
 		<tbody>
 			{#each rows as event}
 				<tr>
-					<td>{new Date(event.created_at).toLocaleString()}</td>
+					<td>{parseServerUtcIso(event.created_at).toLocaleString()}</td>
 					<td>{event.action}</td>
 					<td>{event.resource_type}<br /><span class="muted">{short(event.resource_id)}</span></td>
 					<td><StateBadge value={event.outcome} /></td>

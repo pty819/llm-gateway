@@ -120,6 +120,17 @@ export type ModelTeamGrant = Timestamped & {
 	state: ResourceState;
 };
 
+export type TeamTokenQuotaRow = {
+	team_id: string;
+	morning_tokens: number | null;
+	afternoon_tokens: number | null;
+	evening_tokens: number | null;
+	state: ResourceState;
+	current_window: 'morning' | 'afternoon' | 'evening' | null;
+	current_window_limit: number | null;
+	current_window_used: number | null;
+};
+
 export type UpstreamTarget = Timestamped & {
 	id: string;
 	model_alias_id: string;
@@ -377,6 +388,7 @@ export type Inventory = {
 	teams: Team[];
 	teamMemberships: TeamMembership[];
 	modelTeamGrants: ModelTeamGrant[];
+	teamTokenQuotas: TeamTokenQuotaRow[];
 	upstreams: UpstreamTarget[];
 	ratePolicies: RatePolicy[];
 	usage: UsageSummaryRow[];

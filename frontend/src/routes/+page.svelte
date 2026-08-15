@@ -42,6 +42,7 @@
 		SubjectType,
 		Team,
 		TeamMembership,
+		TeamTokenQuotaRow,
 		UpstreamHealth
 	} from '$lib/api/types';
 	import StateBadge from '$lib/components/StateBadge.svelte';
@@ -94,6 +95,7 @@
 		filteredSubjects as filteredSubjectsConfig,
 		subjectOptions as subjectOptionsConfig,
 		toDateTimeLocal,
+		datetimeLocalToUtcIso,
 		usageRangeForDays,
 		defaultUsageRange,
 		inferGatewayBaseUrl,
@@ -202,6 +204,7 @@
 	let teamForm = $state({ name: '', notes: '' });
 	let teamMembershipForm = $state({ team_id: '', subject_id: '', role: 'member' });
 	let modelTeamGrantForm = $state({ model_alias_id: '', team_id: '' });
+	let teamQuotaForm = $state({ team_id: '', morning: '', afternoon: '', evening: '' });
 	let keyForm = $state({ subject_id: '', project_id: '', name: '' });
 	let modelForm = $state({
 		alias: '',
@@ -568,6 +571,7 @@
 				teamsPage,
 				teamMembershipsPage,
 				modelTeamGrants,
+				teamTokenQuotas,
 				upstreams,
 				ratePolicies,
 				audit,
@@ -583,6 +587,7 @@
 				api.get<PaginatedResponse<Team>>('/admin/teams'),
 				api.get<PaginatedResponse<TeamMembership>>('/admin/team-memberships'),
 				api.get<Inventory['modelTeamGrants']>('/admin/model-team-grants'),
+				api.get<Inventory['teamTokenQuotas']>('/admin/team-token-quotas'),
 				api.get<Inventory['upstreams']>('/admin/upstreams'),
 				api.get<Inventory['ratePolicies']>('/admin/rate-policies'),
 				api.get<Inventory['audit']>('/admin/audit-events'),
@@ -600,6 +605,7 @@
 				teams: teamsPage.items,
 				teamMemberships: teamMembershipsPage.items,
 				modelTeamGrants,
+				teamTokenQuotas,
 				upstreams,
 				ratePolicies,
 				usage: inventory.usage,
@@ -615,8 +621,8 @@
 	async function refreshUsageAnalytics() {
 		await run(async () => {
 			const analyticsParams = {
-				start: usageStart,
-				end: usageEnd,
+				start: datetimeLocalToUtcIso(usageStart),
+				end: datetimeLocalToUtcIso(usageEnd),
 				model: modelFilter,
 				subject_id: subjectFilter,
 				project_id: projectFilter
@@ -645,8 +651,8 @@
 	async function refreshUsageRanking() {
 		await run(async () => {
 			const ranking = await api.get<Inventory['ranking']>('/admin/usage/ranking', {
-				start: usageStart,
-				end: usageEnd,
+				start: datetimeLocalToUtcIso(usageStart),
+				end: datetimeLocalToUtcIso(usageEnd),
 				model: rankingModel,
 				limit: rankingLimit
 			});
@@ -1051,6 +1057,37 @@
 		});
 	}
 
+	async function saveTeamQuota() {
+		if (!teamQuotaForm.team_id) return;
+		await run(async () => {
+			await api.put(`/admin/teams/${teamQuotaForm.team_id}/token-quota`, {
+				morning_tokens: teamQuotaForm.morning.trim() === '' ? null : Number(teamQuotaForm.morning),
+				afternoon_tokens: teamQuotaForm.afternoon.trim() === '' ? null : Number(teamQuotaForm.afternoon),
+				evening_tokens: teamQuotaForm.evening.trim() === '' ? null : Number(teamQuotaForm.evening)
+			});
+			await refreshAll();
+		});
+	}
+
+	function teamQuotaRow(teamId: string): TeamTokenQuotaRow | undefined {
+		return inventory.teamTokenQuotas.find((row) => row.team_id === teamId);
+	}
+
+	function quotaCell(teamId: string): string {
+		const row = teamQuotaRow(teamId);
+		if (!row) return '未配置(不限)';
+		const parts = [
+			`上午 ${row.morning_tokens ?? '∞'}`,
+			`下午 ${row.afternoon_tokens ?? '∞'}`,
+			`晚上 ${row.evening_tokens ?? '∞'}`
+		];
+		if (row.current_window_limit !== null && row.current_window_used !== null) {
+			parts.push(`本窗口 ${row.current_window_used}/${row.current_window_limit}`);
+		}
+		if (row.state === 'disabled') parts.push('(已停用)');
+		return parts.join(' · ');
+	}
+
 	async function createRatePolicy() {
 		await run(async () => {
 			await api.post(
@@ -1080,8 +1117,8 @@
 
 	async function fetchOwnUsage() {
 		ownUsage = await api.get<OwnUsageSummary>('/auth/usage/summary', {
-			start: ownUsageStart,
-			end: ownUsageEnd
+			start: datetimeLocalToUtcIso(ownUsageStart),
+			end: datetimeLocalToUtcIso(ownUsageEnd)
 		});
 	}
 
@@ -1244,6 +1281,7 @@
 			teams: [],
 			teamMemberships: [],
 			modelTeamGrants: [],
+			teamTokenQuotas: [],
 			upstreams: [],
 			ratePolicies: [],
 			usage: [],
@@ -1458,7 +1496,20 @@
 											<td><StateBadge value={model.supports_streaming} tone="accent" /></td>
 											<td><StateBadge value={model.supports_tools} tone="accent" /></td>
 											<td><StateBadge value={model.supports_reasoning} tone="accent" /></td>
-											<td class="actions"><button class="secondary" type="button" onclick={() => editModelCidrs(model)}>编辑 CIDR</button><button class="secondary" type="button" onclick={() => {
+											<td class="actions"><select
+												aria-label="切换上游格式"
+												value={deriveUpstreamFormat(model.litellm_model)}
+												onchange={(event) => {
+													const format = event.currentTarget.value as UpstreamFormat;
+													const next = composeLitellmModel(format, model.upstream_model_name);
+													if (next !== model.litellm_model) patchModel(model.id, { litellm_model: next });
+												}}
+											>
+												<option value="openai">{UPSTREAM_FORMAT_LABEL.openai}</option>
+												<option value="openai_chat_completions">{UPSTREAM_FORMAT_LABEL.openai_chat_completions}</option>
+												<option value="anthropic">{UPSTREAM_FORMAT_LABEL.anthropic}</option>
+												<option value="hosted_vllm">{UPSTREAM_FORMAT_LABEL.hosted_vllm}</option>
+											</select><button class="secondary" type="button" onclick={() => editModelCidrs(model)}>编辑 CIDR</button><button class="secondary" type="button" onclick={() => {
 												const next = prompt('粘性生命周期秒数', String(model.sticky_ttl_seconds));
 												if (next !== null) patchModel(model.id, { sticky_ttl_seconds: Number(next) });
 											}}>编辑 TTL</button><button class="secondary" type="button" onclick={() => patchModel(model.id, { state: model.state === 'active' ? 'disabled' : 'active' })}>{model.state === 'active' ? '禁用' : '启用'}</button><button class="danger" type="button" onclick={() => deleteModel(model)}>删除</button></td>
@@ -1550,7 +1601,8 @@
 						<section class="panel"><h2>把用户加入权限组</h2><div class="form-grid"><label>搜索用户<input bind:value={teamSubjectSearch} placeholder="输入姓名或工号" /></label><label>权限组<select bind:value={teamMembershipForm.team_id}><option value="">权限组</option>{#each inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><label>用户<select bind:value={teamMembershipForm.subject_id}><option value="">用户</option>{#each subjectOptions(teamSubjectSearch) as subject}<option value={subject.id}>{subjectDisplay(subject)}</option>{/each}</select></label><label>角色<select bind:value={teamMembershipForm.role}>{#each managedRoles as role}<option value={role.value}>{role.label}</option>{/each}</select></label><button type="button" onclick={createTeamMembership}>添加成员</button></div></section>
 					</div>
 					<section class="panel"><h2>给权限组授权模型</h2><div class="form-grid"><label>模型<select bind:value={modelTeamGrantForm.model_alias_id}><option value="">模型</option>{#each inventory.models as model}<option value={model.id}>{model.alias}</option>{/each}</select></label><label>权限组<select bind:value={modelTeamGrantForm.team_id}><option value="">权限组</option>{#each inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><button type="button" onclick={createModelTeamGrant}>授权模型</button></div></section>
-					<section class="panel"><h2>权限组</h2><div class="table-wrap"><table><thead><tr><th>名称</th><th>状态</th><th>内置</th><th>备注</th><th>操作</th></tr></thead><tbody>{#each inventory.teams as team}<tr><td>{team.name}<br /><span class="muted">{short(team.id)}</span></td><td><StateBadge value={team.state} /></td><td><StateBadge value={team.is_builtin} tone="accent" /></td><td>{team.notes}</td><td><button class="secondary" type="button" onclick={() => patchTeam(team.id, { state: team.state === 'active' ? 'disabled' : 'active' })}>{team.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
+					<section class="panel"><h2>分时段 Token 配额</h2><p class="muted">时间窗:上午 8:00–13:00 · 下午 13:00–18:00 · 晚上 18:00–次日 8:00。留空 = 该时段不限量;多权限组叠加时任一有余量即放行,消耗计入所有配额组。</p><div class="form-grid"><label>权限组<select bind:value={teamQuotaForm.team_id}><option value="">选择权限组</option>{#each inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><label>上午 token 上限<input type="number" min="0" bind:value={teamQuotaForm.morning} placeholder="留空不限" /></label><label>下午 token 上限<input type="number" min="0" bind:value={teamQuotaForm.afternoon} placeholder="留空不限" /></label><label>晚上 token 上限<input type="number" min="0" bind:value={teamQuotaForm.evening} placeholder="留空不限" /></label><button type="button" onclick={saveTeamQuota}>保存配额</button></div></section>
+					<section class="panel"><h2>权限组</h2><div class="table-wrap"><table><thead><tr><th>名称</th><th>状态</th><th>内置</th><th>Token 配额</th><th>备注</th><th>操作</th></tr></thead><tbody>{#each inventory.teams as team}<tr><td>{team.name}<br /><span class="muted">{short(team.id)}</span></td><td><StateBadge value={team.state} /></td><td><StateBadge value={team.is_builtin} tone="accent" /></td><td class="quota-cell">{quotaCell(team.id)}</td><td>{team.notes}</td><td><button class="secondary" type="button" onclick={() => patchTeam(team.id, { state: team.state === 'active' ? 'disabled' : 'active' })}>{team.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
 					<section class="panel"><h2>成员关系</h2><div class="form-grid"><label>权限组<select bind:value={teamMembershipTeamFilter}><option value="">全部权限组</option>{#each inventory.teams as team}<option value={team.id}>{team.name}</option>{/each}</select></label><label>搜索用户<input bind:value={teamMembershipSubjectSearch} placeholder="姓名或工号" /></label><label>角色<input bind:value={teamMembershipRoleFilter} placeholder="member" /></label><label>状态<select bind:value={teamMembershipStateFilter}><option value="">全部状态</option><option value="active">启用</option><option value="disabled">停用</option></select></label></div><div class="table-wrap"><table><thead><tr><th>权限组</th><th>用户</th><th>角色</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each teamMembershipPageRows as membership}<tr><td>{teamLabel(membership.team_id)}</td><td>{subjectLabel(membership.subject_id)}</td><td>{membership.role}</td><td><StateBadge value={membership.state} /></td><td><button class="secondary" type="button" onclick={() => setTeamMembershipState(membership.id, membership.state === 'active' ? 'disabled' : 'active')}>{membership.state === 'active' ? '禁用' : '启用'}</button></td></tr>{:else}<tr><td colspan="5" class="empty">没有匹配的成员关系。</td></tr>{/each}</tbody></table></div><Pagination total={teamMembershipRows.length} page={teamMembershipPage} size={PAGE_SIZE.defaultList} onPage={(page) => (teamMembershipPage = page)} /></section>
 					<section class="panel"><h2>模型授权</h2><div class="table-wrap"><table><thead><tr><th>模型</th><th>权限组</th><th>状态</th><th>操作</th></tr></thead><tbody>{#each inventory.modelTeamGrants as grant}<tr><td>{modelLabel(grant.model_alias_id)}</td><td>{teamLabel(grant.team_id)}</td><td><StateBadge value={grant.state} /></td><td><button class="secondary" type="button" onclick={() => setModelTeamGrantState(grant.id, grant.state === 'active' ? 'disabled' : 'active')}>{grant.state === 'active' ? '禁用' : '启用'}</button></td></tr>{/each}</tbody></table></div></section>
 				{:else if active === 'skill-market'}
