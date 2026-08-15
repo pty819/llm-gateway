@@ -17,7 +17,7 @@
 	function translateValue(value: string | boolean | number | null | undefined): string | number {
 		if (value === true) return '是';
 		if (value === false) return '否';
-		if (value === null || value === undefined || value === '') return '缺失';
+		if (value === null || value === undefined || value === '') return '—';
 		if (typeof value !== 'string') return value;
 		const labels: Record<string, string> = {
 			active: '启用',

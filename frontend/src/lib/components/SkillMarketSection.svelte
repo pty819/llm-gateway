@@ -8,6 +8,8 @@
 	import ReadmeDialog from '$lib/components/ReadmeDialog.svelte';
 	import ArtifactGrantsEditor from '$lib/components/ArtifactGrantsEditor.svelte';
 	import Pagination from '$lib/components/Pagination.svelte';
+	import { fmtNumber } from '$lib/format';
+	import { Download, FileText, Heart, Package } from 'lucide-svelte';
 
 	let {
 		client,
@@ -289,38 +291,48 @@
 			<button type="button" onclick={onSearch}>搜索</button>
 		</div>
 		{#if browseError}<p class="error">{browseError}</p>{/if}
-		<div class="table-wrap">
-			<table>
-				<thead>
-					<tr><th>Slug</th><th>名称</th><th>所有者</th><th>下载量</th><th>点赞</th><th>操作</th></tr>
-				</thead>
-				<tbody>
-					{#each browseItems as skill (skill.id)}
-						<tr>
-							<td><strong>{skill.slug}</strong></td>
-							<td>{skill.name}{#if skill.summary}<br /><span class="muted">{skill.summary}</span>{/if}</td>
-							<td>{skill.owner_name ?? skill.owner_subject_id}</td>
-							<td>{skill.download_count}</td>
-							<td>{skill.like_count}</td>
-							<td class="ops">
-								<button class="secondary" type="button" onclick={() => viewReadme(skill)}>查看README</button>
-								<button class="secondary" type="button" onclick={() => doDownload(skill)}>下载</button>
-								<button
-									class="secondary"
-									type="button"
-									disabled={likeBusy === likeKey(skill)}
-									onclick={() => toggleLike(skill)}
-								>
-									{isLiked(skill) ? '取消点赞' : '点赞'}
-								</button>
-							</td>
-						</tr>
-					{:else}
-						<tr><td colspan="6" class="empty">{browseLoading ? '加载中…' : '没有匹配的 Skill。'}</td></tr>
-					{/each}
-				</tbody>
-			</table>
-		</div>
+		{#if browseLoading && browseItems.length === 0}
+			<div class="market-grid">
+				{#each Array(6) as _}
+					<div class="market-card" aria-hidden="true"><div class="skeleton" style="height: 72px"></div><div class="skeleton" style="height: 16px"></div><div class="skeleton" style="height: 32px"></div></div>
+				{/each}
+			</div>
+		{:else}
+			<div class="market-grid">
+				{#each browseItems as skill (skill.id)}
+					<article
+						class="market-card"
+						role="button"
+						tabindex="0"
+						onclick={() => viewReadme(skill)}
+						onkeydown={(event) => event.key === 'Enter' && viewReadme(skill)}
+					>
+						<div class="market-card-cover">{skill.slug.slice(0, 2).toUpperCase()}</div>
+						<div class="market-card-head">
+							<strong>{skill.name || skill.slug}</strong>
+							{#if isLiked(skill)}<span class="badge flow">已赞</span>{/if}
+						</div>
+						<p class="muted">{skill.summary || skill.slug}</p>
+						<div class="market-card-foot">
+							<span><Download size={12} /> {fmtNumber(skill.download_count)}</span>
+							<span><Heart size={12} /> {fmtNumber(skill.like_count)}</span>
+							<span>{ownerKey(skill)}</span>
+						</div>
+						<div class="actions">
+							<button class="secondary" type="button" onclick={(event) => { event.stopPropagation(); viewReadme(skill); }}><FileText size={14} /> README</button>
+							<button class="secondary" type="button" onclick={(event) => { event.stopPropagation(); doDownload(skill); }}><Download size={14} /> 下载</button>
+							<button class="ghost" type="button" disabled={likeBusy === likeKey(skill)} onclick={(event) => { event.stopPropagation(); toggleLike(skill); }}><Heart size={14} /> {isLiked(skill) ? '取消点赞' : '点赞'}</button>
+						</div>
+					</article>
+				{:else}
+					<div class="empty-state">
+						<Package size={28} />
+						<strong>没有匹配的 Skill</strong>
+						<p class="muted">换个关键词试试，或发布你自己的 Skill。</p>
+					</div>
+				{/each}
+			</div>
+		{/if}
 		<Pagination total={browseTotal} page={browsePage} size={browseSize} onPage={onPage} />
 	</section>
 {/if}
@@ -344,34 +356,3 @@
 	/>
 {/if}
 
-<style>
-	.tabs {
-		display: flex;
-		gap: 0.5rem;
-		margin-bottom: 1rem;
-	}
-
-	.tabs button {
-		padding: 0.45rem 0.9rem;
-		border: 1px solid var(--border, #d8dce2);
-		background: #fff;
-		border-radius: 6px;
-		cursor: pointer;
-	}
-
-	.tabs button.active {
-		background: var(--accent-bg, #e7f0fb);
-		border-color: var(--accent, #2b6cb0);
-		font-weight: 600;
-	}
-
-	tr[aria-current='true'] {
-		background: var(--accent-bg, #e7f0fb);
-	}
-
-	.ops {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.35rem;
-	}
-</style>

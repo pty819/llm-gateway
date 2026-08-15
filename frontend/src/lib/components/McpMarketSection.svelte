@@ -7,6 +7,8 @@
 	import McpGrantsEditor from '$lib/components/McpGrantsEditor.svelte';
 	import ReadmeDialog from '$lib/components/ReadmeDialog.svelte';
 	import Pagination from '$lib/components/Pagination.svelte';
+	import { fmtNumber } from '$lib/format';
+	import { Download, FileText, Heart, Plug } from 'lucide-svelte';
 
 	let {
 		client,
@@ -209,6 +211,10 @@
 		}
 	}
 
+	// 当前展开详情的卡片(点击卡片切换)
+	const expandedMcp = $derived(browseItems.find((m) => rowKey(m) === expandedKey) ?? null);
+	const expandedDetail = $derived(expandedMcp ? detailCache[rowKey(expandedMcp)] : undefined);
+
 	onMount(() => {
 		void loadMcps();
 	});
@@ -315,82 +321,91 @@
 			<button type="button" onclick={onSearch}>搜索</button>
 		</div>
 		{#if browseError}<p class="error">{browseError}</p>{/if}
-		<div class="table-wrap">
-			<table>
-				<thead>
-					<tr><th>Slug</th><th>名称</th><th>所有者</th><th>下载量</th><th>点赞</th><th>操作</th></tr>
-				</thead>
-				<tbody>
-					{#each browseItems as mcp (mcp.id)}
-						{@const key = rowKey(mcp)}
-						<tr>
-							<td><strong>{mcp.slug}</strong></td>
-							<td>{mcp.name}{#if mcp.summary}<br /><span class="muted">{mcp.summary}</span>{/if}</td>
-							<td>{mcp.owner_name ?? mcp.owner_subject_id}</td>
-							<td>{mcp.download_count}</td>
-							<td>{mcp.like_count}</td>
-							<td class="ops">
-								<button class="secondary" type="button" onclick={() => viewReadme(mcp)}>查看README</button>
-								<button class="secondary" type="button" onclick={() => toggleDetail(mcp)}>
-									{expandedKey === key ? '收起' : '查看详情'}
-								</button>
-								<button
-									class="secondary"
-									type="button"
-									disabled={likeBusy === key}
-									onclick={() => toggleLike(mcp)}
-								>
-									{isLiked(mcp) ? '取消点赞' : '点赞'}
-								</button>
-							</td>
-						</tr>
-						{#if expandedKey === key}
-							<tr class="detail-row">
-								<td colspan="6">
-									{#if detailLoading === key}
-										<p class="muted">加载中…</p>
-									{:else if detailCache[key]}
-										{@const detail = detailCache[key]}
-										{@const ver = detail.latest ?? detail.versions[0]}
-										<div class="detail-grid">
-											<div><span class="lbl">传输方式</span> {ver ? ver.transport : '—'}</div>
-											{#if ver?.command}<div><span class="lbl">Command</span> <code>{ver.command}</code></div>{/if}
-											{#if ver?.url}<div><span class="lbl">URL</span> <code>{ver.url}</code></div>{/if}
-											{#if ver && ver.args.length > 0}
-												<div><span class="lbl">Args</span> <code>{ver.args.join(' ')}</code></div>
-											{/if}
-											{#if ver && Object.keys(ver.env).length > 0}
-												<div><span class="lbl">Env</span>
-													<ul class="kv">{#each Object.entries(ver.env) as [k, v]}<li><code>{k}</code> = <code>{v}</code></li>{/each}</ul>
-												</div>
-											{/if}
-											{#if ver && Object.keys(ver.headers).length > 0}
-												<div><span class="lbl">Headers</span>
-													<ul class="kv">{#each Object.entries(ver.headers) as [k, v]}<li><code>{k}</code>: <code>{v}</code></li>{/each}</ul>
-												</div>
-											{/if}
-											{#if ver && ver.tools.length > 0}
-												<div><span class="lbl">Tools</span>
-													<ul class="kv">{#each ver.tools as t}<li>{t.name ?? JSON.stringify(t)}</li>{/each}</ul>
-												</div>
-											{/if}
-											{#if detail.description}<div><span class="lbl">描述</span> {detail.description}</div>{/if}
-											<div><span class="lbl">版本</span> {ver ? versionLabel(ver) : '—'}{#if ver?.state} · {ver.state}{/if}</div>
-										</div>
-									{:else}
-										<p class="muted">暂无详情。</p>
-									{/if}
-								</td>
-							</tr>
-						{/if}
-					{:else}
-						<tr><td colspan="6" class="empty">{browseLoading ? '加载中…' : '没有匹配的 MCP。'}</td></tr>
-					{/each}
-				</tbody>
-			</table>
-		</div>
+		{#if browseLoading && browseItems.length === 0}
+			<div class="market-grid">
+				{#each Array(6) as _}
+					<div class="market-card" aria-hidden="true"><div class="skeleton" style="height: 72px"></div><div class="skeleton" style="height: 16px"></div><div class="skeleton" style="height: 32px"></div></div>
+				{/each}
+			</div>
+		{:else}
+			<div class="market-grid">
+				{#each browseItems as mcp (mcp.id)}
+					{@const key = rowKey(mcp)}
+					<article
+						class="market-card"
+						role="button"
+						tabindex="0"
+						aria-expanded={expandedKey === key}
+						onclick={() => toggleDetail(mcp)}
+						onkeydown={(event) => event.key === 'Enter' && toggleDetail(mcp)}
+					>
+						<div class="market-card-cover">{mcp.slug.slice(0, 2).toUpperCase()}</div>
+						<div class="market-card-head">
+							<strong>{mcp.name || mcp.slug}</strong>
+							{#if expandedKey === key}
+								<span class="badge accent">已展开</span>
+							{:else if isLiked(mcp)}
+								<span class="badge flow">已赞</span>
+							{/if}
+						</div>
+						<p class="muted">{mcp.summary || mcp.slug}</p>
+						<div class="market-card-foot">
+							<span><Download size={12} /> {fmtNumber(mcp.download_count)}</span>
+							<span><Heart size={12} /> {fmtNumber(mcp.like_count)}</span>
+							<span>{ownerKey(mcp)}</span>
+						</div>
+						<div class="actions">
+							<button class="secondary" type="button" onclick={(event) => { event.stopPropagation(); viewReadme(mcp); }}><FileText size={14} /> README</button>
+							<button class="ghost" type="button" disabled={likeBusy === key} onclick={(event) => { event.stopPropagation(); toggleLike(mcp); }}><Heart size={14} /> {isLiked(mcp) ? '取消点赞' : '点赞'}</button>
+						</div>
+					</article>
+				{:else}
+					<div class="empty-state">
+						<Plug size={28} />
+						<strong>没有匹配的 MCP</strong>
+						<p class="muted">换个关键词试试，或发布你自己的 MCP 配置。</p>
+					</div>
+				{/each}
+			</div>
+		{/if}
 		<Pagination total={browseTotal} page={browsePage} size={browseSize} onPage={onPage} />
 	</section>
+
+	{#if expandedMcp}
+		<section class="panel">
+			<div class="section-head">
+				<div>
+					<h2>配置详情</h2>
+					<p>{expandedMcp.name} · <code>{expandedMcp.slug}</code></p>
+				</div>
+				<button class="secondary" type="button" onclick={() => (expandedKey = null)}>收起</button>
+			</div>
+			{#if detailLoading === rowKey(expandedMcp)}
+				<p class="muted">加载中…</p>
+			{:else if expandedDetail}
+				{@const ver = expandedDetail.latest ?? expandedDetail.versions[0]}
+				<dl class="detail-list">
+					<div class="detail-item"><dt>传输方式</dt><dd>{ver ? ver.transport : '—'}</dd></div>
+					{#if ver?.command}<div class="detail-item"><dt>Command</dt><dd><code>{ver.command}</code></dd></div>{/if}
+					{#if ver?.url}<div class="detail-item"><dt>URL</dt><dd><code>{ver.url}</code></dd></div>{/if}
+					{#if ver && ver.args.length > 0}<div class="detail-item"><dt>Args</dt><dd><code>{ver.args.join(' ')}</code></dd></div>{/if}
+					{#if ver && Object.keys(ver.env).length > 0}
+						<div class="detail-item"><dt>Env</dt><dd>{#each Object.entries(ver.env) as [k, v]}<div><code>{k}</code> = <code>{v}</code></div>{/each}</dd></div>
+					{/if}
+					{#if ver && Object.keys(ver.headers).length > 0}
+						<div class="detail-item"><dt>Headers</dt><dd>{#each Object.entries(ver.headers) as [k, v]}<div><code>{k}</code>: <code>{v}</code></div>{/each}</dd></div>
+					{/if}
+					{#if ver && ver.tools.length > 0}
+						<div class="detail-item"><dt>Tools</dt><dd>{#each ver.tools as t}<div>{t.name ?? JSON.stringify(t)}</div>{/each}</dd></div>
+					{/if}
+					{#if expandedDetail.description}<div class="detail-item"><dt>描述</dt><dd>{expandedDetail.description}</dd></div>{/if}
+					<div class="detail-item"><dt>版本</dt><dd>{ver ? versionLabel(ver) : '—'}{#if ver?.state} · {ver.state}{/if}</dd></div>
+				</dl>
+			{:else}
+				<p class="muted">暂无详情。</p>
+			{/if}
+		</section>
+	{/if}
 {/if}
 
 {#if creating}
@@ -412,61 +427,3 @@
 	/>
 {/if}
 
-<style>
-	.tabs {
-		display: flex;
-		gap: 0.5rem;
-		margin-bottom: 1rem;
-	}
-
-	.tabs button {
-		padding: 0.45rem 0.9rem;
-		border: 1px solid var(--border, #d8dce2);
-		background: #fff;
-		border-radius: 6px;
-		cursor: pointer;
-	}
-
-	.tabs button.active {
-		background: var(--accent-bg, #e7f0fb);
-		border-color: var(--accent, #2b6cb0);
-		font-weight: 600;
-	}
-
-	tr[aria-current='true'] {
-		background: var(--accent-bg, #e7f0fb);
-	}
-
-	.ops {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.35rem;
-	}
-
-	.detail-row td {
-		background: #f8f9fb;
-		padding: 0.75rem 1rem;
-	}
-
-	.detail-grid {
-		display: grid;
-		gap: 0.4rem;
-		font-size: 0.9rem;
-	}
-
-	.detail-grid .lbl {
-		display: inline-block;
-		min-width: 5rem;
-		color: var(--text-muted);
-		font-weight: 600;
-	}
-
-	.kv {
-		margin: 0;
-		padding-left: 1.2rem;
-	}
-
-	.kv li {
-		line-height: 1.5;
-	}
-</style>

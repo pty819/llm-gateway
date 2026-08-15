@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Inventory } from '$lib/api/types';
 	import { msLabel, short } from '$lib/admin-config';
+	import { fmtNumber } from '$lib/format';
 
 	let { rows }: { rows: Inventory['analyticsDrilldown'] } = $props();
 </script>
@@ -12,13 +13,13 @@
 			{#each rows as row}
 				<tr>
 					<td><strong>{row.dimension_label}</strong><br /><span class="muted">{short(row.dimension_id)}</span></td>
-					<td>{row.request_count}</td>
-					<td>{row.total_tokens}<br /><span class="muted">入 {row.prompt_tokens} / 出 {row.completion_tokens}</span></td>
-					<td>{row.cached_tokens}</td>
-					<td>{row.success_count} / {row.failure_count}</td>
+					<td class="mono">{fmtNumber(row.request_count)}</td>
+					<td class="mono">{fmtNumber(row.total_tokens)}<br /><span class="muted">入 {fmtNumber(row.prompt_tokens)} / 出 {fmtNumber(row.completion_tokens)}</span></td>
+					<td class="mono">{fmtNumber(row.cached_tokens)}</td>
+					<td class="mono">{fmtNumber(row.success_count)} / {fmtNumber(row.failure_count)}</td>
 					<td>{msLabel(row.avg_latency_ms)}</td>
 					<td>{msLabel(row.avg_ttft_ms)}</td>
-					<td>{row.retry_count} / {row.fallback_count}<br /><span class="muted">fallback token {row.fallback_tokens}</span></td>
+					<td class="mono">{fmtNumber(row.retry_count)} / {fmtNumber(row.fallback_count)}<br /><span class="muted">fallback token {fmtNumber(row.fallback_tokens)}</span></td>
 					<td>{row.vllm_metrics_count ? `${row.vllm_metrics_count} 条` : '无上游指标'}</td>
 				</tr>
 			{:else}

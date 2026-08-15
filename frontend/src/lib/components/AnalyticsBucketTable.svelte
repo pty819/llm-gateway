@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Inventory } from '$lib/api/types';
 	import { msLabel, parseServerUtcIso, ratioLabel } from '$lib/admin-config';
+	import { fmtNumber } from '$lib/format';
 
 	let {
 		rows,
@@ -19,10 +20,10 @@
 				<tr>
 					<td>{parseServerUtcIso(row.bucket_start).toLocaleString()}</td>
 					<td><div class="bar-track"><span style={`width: ${Math.max(4, Math.round((row.total_tokens / maxTokens) * 100))}%`}></span></div></td>
-					<td>{row.request_count}</td>
-					<td>{row.total_tokens}<br /><span class="muted">入 {row.prompt_tokens} / 出 {row.completion_tokens}</span></td>
-					<td>{row.cached_tokens}</td>
-					<td>{row.success_count} / {row.failure_count}</td>
+					<td class="mono">{fmtNumber(row.request_count)}</td>
+					<td class="mono">{fmtNumber(row.total_tokens)}<br /><span class="muted">入 {fmtNumber(row.prompt_tokens)} / 出 {fmtNumber(row.completion_tokens)}</span></td>
+					<td class="mono">{fmtNumber(row.cached_tokens)}</td>
+					<td class="mono">{fmtNumber(row.success_count)} / {fmtNumber(row.failure_count)}</td>
 					<td>{msLabel(row.avg_latency_ms)}</td>
 					<td>{msLabel(row.avg_ttft_ms)}</td>
 					<td>{msLabel(row.avg_stream_duration_ms)}</td>
