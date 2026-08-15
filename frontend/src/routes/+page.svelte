@@ -888,7 +888,6 @@
 			await Promise.all([
 				fetchSubjects(),
 				fetchProjects(),
-				fetchMemberships(),
 				fetchKeys(),
 				fetchModels(),
 				fetchUpstreams(),
@@ -2039,88 +2038,6 @@
 							onSizeChange={(size) => { listPageSize = size; subjectPage = 1; void run(fetchSubjects); }}
 						/>
 					</section>
-				{:else if active === 'projects'}
-					<div class="toolbar">
-						<span class="search-input">
-							<Search size={14} />
-							<input
-								bind:value={projectSearch}
-								placeholder="搜索项目名或备注，回车搜索"
-								aria-label="搜索项目"
-								onkeydown={(event) => {
-									if (event.key === 'Enter') {
-										projectPage = 1;
-										void run(fetchProjects);
-									}
-								}}
-							/>
-						</span>
-						<div class="actions">
-							<button class="secondary" type="button" onclick={() => (projectMemberDrawerOpen = true)}><Plus size={15} />添加成员</button>
-							<button type="button" onclick={() => (projectDrawerOpen = true)}><Plus size={15} />创建项目</button>
-						</div>
-					</div>
-					<section class="panel flush">
-						<div class="table-wrap">
-							<table>
-								<thead><tr><th>名称</th><th>负责人</th><th>状态</th><th>备注</th><th></th></tr></thead>
-								<tbody>
-									{#each inventory.projects as project}
-										<tr onclick={() => (detail = { kind: 'project', id: project.id })}>
-											<td><strong>{project.name}</strong><br /><span class="sub mono">{short(project.id)}</span></td>
-											<td>{subjectLabel(project.owner_subject_id)}</td>
-											<td><StateBadge value={project.state} /></td>
-											<td class="ellipsis">{project.notes}</td>
-											<td class="nowrap" onclick={(event) => event.stopPropagation()}>
-												<RowMenu label="项目操作" items={[{ label: '编辑备注', onclick: () => (textEditor = { title: '编辑备注', label: '备注', value: project.notes ?? '', multiline: true, onSave: (value) => void patchProject(project.id, { notes: value }) }) }]} />
-											</td>
-										</tr>
-										{:else}
-											<tr><td colspan="5"><EmptyState title="没有匹配的项目" hint="换个搜索关键词，或创建新项目。" /></td></tr>
-										{/each}
-									</tbody>
-								</table>
-							</div>
-							<Pagination
-								total={inventory.projectsTotal}
-								page={projectPage}
-								size={listPageSize}
-								onPage={(page) => { projectPage = page; void run(fetchProjects); }}
-								sizes={[20, 50, 100]}
-								onSizeChange={(size) => { listPageSize = size; projectPage = 1; void run(fetchProjects); }}
-							/>
-						</section>
-						<section class="panel">
-							<div class="section-head">
-								<h2>项目成员</h2>
-								<select
-									aria-label="按项目筛选成员"
-									value={membershipProjectFilter}
-									onchange={() => { membershipPage = 1; void run(fetchMemberships); }}
-								>
-									<option value="">全部项目</option>
-									{#each projectOptions as project}<option value={project.id}>{project.name}</option>{/each}
-								</select>
-							</div>
-							<div class="table-wrap">
-								<table>
-									<thead><tr><th>项目</th><th>用户</th><th>角色</th></tr></thead>
-									<tbody>
-										{#each inventory.memberships as membership}
-											<tr><td>{membership.project_name ?? projectLabel(membership.project_id)}</td><td>{membershipSubjectLabel(membership)}</td><td>{membership.role}</td></tr>
-										{:else}
-											<tr><td colspan="3" class="empty">暂无项目成员。</td></tr>
-										{/each}
-									</tbody>
-								</table>
-							</div>
-							<Pagination
-								total={inventory.membershipsTotal}
-								page={membershipPage}
-								size={listPageSize}
-								onPage={(page) => { membershipPage = page; void run(fetchMemberships); }}
-							/>
-						</section>
 				{:else if active === 'keys'}
 					<div class="toolbar">
 						<span class="search-input">

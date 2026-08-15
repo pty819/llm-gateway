@@ -37,7 +37,6 @@ export const sections: Section[] = [
 	{ id: 'models', label: '模型', group: '配置', icon: BookOpen },
 	{ id: 'upstreams', label: '上游', group: '配置', icon: Network },
 	{ id: 'subjects', label: '用户', group: '访问控制', icon: Users },
-	{ id: 'projects', label: '项目', group: '访问控制', icon: Route },
 	{ id: 'keys', label: '网关密钥', group: '访问控制', icon: KeyRound },
 	{ id: 'teams', label: '权限组', group: '访问控制', icon: UserPlus },
 	{ id: 'skill-market', label: 'Skill 市场', group: '市场', icon: Package },
