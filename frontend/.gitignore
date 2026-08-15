@@ -22,7 +22,5 @@ Thumbs.db
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
-# Local editor/test artifacts
+# Local editor artifacts
 .vscode/
-test-results/
-playwright-report/
