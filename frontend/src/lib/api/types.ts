@@ -43,6 +43,9 @@ export type Project = Timestamped & {
 	name: string;
 	state: ResourceState;
 	owner_subject_id: string | null;
+	/** 服务端分页后随行走负的显示名（不再持有全量用户清单）。 */
+	owner_name?: string | null;
+	owner_login_username?: string | null;
 	notes: string | null;
 };
 
@@ -52,6 +55,7 @@ export type ProjectMembership = Timestamped & {
 	subject_id: string;
 	subject_name?: string | null;
 	subject_login_username?: string | null;
+	project_name?: string | null;
 	role: string;
 };
 
@@ -63,6 +67,9 @@ export type GatewayKey = Timestamped & {
 	key_prefix: string;
 	key_hash: null;
 	state: ResourceState;
+	subject_name?: string | null;
+	subject_login_username?: string | null;
+	project_name?: string | null;
 	expires_at: string | null;
 };
 
@@ -93,6 +100,11 @@ export type ModelEntitlement = Timestamped & {
 	gateway_key_id: string | null;
 	model_alias_id: string;
 	state: ResourceState;
+	model_alias?: string | null;
+	subject_name?: string | null;
+	subject_login_username?: string | null;
+	project_name?: string | null;
+	key_name?: string | null;
 };
 
 export type Team = Timestamped & {
@@ -109,6 +121,7 @@ export type TeamMembership = Timestamped & {
 	subject_id: string;
 	subject_name?: string | null;
 	subject_login_username?: string | null;
+	team_name?: string | null;
 	role: string;
 	state: ResourceState;
 };
@@ -118,10 +131,13 @@ export type ModelTeamGrant = Timestamped & {
 	model_alias_id: string;
 	team_id: string;
 	state: ResourceState;
+	model_alias?: string | null;
+	team_name?: string | null;
 };
 
 export type TeamTokenQuotaRow = {
 	team_id: string;
+	team_name?: string | null;
 	morning_tokens: number | null;
 	afternoon_tokens: number | null;
 	evening_tokens: number | null;
@@ -143,6 +159,7 @@ export type UpstreamTarget = Timestamped & {
 	health_path: string;
 	state: ResourceState;
 	extra_headers: Record<string, string>;
+	model_alias?: string | null;
 };
 
 export type UpstreamHealth = {
@@ -228,12 +245,16 @@ export type RatePolicy = Timestamped & {
 	requests_per_minute: number | null;
 	concurrency_limit: number | null;
 	state: ResourceState;
+	scope_name?: string | null;
 };
 
 export type UsageSummaryRow = {
 	model_alias: string | null;
 	subject_id: string | null;
+	subject_name?: string | null;
+	subject_login_username?: string | null;
 	project_id: string | null;
+	project_name?: string | null;
 	request_count: number;
 	prompt_tokens: number;
 	completion_tokens: number;
@@ -378,25 +399,51 @@ export type ApiError = {
 };
 
 export type Inventory = {
+	/** 各列表只保存当前页(服务端分页),对应的 *Total 是服务端总数。 */
 	subjects: Subject[];
+	subjectsTotal: number;
 	subjectRateOverrides: SubjectRateOverrideMap;
 	projects: Project[];
+	projectsTotal: number;
 	memberships: ProjectMembership[];
+	membershipsTotal: number;
 	keys: GatewayKey[];
+	keysTotal: number;
 	models: ModelAlias[];
+	modelsTotal: number;
 	entitlements: ModelEntitlement[];
+	entitlementsTotal: number;
 	teams: Team[];
+	teamsTotal: number;
 	teamMemberships: TeamMembership[];
+	teamMembershipsTotal: number;
 	modelTeamGrants: ModelTeamGrant[];
+	modelTeamGrantsTotal: number;
 	teamTokenQuotas: TeamTokenQuotaRow[];
 	upstreams: UpstreamTarget[];
+	upstreamsTotal: number;
 	ratePolicies: RatePolicy[];
+	ratePoliciesTotal: number;
 	usage: UsageSummaryRow[];
 	usageTotals: UsageTotalsRow | null;
 	ranking: UsageRankingRow[];
 	analyticsBuckets: AnalyticsBucketRow[];
 	analyticsDrilldown: AnalyticsDrilldownRow[];
 	audit: AuditEvent[];
+	auditTotal: number;
+};
+
+/** 各 admin 列表的 /options 轻量下拉端点的行形状。 */
+export type SubjectOption = { id: string; name: string; login_username: string | null };
+export type ProjectOption = { id: string; name: string };
+export type ModelOption = { id: string; alias: string };
+export type TeamOption = { id: string; name: string };
+export type KeyOption = { id: string; name: string; key_prefix: string };
+export type UpstreamOptionRow = {
+	id: string;
+	name: string;
+	state: ResourceState;
+	model_alias: string | null;
 };
 
 export interface ManagedRankingRow {

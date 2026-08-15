@@ -13,7 +13,7 @@ import {
 	UserPlus,
 	Users
 } from 'lucide-svelte';
-import type { Project, ProjectMembership, Subject, TeamMembership } from '$lib/api/types';
+import type { ProjectMembership, Subject, TeamMembership } from '$lib/api/types';
 import { isApiError } from '$lib/api/client';
 
 export type Section = {
@@ -28,24 +28,25 @@ export const PAGE_SIZE = {
 	selectOptions: 20,
 	ranking: 50,
 	audit: 50,
-	usagePreview: 5
+	usagePreview: 5,
+	bucketRibbon: 72
 } as const;
 
 export const sections: Section[] = [
-	{ id: 'diagnostics', label: '诊断', group: '运行', icon: Database },
+	{ id: 'diagnostics', label: '诊断', group: '总览', icon: Database },
 	{ id: 'models', label: '模型', group: '配置', icon: BookOpen },
 	{ id: 'upstreams', label: '上游', group: '配置', icon: Network },
-	{ id: 'subjects', label: '用户', group: '访问', icon: Users },
-	{ id: 'projects', label: '项目', group: '访问', icon: Route },
-	{ id: 'keys', label: '网关密钥', group: '访问', icon: KeyRound },
-	{ id: 'teams', label: '权限组', group: '访问', icon: UserPlus },
+	{ id: 'subjects', label: '用户', group: '访问控制', icon: Users },
+	{ id: 'projects', label: '项目', group: '访问控制', icon: Route },
+	{ id: 'keys', label: '网关密钥', group: '访问控制', icon: KeyRound },
+	{ id: 'teams', label: '权限组', group: '访问控制', icon: UserPlus },
 	{ id: 'skill-market', label: 'Skill 市场', group: '市场', icon: Package },
 	{ id: 'mcp-market', label: 'MCP 市场', group: '市场', icon: Plug },
-	{ id: 'entitlements', label: '旧授权', group: '策略', icon: Shield },
-	{ id: 'rate', label: '限流', group: '策略', icon: Gauge },
-	{ id: 'usage', label: '用量', group: '证据', icon: Activity },
-	{ id: 'ranking', label: '排行榜', group: '证据', icon: Trophy },
-	{ id: 'audit', label: '审计', group: '证据', icon: Shield }
+	{ id: 'entitlements', label: '旧授权', group: '治理', icon: Shield },
+	{ id: 'rate', label: '限流', group: '治理', icon: Gauge },
+	{ id: 'usage', label: '用量', group: '数据', icon: Activity },
+	{ id: 'ranking', label: '排行榜', group: '数据', icon: Trophy },
+	{ id: 'audit', label: '审计', group: '数据', icon: Shield }
 ];
 
 export const navGroups = Array.from(new Set(sections.map((section) => section.group)));
@@ -98,7 +99,7 @@ export function scopeLabel(scope: string): string {
 	return scope;
 }
 
-export function subjectDisplay(subject: Subject): string {
+export function subjectDisplay(subject: Pick<Subject, 'name' | 'login_username'>): string {
 	return subject.login_username ? `${subject.name} / ${subject.login_username}` : subject.name;
 }
 
@@ -122,28 +123,38 @@ export function pageCountTotal(total: number, size: number): number {
 	return Math.max(1, Math.ceil(total / size));
 }
 
-// ---- 依赖 inventory/profile 的 label 函数(接收 inventory 作为参数,保持纯函数语义) ----
+// ---- 依赖名称缓存的 label 函数(接收缓存作为参数,保持纯函数语义) ----
+// 服务端分页后前端不再持有全量清单;labelCtx 改为按 id 索引的名称缓存,
+// 缓存条目来自各列表当前页的随行名称与 /options 轻量端点。
+
+export type SubjectNameEntry = { name: string | null; login_username?: string | null };
+export type KeyNameEntry = { name: string; key_prefix: string };
 
 export type LabelContext = {
-	subjects: Subject[];
+	subjects: Record<string, SubjectNameEntry>;
 	managedSubjectCandidates?: Subject[];
 	selfSubjectId?: string;
 	selfSubject?: Subject | null;
-	projects: Project[];
-	keys: { id: string; name: string; key_prefix: string }[];
-	models: { id: string; alias: string }[];
-	teams: { id: string; name: string }[];
+	projects: Record<string, string>;
+	keys: Record<string, KeyNameEntry>;
+	models: Record<string, string>;
+	teams: Record<string, string>;
 };
+
+function subjectEntryLabel(entry: SubjectNameEntry): string {
+	return entry.login_username ? `${entry.name} / ${entry.login_username}` : (entry.name ?? '');
+}
 
 export function subjectLabel(
 	id: string | null | undefined,
 	ctx: LabelContext
 ): string {
-	const subject =
-		ctx.subjects.find((item) => item.id === id) ??
-		(ctx.managedSubjectCandidates ?? []).find((item) => item.id === id) ??
+	const cached = id ? ctx.subjects[id] : undefined;
+	if (cached) return subjectEntryLabel(cached) || short(id);
+	const managed =
+		ctx.managedSubjectCandidates?.find((item) => item.id === id) ??
 		(ctx.selfSubjectId && ctx.selfSubjectId === id ? (ctx.selfSubject ?? undefined) : undefined);
-	return subject ? subjectDisplay(subject) : short(id);
+	return managed ? subjectDisplay(managed) : short(id);
 }
 
 export function membershipSubjectLabel(
@@ -163,14 +174,14 @@ export function projectLabel(
 	id: string | null | undefined,
 	ctx: LabelContext
 ): string {
-	return ctx.projects.find((item) => item.id === id)?.name ?? short(id);
+	return (id ? ctx.projects[id] : undefined) ?? short(id);
 }
 
 export function keyLabel(
 	id: string | null | undefined,
 	ctx: LabelContext
 ): string {
-	const key = ctx.keys.find((item) => item.id === id);
+	const key = id ? ctx.keys[id] : undefined;
 	return key ? `${key.name} (${key.key_prefix})` : short(id);
 }
 
@@ -178,30 +189,14 @@ export function modelLabel(
 	id: string | null | undefined,
 	ctx: LabelContext
 ): string {
-	return ctx.models.find((item) => item.id === id)?.alias ?? short(id);
+	return (id ? ctx.models[id] : undefined) ?? short(id);
 }
 
 export function teamLabel(
 	id: string | null | undefined,
 	ctx: LabelContext
 ): string {
-	return ctx.teams.find((item) => item.id === id)?.name ?? short(id);
-}
-
-export function filteredSubjects(query: string, subjects: Subject[]): Subject[] {
-	const needle = query.trim().toLowerCase();
-	if (!needle) return subjects;
-	return subjects.filter((subject) =>
-		[subject.name, subject.login_username ?? '', subject.notes ?? ''].some((value) =>
-			value.toLowerCase().includes(needle)
-		)
-	);
-}
-
-export function subjectOptions(query: string, subjects: Subject[]): Subject[] {
-	return filteredSubjects(query, subjects)
-		.toSorted((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'))
-		.slice(0, PAGE_SIZE.selectOptions);
+	return (id ? ctx.teams[id] : undefined) ?? short(id);
 }
 
 export function toDateTimeLocal(date: Date): string {

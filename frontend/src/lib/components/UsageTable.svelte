@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Inventory } from '$lib/api/types';
+	import { fmtNumber } from '$lib/format';
 
 	let {
 		rows,
@@ -17,7 +18,12 @@
 		<thead><tr><th>模型</th><th>用户</th><th>项目</th><th>请求数</th><th>输入</th><th>输出</th><th>总计</th><th>成功</th><th>失败</th></tr></thead>
 		<tbody>
 			{#each rows as row}
-				<tr><td>{row.model_alias ?? '无'}</td><td>{subjectLabel(row.subject_id)}</td><td>{projectLabel(row.project_id)}</td><td>{row.request_count}</td><td>{row.prompt_tokens}</td><td>{row.completion_tokens}</td><td>{row.total_tokens}</td><td>{row.success_count}</td><td>{row.failure_count}</td></tr>
+				{@const subjectText = row.subject_name
+					? row.subject_login_username
+						? `${row.subject_name} / ${row.subject_login_username}`
+						: row.subject_name
+					: subjectLabel(row.subject_id)}
+				<tr><td>{row.model_alias ?? '无'}</td><td>{subjectText}</td><td>{row.project_name ?? projectLabel(row.project_id)}</td><td class="mono">{fmtNumber(row.request_count)}</td><td class="mono">{fmtNumber(row.prompt_tokens)}</td><td class="mono">{fmtNumber(row.completion_tokens)}</td><td class="mono"><strong>{fmtNumber(row.total_tokens)}</strong></td><td class="mono">{fmtNumber(row.success_count)}</td><td class="mono">{fmtNumber(row.failure_count)}</td></tr>
 			{:else}
 				<tr><td colspan="9" class="empty">这个时间范围内暂无用量数据。</td></tr>
 			{/each}
