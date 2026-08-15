@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
@@ -108,11 +108,66 @@ async def create_model_entitlement(
 
 
 @router.get("/model-entitlements")
-async def list_model_entitlements(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(
-        select(ModelEntitlement).order_by(col(ModelEntitlement.created_at).desc())
+async def list_model_entitlements(
+    model_alias_id: UUID | None = Query(default=None),
+    subject_id: UUID | None = Query(default=None),
+    project_id: UUID | None = Query(default=None),
+    gateway_key_id: UUID | None = Query(default=None),
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(session_dep),
+):
+    filters = []
+    if model_alias_id:
+        filters.append(col(ModelEntitlement.model_alias_id) == model_alias_id)
+    if subject_id:
+        filters.append(col(ModelEntitlement.subject_id) == subject_id)
+    if project_id:
+        filters.append(col(ModelEntitlement.project_id) == project_id)
+    if gateway_key_id:
+        filters.append(col(ModelEntitlement.gateway_key_id) == gateway_key_id)
+    # Related names are embedded so a paginated client can render each row
+    # without holding the full subject/project/key/model inventories.
+    base = (
+        select(
+            ModelEntitlement,
+            ModelAlias.alias,
+            Subject.name,
+            Subject.login_username,
+            Project.name,
+            GatewayKey.name,
+        )
+        .outerjoin(
+            ModelAlias, col(ModelEntitlement.model_alias_id) == col(ModelAlias.id)
+        )
+        .outerjoin(Subject, col(ModelEntitlement.subject_id) == col(Subject.id))
+        .outerjoin(Project, col(ModelEntitlement.project_id) == col(Project.id))
+        .outerjoin(
+            GatewayKey, col(ModelEntitlement.gateway_key_id) == col(GatewayKey.id)
+        )
     )
-    return result.scalars().all()
+    if filters:
+        base = base.where(*filters)
+    total = await _count_rows(
+        session, select(func.count()).select_from(base.subquery())
+    )
+    rows = (
+        await session.execute(
+            base.order_by(col(ModelEntitlement.created_at).desc())
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
+    items = []
+    for entitlement, alias, subject_name, subject_login, project_name, key_name in rows:
+        item = entitlement.model_dump()
+        item["model_alias"] = alias
+        item["subject_name"] = subject_name
+        item["subject_login_username"] = subject_login
+        item["project_name"] = project_name
+        item["key_name"] = key_name
+        items.append(item)
+    return paginated(items, total, limit, offset)
 
 
 @router.post("/teams")
@@ -137,14 +192,43 @@ async def create_team(
 
 @router.get("/teams")
 async def list_teams(
+    q: str | None = Query(default=None, max_length=120),
     limit: int | None = Query(default=None, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(session_dep),
 ):
-    stmt = select(Team).order_by(col(Team.name))
-    total = await _count_rows(session, select(func.count()).select_from(Team))
-    rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
+    stmt = select(Team)
+    if q and q.strip():
+        stmt = stmt.where(col(Team.name).ilike(f"%{q.strip()}%"))
+    total = await _count_rows(
+        session, select(func.count()).select_from(stmt.subquery())
+    )
+    rows = (
+        (
+            await session.execute(
+                stmt.order_by(col(Team.name)).offset(offset).limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
     return paginated(rows, total, limit, offset)
+
+
+@router.get("/teams/options")
+async def list_team_options(
+    q: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=200, ge=1, le=2000),
+    session: AsyncSession = Depends(session_dep),
+):
+    """Lightweight id/name pairs for searchable pickers (grant editors,
+    marketplace authorization); the cap is generous so those flows don't
+    regress on large team counts."""
+    stmt = select(Team.id, Team.name).order_by(col(Team.name))
+    if q and q.strip():
+        stmt = stmt.where(col(Team.name).ilike(f"%{q.strip()}%"))
+    rows = (await session.execute(stmt.limit(limit))).all()
+    return [{"id": str(row.id), "name": row.name} for row in rows]
 
 
 @router.patch("/teams/{team_id}")
@@ -160,7 +244,9 @@ async def update_team(
 
 
 async def _attach_usage(
-    redis: Redis, rows: list[TeamTokenQuota]
+    redis: Redis,
+    rows: list[TeamTokenQuota],
+    team_names: dict[UUID, str | None] | None = None,
 ) -> list[dict]:
     """Serialize quota rows with best-effort current-window usage."""
     from llm_gateway.services.team_quota import counter_key, current_window
@@ -175,6 +261,7 @@ async def _attach_usage(
     for row in rows:
         item = {
             "team_id": str(row.team_id),
+            "team_name": (team_names or {}).get(row.team_id),
             "morning_tokens": row.morning_tokens,
             "afternoon_tokens": row.afternoon_tokens,
             "evening_tokens": row.evening_tokens,
@@ -196,13 +283,43 @@ async def _attach_usage(
 
 @router.get("/team-token-quotas")
 async def list_team_token_quotas(
+    q: str | None = Query(default=None, max_length=120),
+    team_ids: str | None = Query(default=None, max_length=20_000),
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(session_dep),
     redis: Redis = Depends(redis_dep),
 ):
-    result = await session.execute(
-        select(TeamTokenQuota).order_by(col(TeamTokenQuota.created_at).desc())
+    base = select(TeamTokenQuota, Team.name).outerjoin(
+        Team, col(TeamTokenQuota.team_id) == col(Team.id)
     )
-    return await _attach_usage(redis, list(result.scalars().all()))
+    if q and q.strip():
+        base = base.where(col(Team.name).ilike(f"%{q.strip()}%"))
+    if team_ids and team_ids.strip():
+        ids = [item.strip() for item in team_ids.split(",") if item.strip()]
+        if len(ids) > 500:
+            raise HTTPException(
+                status_code=422, detail="too_many_team_ids: 最多 500 个"
+            )
+        try:
+            parsed = [UUID(item) for item in ids]
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="invalid_team_id") from exc
+        base = base.where(col(TeamTokenQuota.team_id).in_(parsed))
+    total = await _count_rows(
+        session, select(func.count()).select_from(base.subquery())
+    )
+    rows = (
+        await session.execute(
+            base.order_by(col(TeamTokenQuota.created_at).desc())
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
+    quotas = [quota for quota, _name in rows]
+    names = {quota.team_id: name for quota, name in rows}
+    items = await _attach_usage(redis, quotas, names)
+    return paginated(items, total, limit, offset)
 
 
 @router.get("/teams/{team_id}/token-quota")
@@ -297,14 +414,54 @@ async def create_team_membership(
 
 @router.get("/team-memberships")
 async def list_team_memberships(
+    q: str | None = Query(default=None, max_length=120),
+    team_id: UUID | None = Query(default=None),
+    state: ResourceState | None = Query(default=None),
+    role: str | None = Query(default=None, max_length=40),
     limit: int | None = Query(default=None, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(session_dep),
 ):
-    stmt = select(TeamMembership).order_by(col(TeamMembership.created_at).desc())
-    total = await _count_rows(session, select(func.count()).select_from(TeamMembership))
-    rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
-    return paginated(rows, total, limit, offset)
+    filters = []
+    if team_id:
+        filters.append(col(TeamMembership.team_id) == team_id)
+    if state:
+        filters.append(col(TeamMembership.state) == state)
+    if role:
+        filters.append(col(TeamMembership.role) == role)
+    if q and q.strip():
+        needle = f"%{q.strip()}%"
+        filters.append(
+            or_(
+                col(Subject.name).ilike(needle),
+                col(Subject.login_username).ilike(needle),
+            )
+        )
+    base = (
+        select(TeamMembership, Team.name, Subject.name, Subject.login_username)
+        .outerjoin(Team, col(TeamMembership.team_id) == col(Team.id))
+        .outerjoin(Subject, col(TeamMembership.subject_id) == col(Subject.id))
+    )
+    if filters:
+        base = base.where(*filters)
+    total = await _count_rows(
+        session, select(func.count()).select_from(base.subquery())
+    )
+    rows = (
+        await session.execute(
+            base.order_by(col(TeamMembership.created_at).desc())
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
+    items = []
+    for membership, team_name, subject_name, subject_login in rows:
+        item = membership.model_dump()
+        item["team_name"] = team_name
+        item["subject_name"] = subject_name
+        item["subject_login_username"] = subject_login
+        items.append(item)
+    return paginated(items, total, limit, offset)
 
 
 @router.patch("/team-memberships/{membership_id}/state")
@@ -352,11 +509,44 @@ async def create_model_team_grant(
 
 
 @router.get("/model-team-grants")
-async def list_model_team_grants(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(
-        select(ModelTeamGrant).order_by(col(ModelTeamGrant.created_at).desc())
+async def list_model_team_grants(
+    team_id: UUID | None = Query(default=None),
+    model_alias_id: UUID | None = Query(default=None),
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(session_dep),
+):
+    filters = []
+    if team_id:
+        filters.append(col(ModelTeamGrant.team_id) == team_id)
+    if model_alias_id:
+        filters.append(col(ModelTeamGrant.model_alias_id) == model_alias_id)
+    base = (
+        select(ModelTeamGrant, ModelAlias.alias, Team.name)
+        .outerjoin(
+            ModelAlias, col(ModelTeamGrant.model_alias_id) == col(ModelAlias.id)
+        )
+        .outerjoin(Team, col(ModelTeamGrant.team_id) == col(Team.id))
     )
-    return result.scalars().all()
+    if filters:
+        base = base.where(*filters)
+    total = await _count_rows(
+        session, select(func.count()).select_from(base.subquery())
+    )
+    rows = (
+        await session.execute(
+            base.order_by(col(ModelTeamGrant.created_at).desc())
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
+    items = []
+    for grant, alias, team_name in rows:
+        item = grant.model_dump()
+        item["model_alias"] = alias
+        item["team_name"] = team_name
+        items.append(item)
+    return paginated(items, total, limit, offset)
 
 
 @router.patch("/model-team-grants/{grant_id}/state")

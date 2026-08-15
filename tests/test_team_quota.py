@@ -482,7 +482,7 @@ async def test_admin_token_quota_roundtrip(client):
 
     listing = await client.get("/admin/team-token-quotas", headers=headers)
     assert listing.status_code == 200
-    assert any(row["team_id"] == str(team_id) for row in listing.json())
+    assert any(row["team_id"] == str(team_id) for row in listing.json()["items"])
 
     invalid = await client.put(
         f"/admin/teams/{team_id}/token-quota",

@@ -3,13 +3,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from llm_gateway.api.admin._common import (
     StatePatch,
     _audit_update,
+    _count_rows,
     _detach_upstream_usage,
     _get_or_404,
     _validate_homogeneous_upstream_payload,
@@ -26,7 +27,11 @@ from llm_gateway.db.models import (
     UpstreamTarget,
     utcnow,
 )
-from llm_gateway.services.resource_payloads import apply_model_patch, redact_upstream
+from llm_gateway.services.resource_payloads import (
+    apply_model_patch,
+    paginated,
+    redact_upstream,
+)
 from llm_gateway.services.facts import record_audit_event
 from llm_gateway.services.litellm_client import check_upstream_health
 from llm_gateway.services.router_command import render_router_command
@@ -141,11 +146,51 @@ async def create_model_alias(
 
 
 @router.get("/model-aliases")
-async def list_model_aliases(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(
-        select(ModelAlias).order_by(col(ModelAlias.created_at).desc())
+async def list_model_aliases(
+    q: str | None = Query(default=None, max_length=120),
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(session_dep),
+):
+    stmt = select(ModelAlias)
+    if q and q.strip():
+        needle = f"%{q.strip()}%"
+        stmt = stmt.where(
+            or_(
+                col(ModelAlias.alias).ilike(needle),
+                col(ModelAlias.upstream_model_name).ilike(needle),
+            )
+        )
+    total = await _count_rows(
+        session, select(func.count()).select_from(stmt.subquery())
     )
-    return result.scalars().all()
+    rows = (
+        (
+            await session.execute(
+                stmt.order_by(col(ModelAlias.created_at).desc())
+                .offset(offset)
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return paginated(rows, total, limit, offset)
+
+
+@router.get("/model-aliases/options")
+async def list_model_alias_options(
+    q: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=50, ge=1, le=500),
+    session: AsyncSession = Depends(session_dep),
+):
+    """Lightweight id/alias pairs for searchable pickers; avoids shipping
+    full model rows (CIDR lists, notes...) to build dropdown options."""
+    stmt = select(ModelAlias.id, ModelAlias.alias).order_by(col(ModelAlias.alias))
+    if q and q.strip():
+        stmt = stmt.where(col(ModelAlias.alias).ilike(f"%{q.strip()}%"))
+    rows = (await session.execute(stmt.limit(limit))).all()
+    return [{"id": str(row.id), "alias": row.alias} for row in rows]
 
 
 @router.patch("/model-aliases/{model_alias_id}")
@@ -267,11 +312,73 @@ async def create_upstream(
 
 
 @router.get("/upstreams")
-async def list_upstreams(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(
-        select(UpstreamTarget).order_by(col(UpstreamTarget.created_at).desc())
+async def list_upstreams(
+    q: str | None = Query(default=None, max_length=120),
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(session_dep),
+):
+    filters = []
+    if q and q.strip():
+        needle = f"%{q.strip()}%"
+        filters.append(
+            or_(
+                col(UpstreamTarget.name).ilike(needle),
+                col(UpstreamTarget.base_url).ilike(needle),
+            )
+        )
+    count_stmt = select(func.count()).select_from(UpstreamTarget)
+    if filters:
+        count_stmt = count_stmt.where(*filters)
+    total = await _count_rows(session, count_stmt)
+    stmt = (
+        select(UpstreamTarget, ModelAlias.alias)
+        .outerjoin(ModelAlias, col(UpstreamTarget.model_alias_id) == col(ModelAlias.id))
+        .order_by(col(UpstreamTarget.created_at).desc())
+        .offset(offset)
+        .limit(limit)
     )
-    return [redact_upstream(item) for item in result.scalars().all()]
+    if filters:
+        stmt = stmt.where(*filters)
+    rows = (await session.execute(stmt)).all()
+    items = []
+    for upstream, alias in rows:
+        item = redact_upstream(upstream)
+        item["model_alias"] = alias
+        items.append(item)
+    return paginated(items, total, limit, offset)
+
+
+@router.get("/upstreams/options")
+async def list_upstream_options(
+    q: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=100, ge=1, le=1000),
+    session: AsyncSession = Depends(session_dep),
+):
+    """Minimal upstream identity rows for the realtime lock view, so the
+    metrics page doesn't need the full paginated upstream list."""
+    stmt = (
+        select(
+            UpstreamTarget.id,
+            UpstreamTarget.name,
+            UpstreamTarget.state,
+            ModelAlias.alias,
+        )
+        .outerjoin(ModelAlias, col(UpstreamTarget.model_alias_id) == col(ModelAlias.id))
+        .order_by(col(UpstreamTarget.name))
+    )
+    if q and q.strip():
+        stmt = stmt.where(col(UpstreamTarget.name).ilike(f"%{q.strip()}%"))
+    rows = (await session.execute(stmt.limit(limit))).all()
+    return [
+        {
+            "id": str(row.id),
+            "name": row.name,
+            "state": row.state.value,
+            "model_alias": row.alias,
+        }
+        for row in rows
+    ]
 
 
 @router.get("/upstreams/{upstream_id}/health")

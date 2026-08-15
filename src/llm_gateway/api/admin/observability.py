@@ -3,13 +3,15 @@ from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
+from llm_gateway.api.admin._common import _count_rows
 from llm_gateway.api.deps import session_dep
 from llm_gateway.db.models import AuditEvent
 from llm_gateway.services import analytics
+from llm_gateway.services.resource_payloads import paginated
 
 
 router = APIRouter()
@@ -123,8 +125,22 @@ async def analytics_drilldown(
 
 
 @router.get("/audit-events")
-async def list_audit_events(session: AsyncSession = Depends(session_dep)):
-    result = await session.execute(
-        select(AuditEvent).order_by(col(AuditEvent.created_at).desc()).limit(200)
+async def list_audit_events(
+    limit: int | None = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(session_dep),
+):
+    total = await _count_rows(session, select(func.count()).select_from(AuditEvent))
+    rows = (
+        (
+            await session.execute(
+                select(AuditEvent)
+                .order_by(col(AuditEvent.created_at).desc())
+                .offset(offset)
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
     )
-    return result.scalars().all()
+    return paginated(rows, total, limit, offset)

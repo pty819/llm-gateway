@@ -184,7 +184,40 @@ async def usage_summary(session, *, start=None, end=None, model=None,
     if limit is not None:
         stmt = stmt.limit(int(limit))
     rows = (await session.execute(stmt)).all()
-    return [_row_to_dict(row) for row in rows]
+    items = [_row_to_dict(row) for row in rows]
+    await _attach_summary_names(session, items)
+    return items
+
+
+async def _attach_summary_names(session, items: list[dict]) -> None:
+    """为本页聚合行批量内嵌用户/项目显示名。
+
+    分页化后前端不再持有全量用户/项目清单，展示名必须随行走。
+    只对当前页出现的 id 各发一次 IN 查询，代价与页大小成正比。
+    """
+    subject_ids = {item["subject_id"] for item in items if item.get("subject_id")}
+    project_ids = {item["project_id"] for item in items if item.get("project_id")}
+    subjects: dict = {}
+    if subject_ids:
+        result = await session.execute(
+            select(Subject.id, Subject.name, Subject.login_username).where(
+                col(Subject.id).in_(subject_ids)
+            )
+        )
+        for row in result.all():
+            subjects[row.id] = (row[1], row[2])
+    projects: dict = {}
+    if project_ids:
+        result = await session.execute(
+            select(Project.id, Project.name).where(col(Project.id).in_(project_ids))
+        )
+        for row in result.all():
+            projects[row.id] = row[1]
+    for item in items:
+        subject = subjects.get(item.get("subject_id"))
+        item["subject_name"] = subject[0] if subject else None
+        item["subject_login_username"] = subject[1] if subject else None
+        item["project_name"] = projects.get(item.get("project_id"))
 
 
 async def usage_ranking(session, *, start=None, end=None, model=None,

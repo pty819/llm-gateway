@@ -163,6 +163,36 @@ async def list_subjects(
     return paginated(rows, total, limit, offset)
 
 
+@router.get("/subjects/options")
+async def list_subject_options(
+    q: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=50, ge=1, le=500),
+    session: AsyncSession = Depends(session_dep),
+):
+    """Minimal identity rows for searchable pickers (project owner/member,
+    key holder, entitlement scope) without shipping full subject rows."""
+    stmt = select(Subject.id, Subject.name, Subject.login_username).order_by(
+        col(Subject.name)
+    )
+    if q and q.strip():
+        needle = f"%{q.strip()}%"
+        stmt = stmt.where(
+            or_(
+                col(Subject.name).ilike(needle),
+                col(Subject.login_username).ilike(needle),
+            )
+        )
+    rows = (await session.execute(stmt.limit(limit))).all()
+    return [
+        {
+            "id": str(row.id),
+            "name": row.name,
+            "login_username": row.login_username,
+        }
+        for row in rows
+    ]
+
+
 @router.patch("/subjects/{subject_id}")
 async def update_subject(
     subject_id: UUID,
@@ -348,18 +378,34 @@ async def get_subject_rate_override(
 
 @router.get("/subjects/rate-overrides")
 async def list_subject_rate_overrides(
+    subject_ids: str | None = Query(default=None, max_length=20_000),
     redis: Redis = Depends(redis_dep),
 ) -> dict[str, dict[str, int | None]]:
-    """Batched read of all per-subject overrides for the admin user list.
+    """Batched read of per-subject overrides for the admin user list.
 
     Returns {subject_id: {rpm, concurrency}} for every subject that has a
     non-empty override. Subjects without an override are omitted (not present
     as null entries) so the frontend treats absence as "inherit default".
 
-    One MGET round-trip scans the Redis keyspace via SCAN (not KEYS, to stay
-    safe at scale). Designed to be called once per page load, not per row.
+    When ``subject_ids`` is given (comma-separated UUIDs, the visible page),
+    the overrides are fetched with a single MGET — the paginated UI never
+    needs the whole keyspace. Without it, falls back to a SCAN of the
+    override keyspace (not KEYS, to stay safe at scale).
     """
-    overrides = await _scan_all_overrides(redis)
+    if subject_ids and subject_ids.strip():
+        ids = [
+            item.strip()
+            for item in subject_ids.split(",")
+            if item.strip()
+        ]
+        if len(ids) > 500:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="too_many_subject_ids",
+            )
+        overrides = await subject_rate_override.list_overrides(redis, ids)
+    else:
+        overrides = await _scan_all_overrides(redis)
     return {
         sid: {"rpm": o.rpm, "concurrency": o.concurrency}
         for sid, o in overrides.items()
@@ -486,14 +532,61 @@ async def create_project(
 
 @router.get("/projects")
 async def list_projects(
+    q: str | None = Query(default=None, max_length=120),
     limit: int | None = Query(default=None, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(session_dep),
 ):
-    stmt = select(Project).order_by(col(Project.created_at).desc())
-    total = await _count_rows(session, select(func.count()).select_from(Project))
-    rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
-    return paginated(rows, total, limit, offset)
+    filters = []
+    if q and q.strip():
+        needle = f"%{q.strip()}%"
+        filters.append(
+            or_(
+                col(Project.name).ilike(needle),
+                col(Project.notes).ilike(needle),
+            )
+        )
+    base = select(Project, Subject.name, Subject.login_username).outerjoin(
+        Subject, col(Project.owner_subject_id) == col(Subject.id)
+    )
+    if filters:
+        base = base.where(*filters)
+    total = await _count_rows(
+        session, select(func.count()).select_from(base.subquery())
+    )
+    rows = (
+        await session.execute(
+            base.order_by(col(Project.created_at).desc())
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
+    items = []
+    for project, owner_name, owner_login in rows:
+        item = project.model_dump()
+        item["owner_name"] = owner_name
+        item["owner_login_username"] = owner_login
+        items.append(item)
+    return paginated(items, total, limit, offset)
+
+
+@router.get("/projects/options")
+async def list_project_options(
+    q: str | None = Query(default=None, max_length=120),
+    exclude_name_prefix: str | None = Query(default=None, max_length=60),
+    limit: int = Query(default=50, ge=1, le=500),
+    session: AsyncSession = Depends(session_dep),
+):
+    """Minimal id/name pairs for searchable project pickers. The
+    ``exclude_name_prefix`` filter keeps auto-provisioned personal projects
+    (e.g. ``user-*``) out of assignment dropdowns."""
+    stmt = select(Project.id, Project.name).order_by(col(Project.name))
+    if q and q.strip():
+        stmt = stmt.where(col(Project.name).ilike(f"%{q.strip()}%"))
+    if exclude_name_prefix:
+        stmt = stmt.where(col(Project.name).notlike(f"{exclude_name_prefix}%"))
+    rows = (await session.execute(stmt.limit(limit))).all()
+    return [{"id": str(row.id), "name": row.name} for row in rows]
 
 
 @router.patch("/projects/{project_id}")
@@ -535,16 +628,48 @@ async def create_project_membership(
 
 @router.get("/project-memberships")
 async def list_project_memberships(
+    q: str | None = Query(default=None, max_length=120),
+    project_id: UUID | None = Query(default=None),
     limit: int | None = Query(default=None, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(session_dep),
 ):
-    stmt = select(ProjectMembership).order_by(col(ProjectMembership.created_at).desc())
-    total = await _count_rows(
-        session, select(func.count()).select_from(ProjectMembership)
+    filters = []
+    if project_id:
+        filters.append(col(ProjectMembership.project_id) == project_id)
+    if q and q.strip():
+        needle = f"%{q.strip()}%"
+        filters.append(
+            or_(
+                col(Subject.name).ilike(needle),
+                col(Subject.login_username).ilike(needle),
+            )
+        )
+    base = (
+        select(ProjectMembership, Project.name, Subject.name, Subject.login_username)
+        .outerjoin(Project, col(ProjectMembership.project_id) == col(Project.id))
+        .outerjoin(Subject, col(ProjectMembership.subject_id) == col(Subject.id))
     )
-    rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
-    return paginated(rows, total, limit, offset)
+    if filters:
+        base = base.where(*filters)
+    total = await _count_rows(
+        session, select(func.count()).select_from(base.subquery())
+    )
+    rows = (
+        await session.execute(
+            base.order_by(col(ProjectMembership.created_at).desc())
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
+    items = []
+    for membership, project_name, subject_name, subject_login in rows:
+        item = membership.model_dump()
+        item["project_name"] = project_name
+        item["subject_name"] = subject_name
+        item["subject_login_username"] = subject_login
+        items.append(item)
+    return paginated(items, total, limit, offset)
 
 
 @router.post("/gateway-keys")
@@ -574,14 +699,80 @@ async def issue_gateway_key(
 
 @router.get("/gateway-keys")
 async def list_gateway_keys(
+    q: str | None = Query(default=None, max_length=120),
+    project_id: UUID | None = Query(default=None),
+    state: ResourceState | None = Query(default=None),
     limit: int | None = Query(default=None, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(session_dep),
 ):
-    stmt = select(GatewayKey).order_by(col(GatewayKey.created_at).desc())
-    total = await _count_rows(session, select(func.count()).select_from(GatewayKey))
-    rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
-    return paginated([redact_gateway_key(item) for item in rows], total, limit, offset)
+    filters = []
+    if project_id:
+        filters.append(col(GatewayKey.project_id) == project_id)
+    if state:
+        filters.append(col(GatewayKey.state) == state)
+    if q and q.strip():
+        needle = f"%{q.strip()}%"
+        filters.append(
+            or_(
+                col(GatewayKey.name).ilike(needle),
+                col(GatewayKey.key_prefix).ilike(needle),
+                col(Subject.name).ilike(needle),
+                col(Subject.login_username).ilike(needle),
+            )
+        )
+    base = (
+        select(GatewayKey, Subject.name, Subject.login_username, Project.name)
+        .outerjoin(Subject, col(GatewayKey.subject_id) == col(Subject.id))
+        .outerjoin(Project, col(GatewayKey.project_id) == col(Project.id))
+    )
+    if filters:
+        base = base.where(*filters)
+    total = await _count_rows(
+        session, select(func.count()).select_from(base.subquery())
+    )
+    rows = (
+        await session.execute(
+            base.order_by(col(GatewayKey.created_at).desc())
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
+    items = []
+    for key, subject_name, subject_login, project_name in rows:
+        item = redact_gateway_key(key)
+        item["subject_name"] = subject_name
+        item["subject_login_username"] = subject_login
+        item["project_name"] = project_name
+        items.append(item)
+    return paginated(items, total, limit, offset)
+
+
+@router.get("/gateway-keys/options")
+async def list_gateway_key_options(
+    q: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=50, ge=1, le=500),
+    session: AsyncSession = Depends(session_dep),
+):
+    """轻量下拉选项:仅返回密钥 id/名称/前缀,供可搜索选择器使用。"""
+    base = select(GatewayKey.id, GatewayKey.name, GatewayKey.key_prefix)
+    if q and q.strip():
+        needle = f"%{q.strip()}%"
+        base = base.where(
+            or_(
+                col(GatewayKey.name).ilike(needle),
+                col(GatewayKey.key_prefix).ilike(needle),
+            )
+        )
+    rows = (
+        await session.execute(
+            base.order_by(col(GatewayKey.created_at).desc()).limit(limit)
+        )
+    ).all()
+    return [
+        {"id": str(key_id), "name": name, "key_prefix": key_prefix}
+        for key_id, name, key_prefix in rows
+    ]
 
 
 @router.patch("/gateway-keys/{gateway_key_id}/state")
