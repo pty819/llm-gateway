@@ -251,6 +251,9 @@ export function clean<T extends Record<string, unknown>>(value: T): T {
 
 export function errorMessage(error: unknown): string {
 	if (isApiError(error)) return `${error.status}: ${error.message}`;
-	if (error instanceof Error) return error.message;
+	if (error instanceof Error) {
+		if (error.name === 'TimeoutError' || error.name === 'AbortError') return '请求超时，请稍后重试。';
+		return error.message;
+	}
 	return '发生未知错误';
 }

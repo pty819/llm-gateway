@@ -312,7 +312,27 @@ async def ensure_model_team_grant(
     return grant
 
 
+# The bootstrap sweep (teams, admin, per-model grants, litellm registration)
+# costs O(all model aliases) statements and only needs to run once per worker.
+# ensure_builtin_identity is called from admin_dep on EVERY session-
+# authenticated admin request, so after a successful sweep the fast path below
+# keeps the per-request cost to one indexed point lookup.
+_builtin_identity_swept = False
+
+
 async def ensure_builtin_identity(session: AsyncSession, settings: Settings) -> Subject:
+    global _builtin_identity_swept
+    username = normalize_username(settings.bootstrap_admin_username)
+    if _builtin_identity_swept:
+        result = await session.execute(
+            select(Subject).where(col(Subject.login_username) == username)
+        )
+        admin = result.scalar_one_or_none()
+        if admin is not None:
+            return admin
+        # Bootstrap identity vanished (fresh database behind the same
+        # worker?) — fall through and rebuild it from scratch.
+        _builtin_identity_swept = False
     guest_team = await get_or_create_team(
         session,
         name="guest",
@@ -325,7 +345,6 @@ async def ensure_builtin_identity(session: AsyncSession, settings: Settings) -> 
         notes="Built-in administrators with access to all models.",
         is_builtin=True,
     )
-    username = normalize_username(settings.bootstrap_admin_username)
     result = await session.execute(
         select(Subject).where(col(Subject.login_username) == username)
     )
@@ -357,19 +376,30 @@ async def ensure_builtin_identity(session: AsyncSession, settings: Settings) -> 
     )
 
     models = (await session.execute(select(ModelAlias))).scalars().all()
+    granted_model_ids = set(
+        (
+            await session.execute(
+                select(ModelTeamGrant.model_alias_id).where(
+                    col(ModelTeamGrant.team_id) == admin_team.id
+                )
+            )
+        ).scalars()
+    )
+    from llm_gateway.services.litellm_client import (
+        register_model_for_native_streaming,
+    )
+
     for model_alias in models:
-        await ensure_model_team_grant(
-            session, model_alias_id=model_alias.id, team_id=admin_team.id
-        )
+        if model_alias.id not in granted_model_ids:
+            await ensure_model_team_grant(
+                session, model_alias_id=model_alias.id, team_id=admin_team.id
+            )
         # Register each configured model with LiteLLM so the Responses API
         # stream path uses real SSE streaming instead of fake-streaming. Must
         # run on every worker at startup; see register_model_for_native_streaming.
-        from llm_gateway.services.litellm_client import (
-            register_model_for_native_streaming,
-        )
-
         register_model_for_native_streaming(model_alias)
 
+    _builtin_identity_swept = True
     return admin
 
 

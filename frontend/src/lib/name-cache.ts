@@ -134,6 +134,8 @@ export function mergeKeyRefs(
 		id?: string;
 		name?: string;
 		key_prefix?: string;
+		subject_id?: string | null;
+		project_id?: string | null;
 		subject_name?: string | null;
 		subject_login_username?: string | null;
 		project_name?: string | null;

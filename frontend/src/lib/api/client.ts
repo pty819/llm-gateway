@@ -204,6 +204,13 @@ export class AdminApiClient {
 		return this.patch('/admin/health-check', { enabled });
 	}
 
+	/** JSON 请求超时:保证 run() 的加载态必定收敛,加载条不会因后端卡死而永转。
+	 * 30s 覆盖管理台所有列表/查询;流式与 SSE 不走这里。 */
+	private static readonly REQUEST_TIMEOUT_MS = 30_000;
+
+	/** 制品下载可能较大,单独放宽。 */
+	private static readonly BLOB_TIMEOUT_MS = 120_000;
+
 	private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
 		const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
 		const response = await fetch(path, {
@@ -218,7 +225,8 @@ export class AdminApiClient {
 					? undefined
 					: isFormData
 						? (body as FormData)
-						: JSON.stringify(body)
+						: JSON.stringify(body),
+			signal: AbortSignal.timeout(AdminApiClient.REQUEST_TIMEOUT_MS)
 		});
 		if (!response.ok) {
 			throw await toApiError(response);
@@ -232,7 +240,8 @@ export class AdminApiClient {
 			headers: {
 				...(this.adminToken ? { 'x-admin-token': this.adminToken } : {}),
 				...(this.sessionToken ? { 'x-session-token': this.sessionToken } : {})
-			}
+			},
+			signal: AbortSignal.timeout(AdminApiClient.BLOB_TIMEOUT_MS)
 		});
 		if (!response.ok) {
 			throw await toApiError(response);
