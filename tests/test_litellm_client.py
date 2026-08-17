@@ -38,6 +38,66 @@ async def test_anthropic_messages_once_sets_drop_params(monkeypatch):
     assert result.usage == {"input_tokens": 3, "output_tokens": 2}
 
 
+@pytest.mark.parametrize(
+    "litellm_model",
+    [
+        "openai/test-model",
+        "openai/chat_completions/test-model",
+        "anthropic/claude-test",
+        "hosted_vllm/test-model",
+    ],
+)
+async def test_completion_once_sets_drop_params_for_all_formats(
+    litellm_model, monkeypatch
+):
+    """All four upstream formats funnel through the chat entrance, and none
+    may fail the whole request just because an agent sent an OpenAI param the
+    provider whitelist rejects (reasoning_effort, verbosity, user, ... for
+    custom model names absent from litellm's registry)."""
+    captured: dict[str, Any] = {}
+
+    class FakeResponse:
+        usage = None
+
+    async def fake_acompletion(**kwargs):
+        captured.update(kwargs)
+        return FakeResponse()
+
+    monkeypatch.setattr(litellm_client, "acompletion", fake_acompletion)
+
+    await litellm_client.completion_once(
+        model_alias=_model_alias(litellm_model=litellm_model),
+        upstream=_upstream(),
+        body={"messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert captured["drop_params"] is True
+
+
+async def test_completion_stream_sets_drop_params(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    async def fake_acompletion(**kwargs):
+        captured.update(kwargs)
+
+        async def stream():
+            yield {"usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+
+        return stream()
+
+    monkeypatch.setattr(litellm_client, "acompletion", fake_acompletion)
+
+    async for _ in litellm_client.completion_stream(
+        model_alias=_model_alias(litellm_model="hosted_vllm/test-model"),
+        upstream=_upstream(),
+        body={"messages": [{"role": "user", "content": "hi"}]},
+    ):
+        pass
+
+    assert captured["drop_params"] is True
+    assert captured["stream"] is True
+
+
 async def test_completion_once_normalizes_bridge_prefix(monkeypatch):
     """A bridge-prefixed alias must send the CLEAN model name on the chat
     entry: litellm would otherwise split at the first slash and forward the
@@ -102,7 +162,10 @@ def test_effective_chat_model_leaves_other_prefixes_alone():
     )
 
 
-async def test_responses_once_uses_native_responses_for_hosted_vllm(monkeypatch):
+@pytest.mark.parametrize("litellm_model", ["openai/test-model", "hosted_vllm/test-model"])
+async def test_responses_once_native_path_sets_drop_params(
+    litellm_model, monkeypatch
+):
     captured: dict[str, Any] = {}
 
     async def fake_aresponses(**kwargs):
@@ -112,16 +175,16 @@ async def test_responses_once_uses_native_responses_for_hosted_vllm(monkeypatch)
     monkeypatch.setattr(litellm_client, "aresponses", fake_aresponses)
 
     result = await litellm_client.responses_once(
-        model_alias=_model_alias(litellm_model="hosted_vllm/test-model"),
+        model_alias=_model_alias(litellm_model=litellm_model),
         upstream=_upstream(),
         body={"input": "hi", "max_output_tokens": 8},
     )
 
-    assert captured["model"] == "hosted_vllm/test-model"
+    assert captured["model"] == litellm_model
     assert "use_chat_completions_api" not in captured
-    # Native /responses forwarding keeps param errors loud instead of
-    # silently dropping them.
-    assert "drop_params" not in captured
+    # Availability beats loud param errors: agents send reasoning.effort etc.
+    # on every entrance, so native /responses forwarding drops them too.
+    assert captured["drop_params"] is True
     assert result.usage == {"input_tokens": 9, "output_tokens": 1}
 
 

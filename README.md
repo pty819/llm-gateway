@@ -411,7 +411,7 @@ The `LiteLLM model` field decides how the gateway's `/v1/responses` reaches each
 | `anthropic/<model>`          | upstream's `/v1/messages` (bridged)        | Upstream only speaks the Anthropic Messages protocol         |
 
 - In bridged modes LiteLLM converts Responses ↔ chat-completions in both directions, including streaming: downstream still receives a standard Responses SSE event stream (`response.created` … `response.completed`).
-- Bridged models automatically send `drop_params=True`, because clients like Codex always attach `reasoning.effort`, which would otherwise be rejected for custom model names.
+- Every entrance (`/v1/chat/completions`, `/v1/messages`, and `/v1/responses` — all prefixes) automatically sends `drop_params=True`: agents often attach OpenAI params the upstream/provider whitelist rejects (`reasoning.effort` → `reasoning_effort`, `verbosity`, `user` for custom model names); LiteLLM silently drops exactly those params instead of failing the whole request. Fields LiteLLM does not recognize at all are not affected — they still pass through to the upstream body.
 - For `anthropic/<model>` upstreams, set Base URL to the Anthropic-compatible root (e.g. `https://host/anthropic`); LiteLLM appends `/v1/messages`. For the other two modes Base URL ends in `/v1`.
 - A bridge-prefixed alias works on **all three** gateway entries: `/v1/responses` is bridged to `/chat/completions`, while `/v1/chat/completions` and `/v1/messages` also land on the upstream's `/chat/completions` (the gateway normalizes the model name — litellm would otherwise forward the literal `chat_completions/<m>` string upstream and fail). `anthropic/<model>` aliases likewise serve all three entries.
 

@@ -16,17 +16,7 @@ class LiteLLMCallResult:
         self.usage = usage
 
 
-ANTHROPIC_DROP_PARAMS = True
 OPENAI_CHAT_COMPLETIONS_RESPONSES_PREFIX = "openai/chat_completions/"
-# Model prefixes whose /v1/responses traffic is bridged through a
-# chat-completions-shaped backend instead of the upstream's native /responses.
-BRIDGED_RESPONSES_PREFIXES = (
-    OPENAI_CHAT_COMPLETIONS_RESPONSES_PREFIX,
-    # LiteLLM has no native Anthropic Responses config, so aresponses routes
-    # anthropic/* models through the same generic completion bridge against
-    # the upstream's /v1/messages.
-    "anthropic/",
-)
 
 
 def configure_litellm_routing() -> None:
@@ -103,23 +93,6 @@ def uses_openai_chat_completions_upstream(model_alias: ModelAlias) -> bool:
     )
 
 
-def uses_bridged_responses_upstream(model_alias: ModelAlias) -> bool:
-    """True when /v1/responses traffic is bridged through a chat-completions-
-    shaped backend instead of the upstream's native /responses endpoint.
-
-    Bridged calls must send drop_params=True: clients like Codex always send
-    ``reasoning: {"effort": ...}``, which the bridge maps to the completion
-    param ``reasoning_effort``. LiteLLM then rejects that param with
-    UnsupportedParamsError for model names absent from its registry (any
-    custom/enterprise model name) — a deterministic failure for every Codex
-    request. Dropping the param is the right call on bridged paths: the
-    OpenAI/Anthropic chat backends either ignore reasoning hints or map them
-    natively, and silently dropping beats failing the whole stream.
-    """
-    litellm_model = model_alias.litellm_model.lower()
-    return litellm_model.startswith(BRIDGED_RESPONSES_PREFIXES)
-
-
 def effective_chat_litellm_model(model_alias: ModelAlias) -> str:
     """Normalize a bridge-prefixed litellm_model for the chat-shaped entry
     points (/v1/chat/completions and /v1/messages).
@@ -147,23 +120,30 @@ def resolve_upstream_call(
 
     Returns the model string to send plus any extra litellm kwargs required by
     this entrance×prefix combination. The bridge-prefix directive previously
-    had to be reasoned about across four helpers and six call sites; adding a
-    new bridge prefix now means updating the predicates above and this one
+    had to be reasoned about across four helpers and six call sites; adding
+    a new bridge prefix now means updating the predicates above and this one
     resolver, and every entrance picks up the change.
 
+    Every entrance×prefix combination forces ``drop_params=True``: badly
+    written agents send OpenAI params that litellm's per-provider whitelist
+    rejects with UnsupportedParamsError for model names absent from its
+    registry (Codex always attaches ``reasoning: {"effort": ...}`` which the
+    bridge maps to ``reasoning_effort``; ``verbosity`` and ``user`` fail the
+    same way). Availability beats loud param errors — the backends either
+    ignore these hints or map them natively. Junk fields litellm does not
+    recognize are unaffected either way: they ride through to the upstream.
+
     - Responses entrance: the directive goes through verbatim (litellm's
-      aresponses understands it) plus the bridge flags.
+      aresponses understands it) plus the bridge flag.
     - Chat-shaped entrances: the directive is stripped to ``openai/<m>``;
       no extra params.
     """
+    extra: dict[str, Any] = {"drop_params": True}
     if endpoint_family is EndpointFamily.OPENAI_RESPONSES:
-        extra: dict[str, Any] = {}
         if uses_openai_chat_completions_upstream(model_alias):
             extra["use_chat_completions_api"] = True
-        if uses_bridged_responses_upstream(model_alias):
-            extra["drop_params"] = True
         return model_alias.litellm_model, extra
-    return effective_chat_litellm_model(model_alias), {}
+    return effective_chat_litellm_model(model_alias), extra
 
 
 def probe_request_parts(upstream: UpstreamTarget) -> tuple[str, dict[str, str]]:
@@ -309,7 +289,6 @@ async def anthropic_messages_once(
         EndpointFamily.ANTHROPIC_MESSAGES, model_alias
     )
     payload.update(bridge_extra)
-    payload["drop_params"] = ANTHROPIC_DROP_PARAMS
     response = await anthropic_messages(
         api_base=upstream.base_url,
         api_key=_api_key(upstream),
@@ -330,7 +309,6 @@ async def anthropic_messages_stream(
     )
     payload.update(bridge_extra)
     payload["stream"] = True
-    payload["drop_params"] = ANTHROPIC_DROP_PARAMS
     stream = await anthropic_messages(
         api_base=upstream.base_url,
         api_key=_api_key(upstream),
