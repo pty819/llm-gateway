@@ -233,6 +233,10 @@
 	let teamDrawerQuotaUsage = $state<TeamMemberQuotaUsage | null>(null);
 	let detailMembers = $state<ProjectMembership[]>([]);
 	let subjectOptionsTimer: ReturnType<typeof setTimeout> | null = null;
+	let modelOptionsTimer: ReturnType<typeof setTimeout> | null = null;
+	let modelOptionsByQuery = $state<Record<string, ModelOption[]>>({});
+	let grantModelSearch = $state('');
+	let upstreamModelSearch = $state('');
 
 	// ---- 新交互状态:抽屉 / 确认弹层 / 详情(设计稿 P2/P3) ----
 	let subjectDrawerOpen = $state(false);
@@ -791,6 +795,24 @@
 		}, 250);
 	}
 
+	/** 可搜索模型下拉的数据源:模型可能有几千条,必须按查询词拉取,固定 limit 只能看到字母序前几条。 */
+	async function fetchModelOptions(query: string) {
+		const rows = await api.get<ModelOption[]>('/admin/model-aliases/options', {
+			q: query.trim() || undefined,
+			limit: 50
+		});
+		nameCache = mergeModelRows(nameCache, rows);
+		modelOptionsByQuery = { ...modelOptionsByQuery, [query]: rows };
+		if (query === '') modelOptions = rows;
+	}
+
+	function queueModelOptions(query: string) {
+		if (modelOptionsTimer) clearTimeout(modelOptionsTimer);
+		modelOptionsTimer = setTimeout(() => {
+			void fetchModelOptions(query).catch(() => undefined);
+		}, 250);
+	}
+
 	async function loadBaseOptions() {
 		await Promise.all([
 			fetchSubjectOptions(''),
@@ -801,10 +823,7 @@
 				});
 				nameCache = mergeProjects(nameCache, projectOptions);
 			})().catch(() => undefined),
-			(async () => {
-				modelOptions = await api.get<ModelOption[]>('/admin/model-aliases/options', { limit: 50 });
-				nameCache = mergeModelRows(nameCache, modelOptions);
-			})().catch(() => undefined),
+			fetchModelOptions('').catch(() => undefined),
 			(async () => {
 				teamOptions = await api.get<TeamOption[]>('/admin/teams/options', { limit: 200 });
 				nameCache = mergeTeamRows(nameCache, teamOptions);
@@ -1553,6 +1572,11 @@
 		return subjectOptionsByQuery[query] ?? [];
 	}
 
+	/** 可搜索模型下拉:选项来自 /admin/model-aliases/options,按查询词缓存。 */
+	function modelPickerOptions(query: string): ModelOption[] {
+		return modelOptionsByQuery[query] ?? (query === '' ? modelOptions : []);
+	}
+
 	function isModelUpstreamConflict(error: unknown): error is { detail: { code: string; upstream_count?: number } } {
 		return Boolean(
 			isApiError(error) &&
@@ -1901,7 +1925,7 @@
 							<select
 								aria-label="项目筛选"
 								value={keyProjectFilter}
-								onchange={() => { keyPage = 1; void run(fetchKeys); }}
+								onchange={(event) => { keyProjectFilter = event.currentTarget.value; keyPage = 1; void run(fetchKeys); }}
 							>
 								<option value="">全部项目</option>
 								{#each projectOptions as project}<option value={project.id}>{project.name}</option>{/each}
@@ -1909,7 +1933,7 @@
 							<select
 								aria-label="状态筛选"
 								value={keyStateFilter}
-								onchange={() => { keyPage = 1; void run(fetchKeys); }}
+								onchange={(event) => { keyStateFilter = event.currentTarget.value; keyPage = 1; void run(fetchKeys); }}
 							>
 								<option value="">全部状态</option>
 								<option value="active">启用</option>
@@ -2017,7 +2041,7 @@
 									<select
 										aria-label="权限组筛选"
 										value={teamMembershipTeamFilter}
-										onchange={() => { teamMembershipPage = 1; void run(fetchTeamMemberships); }}
+										onchange={(event) => { teamMembershipTeamFilter = event.currentTarget.value; teamMembershipPage = 1; void run(fetchTeamMemberships); }}
 									>
 										<option value="">全部权限组</option>
 										{#each teamOptions as team}<option value={team.id}>{team.name}</option>{/each}
@@ -2036,7 +2060,7 @@
 									<select
 										aria-label="状态筛选"
 										value={teamMembershipStateFilter}
-										onchange={() => { teamMembershipPage = 1; void run(fetchTeamMemberships); }}
+										onchange={(event) => { teamMembershipStateFilter = event.currentTarget.value; teamMembershipPage = 1; void run(fetchTeamMemberships); }}
 									>
 										<option value="">全部状态</option>
 										<option value="active">启用</option>
@@ -2076,7 +2100,7 @@
 								<select
 									aria-label="按权限组筛选授权"
 									value={grantTeamFilter}
-									onchange={() => { grantPage = 1; void run(fetchModelTeamGrants); }}
+									onchange={(event) => { grantTeamFilter = event.currentTarget.value; grantPage = 1; void run(fetchModelTeamGrants); }}
 								>
 									<option value="">全部权限组</option>
 									{#each teamOptions as team}<option value={team.id}>{team.name}</option>{/each}
@@ -2351,8 +2375,9 @@
 
 	<Drawer open={upstreamDrawerOpen} title="创建上游" subtitle="模型别名背后的同构副本端点" wide onClose={() => (upstreamDrawerOpen = false)}>
 		<div class="drawer-form">
-			<label>模型<select bind:value={upstreamForm.model_alias_id}><option value="">选择模型</option>{#each modelOptions as model}<option value={model.id}>{model.alias}</option>{/each}</select></label>
-		<label>名称<input bind:value={upstreamForm.name} /></label>
+			<label>搜索模型<input bind:value={upstreamModelSearch} placeholder="输入模型别名" oninput={() => queueModelOptions(upstreamModelSearch)} /></label>
+			<label>名称<input bind:value={upstreamForm.name} /></label>
+			<label>模型<select bind:value={upstreamForm.model_alias_id}><option value="">选择模型</option>{#each modelPickerOptions(upstreamModelSearch) as model}<option value={model.id}>{model.alias}</option>{/each}</select></label>
 		<label class="span-2">Base URL<input bind:value={upstreamForm.base_url} placeholder="http://host:9000/v1" /></label>
 		<label class="span-2">Metrics URL<input bind:value={upstreamForm.metrics_url} placeholder="可选，例如 http://router-host:29000/metrics" /></label>
 		<label>健康检查路径<input bind:value={upstreamForm.health_path} /></label>
@@ -2438,7 +2463,8 @@
 			</div>
 		{:else if teamDrawerTab === 'grants'}
 			<div class="drawer-form">
-				<label>模型<select bind:value={modelTeamGrantForm.model_alias_id}><option value="">模型</option>{#each modelOptions as model}<option value={model.id}>{model.alias}</option>{/each}</select></label>
+				<label>搜索模型<input bind:value={grantModelSearch} placeholder="输入模型别名" oninput={() => queueModelOptions(grantModelSearch)} /></label>
+				<label>模型<select bind:value={modelTeamGrantForm.model_alias_id}><option value="">模型</option>{#each modelPickerOptions(grantModelSearch) as model}<option value={model.id}>{model.alias}</option>{/each}</select></label>
 				<div class="actions"><button type="button" onclick={createModelTeamGrant} disabled={loading}>授权模型</button></div>
 			</div>
 			<div class="table-wrap">
